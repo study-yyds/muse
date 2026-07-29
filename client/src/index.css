@@ -1,0 +1,92 @@
+@import "tailwindcss";
+
+/* ============================================
+   Muse 设计系统 — Happy Hues 暖色调
+   基于 https://www.happyhues.co 调色板
+   ============================================ */
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
+}
+
+/* ---- 浅色模式（默认） ---- */
+:root {
+  /* 背景与内容 */
+  --background: oklch(0.964 0.015 82.5);       /* #f9f4ef 暖奶油 */
+  --foreground: oklch(0.098 0.035 274);         /* #020826 深藏蓝 */
+  --card: oklch(1 0 0);                         /* #fffffe 白 */
+  --card-foreground: oklch(0.098 0.035 274);    /* #020826 */
+  --popover: oklch(1 0 0);                      /* #fffffe */
+  --popover-foreground: oklch(0.098 0.035 274); /* #020826 */
+
+  /* 主色 — 暖金棕 */
+  --primary: oklch(0.554 0.073 79.2);           /* #8c7851 按钮/高亮 */
+  --primary-foreground: oklch(1 0 0);           /* #fffffe 按钮文字 */
+
+  /* 次要色 — 浅米色 */
+  --secondary: oklch(0.898 0.027 78.5);         /* #eaddcf 卡片/面板背景 */
+  --secondary-foreground: oklch(0.098 0.035 274); /* #020826 */
+
+  /* 弱化 — 浅米色底 + 暖棕文字 */
+  --muted: oklch(0.898 0.027 78.5);             /* #eaddcf */
+  --muted-foreground: oklch(0.478 0.068 72.7);  /* #716040 段落文字 */
+
+  /* 强调 */
+  --accent: oklch(0.898 0.027 78.5);            /* #eaddcf */
+  --accent-foreground: oklch(0.098 0.035 274);  /* #020826 */
+
+  /* 危险/警示 — 珊瑚红 */
+  --destructive: oklch(0.559 0.197 32.5);       /* #f25042 */
+  --destructive-foreground: oklch(1 0 0);       /* #fffffe */
+
+  /* 装饰 */
+  --border: oklch(0.898 0.027 78.5);            /* #eaddcf */
+  --input: oklch(0.898 0.027 78.5);             /* #eaddcf */
+  --ring: oklch(0.554 0.073 79.2);              /* #8c7851 聚焦环 */
+
+  /* 圆角 */
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.625rem;
+  --radius-xl: 0.75rem;
+}
+
+/* ---- 深色模式 ---- */
+.dark {
+  --background: oklch(0.18 0.012 85);           /* 暖深棕 */
+  --foreground: oklch(0.964 0.015 82.5);        /* #f9f4ef */
+  --card: oklch(0.21 0.01 85);                  /* 稍亮深棕 */
+  --card-foreground: oklch(0.964 0.015 82.5);
+  --popover: oklch(0.21 0.01 85);
+  --popover-foreground: oklch(0.964 0.015 82.5);
+
+  --primary: oklch(0.62 0.08 79);               /* 亮金棕 */
+  --primary-foreground: oklch(0.098 0.035 274); /* 深藏蓝 */
+
+  --secondary: oklch(0.27 0.015 85);            /* 深米色 */
+  --secondary-foreground: oklch(0.964 0.015 82.5);
+
+  --muted: oklch(0.27 0.015 85);
+  --muted-foreground: oklch(0.65 0.04 80);      /* 中暖棕 */
+
+  --accent: oklch(0.27 0.015 85);
+  --accent-foreground: oklch(0.964 0.015 82.5);
+
+  --destructive: oklch(0.45 0.17 30);           /* 暗珊瑚红 */
+  --destructive-foreground: oklch(0.964 0.015 82.5);
+
+  --border: oklch(0.27 0.015 85);
+  --input: oklch(0.27 0.015 85);
+  --ring: oklch(0.62 0.08 79);
+}
+
+body {
+  margin: 0;
+  background-color: var(--background);
+  color: var(--foreground);
+}
+
+#root {
+  min-height: 100svh;
+}

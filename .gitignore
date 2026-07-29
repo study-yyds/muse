@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.env
+*.local
+
+# 文档（PRD/技术文档/设计规范不提交）
+DESIGN_SYSTEM.md
+
+# 开发规范（Skills 本地使用）
+.claude/
+
+# 测试文件（MVP 阶段先不提交）
+*.test.ts
+*.test.tsx
+*.spec.ts
+test-setup.ts

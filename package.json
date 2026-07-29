@@ -1,0 +1,20 @@
+{
+  "name": "muse",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --parallel -r dev",
+    "dev:client": "pnpm --filter @muse/client dev",
+    "dev:server": "pnpm --filter @muse/server dev",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "test:e2e": "pnpm --filter @muse/client test:e2e",
+    "db:generate": "pnpm --filter @muse/server db:generate",
+    "db:migrate": "pnpm --filter @muse/server db:migrate",
+    "db:studio": "pnpm --filter @muse/server db:studio"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
