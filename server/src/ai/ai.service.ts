@@ -135,7 +135,7 @@ ${charContext || '暂无'}
 
       // 监听客户端断开连接
       res.on('close', () => {
-        reader.cancel().catch(() => {});
+        reader.cancel().catch(() => { });
       });
 
       while (true) {
@@ -241,6 +241,8 @@ ${(chapter?.content ?? '').slice(0, 3000)}
       message: string;
       messages?: any[];
       model?: string;
+      chapter_id?: string;
+      cursor_position?: number;
     },
   ) {
     const db = getDb();
@@ -251,6 +253,37 @@ ${(chapter?.content ?? '').slice(0, 3000)}
       .select()
       .from(schema.characters)
       .where(eq(schema.characters.book_id, params.book_id));
+
+    // 获取当前章节内容（写作用途）
+    let chapterContext = '';
+    if (params.chapter_id) {
+      const [ch] = await db
+        .select({
+          title: schema.chapters.title,
+          content: schema.chapters.content,
+        })
+        .from(schema.chapters)
+        .where(eq(schema.chapters.chapter_id, params.chapter_id));
+      if (ch) {
+        const cursorPos = params.cursor_position ?? 0;
+        // 取光标前后各 2000 字作为上下文
+        const before = ch.content.slice(
+          Math.max(0, cursorPos - 2000),
+          cursorPos,
+        );
+        const after = ch.content.slice(cursorPos, cursorPos + 500);
+        chapterContext = `【当前章节】
+标题：${ch.title}
+总字数：${ch.content.length}
+
+【光标前文——你要接着这里续写】
+${before || '（开头）'}
+
+【光标后文——仅供参考，不需要重复】
+${after || '（结尾）'}`;
+      }
+    }
+
     const [world] = await db
       .select()
       .from(schema.world_settings)
@@ -261,9 +294,9 @@ ${(chapter?.content ?? '').slice(0, 3000)}
       .where(eq(schema.outlines.book_id, params.book_id));
     const outlineChapters = outline
       ? await db
-          .select()
-          .from(schema.outline_chapters)
-          .where(eq(schema.outline_chapters.outline_id, outline.outline_id))
+        .select()
+        .from(schema.outline_chapters)
+        .where(eq(schema.outline_chapters.outline_id, outline.outline_id))
       : [];
 
     // 角色完整信息（用于写作用途）
@@ -301,14 +334,16 @@ ${(chapter?.content ?? '').slice(0, 3000)}
     // 世界观分区文本
     const worldText = world?.sections
       ? (world.sections as any[])
-          .map((s) => `【${s.name}】\n${s.content}`)
-          .join('\n\n')
+        .map((s) => `【${s.name}】\n${s.content}`)
+        .join('\n\n')
       : '暂无设定';
 
     // 根据 context_type 构建定制的 system prompt
     // 所有 prompt 统一要求：先输出自然语言，JSON action 放在最后一行
     const prompts: Record<string, string> = {
       write: `你是专业小说写作助手，正在帮助作者完成当前的写作章节。
+
+${chapterContext}
 
 【本作品全部角色设定——请严格按照以下设定写作，保持角色言行一致】
 ${charFull || '暂无角色设定'}
@@ -319,7 +354,8 @@ ${worldText}
 【写作指引】
 - 根据角色性格写对话：冷淡角色话少、活泼角色语气词多、文雅角色用典
 - 根据世界观限制情节：修真世界遵循境界体系、科幻世界遵循科技设定
-- 续写时自然衔接上文语气和节奏
+- 续写时自然衔接光标前文的语气和节奏
+- 不要重复光标后文的内容
 
 【回复格式——严格遵守】
 你的回复分为两部分：
@@ -481,7 +517,7 @@ ${worldText.slice(0, 1000)}
       let buffer = '';
       let fullContent = '';
       res.on('close', () => {
-        reader.cancel().catch(() => {});
+        reader.cancel().catch(() => { });
       });
 
       while (true) {

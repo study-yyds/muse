@@ -34,6 +34,8 @@ export class AiController {
       message: string;
       messages?: any[];
       model?: string;
+      chapter_id?: string;
+      cursor_position?: number;
     },
     @Res() res: Response,
   ) {

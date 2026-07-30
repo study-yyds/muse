@@ -96,11 +96,11 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
   };
 
   // 单次 SSE 流式调用
-  const streamOnce = async (msg: string, prevMsgs: { role: string; content: string }[]): Promise<Ver> => {
+  const streamOnce = async (msg: string, prevMsgs: { role: string; content: string }[], bodyExtra?: Record<string, any>): Promise<Ver> => {
     const r = await fetch("/api/ai/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
-      body: JSON.stringify({ book_id: bookId, context_type: section, model, message: msg, messages: prevMsgs }),
+      body: JSON.stringify({ book_id: bookId, context_type: section, model, message: msg, messages: prevMsgs, ...bodyExtra }),
     });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const reader = r.body?.getReader(); if (!reader) throw new Error("无响应");
@@ -128,23 +128,27 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
 
   const send = async () => {
     if (!input.trim() || loading) return;
-    let msg = input;
-    if (section === "write" && editor.activeChapterId) {
-      msg = rewriteCtx
-        ? "【改写以下选中文本】\n" + rewriteCtx.text + "\n\n【用户指令】" + input
-        : "【续写——光标前内容供参考】\n" + editor.editorContent.slice(Math.max(0, editor.cursorPosition - 1000), editor.cursorPosition) + "\n\n【用户指令】" + input;
-    }
+    // 用户消息保持简洁，章节上下文由后端通过 chapter_id 注入
+    const msg = rewriteCtx
+      ? "【改写以下选中文本】\n" + rewriteCtx.text + "\n\n【用户指令】" + input
+      : input;
     const um: Msg = { role: "user", content: msg };
     const prevMsgs = [...msgs, um].map((m) => ({ role: m.role, content: m.content }));
     setHistories((p) => ({ ...p, [section]: [...(p[section] ?? []), um] }));
     setInput(""); setLoading(true); setStreaming("");
+    // 传递章节上下文
+    const bodyExtra: Record<string, any> = {};
+    if (section === "write" && editor.activeChapterId) {
+      bodyExtra.chapter_id = editor.activeChapterId;
+      bodyExtra.cursor_position = rewriteCtx ? rewriteCtx.start : editor.cursorPosition;
+    }
     try {
       const V = 3;
       const versions: Ver[] = [];
-      const baseMsgs = [...prevMsgs]; // 每个版本共用同一份历史，不互相污染
+      const baseMsgs = [...prevMsgs];
       for (let v = 0; v < V; v++) {
         setStreaming(`版本 ${v + 1}/${V} 生成中...`);
-        const result = await streamOnce(msg, baseMsgs);
+        const result = await streamOnce(msg, baseMsgs, bodyExtra);
         versions.push(result);
       }
       setStreaming("");
