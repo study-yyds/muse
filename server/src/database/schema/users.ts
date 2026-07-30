@@ -33,10 +33,14 @@ export const users = pgTable(
     status: varchar('status', { length: 20 }).notNull().default('active'),
 
     // 注册时间
-    created_at: timestamp('created_at').notNull().defaultNow(),
+    created_at: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
 
     // 最后修改时间（换绑手机号、修改角色等操作更新）
-    updated_at: timestamp('updated_at').notNull().defaultNow(),
+    updated_at: timestamp('updated_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
 
     // 免费配额：最多创建的作品数，默认 3 本
     // NULL 或 -1 表示无限（V2 与 subscriptions 表联动）

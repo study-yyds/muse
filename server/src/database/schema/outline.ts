@@ -17,6 +17,7 @@ import {
   unique,
   primaryKey,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 import { books } from './books';
 import { chapters } from './chapters';
 
@@ -34,10 +35,14 @@ export const outlines = pgTable('outlines', {
     .notNull(),
 
   // 创建时间
-  created_at: timestamp('created_at').notNull().defaultNow(),
+  created_at: timestamp('created_at', { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 
   // 最后修改时间
-  updated_at: timestamp('updated_at').notNull().defaultNow(),
+  updated_at: timestamp('updated_at', { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
 
 /**
@@ -75,7 +80,9 @@ export const outline_chapters = pgTable(
     sort_order: integer('sort_order').notNull(),
 
     // 最后修改时间
-    updated_at: timestamp('updated_at').notNull().defaultNow(),
+    updated_at: timestamp('updated_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (table) => [
     // 按大纲查所有节点
@@ -114,6 +121,8 @@ export const outline_act_chapters = pgTable(
   (table) => [
     // 一个章节只能属于一个幕
     primaryKey({ columns: [table.chapter_id] }),
+    // 按大纲查询所有幕的章节分配
+    index('idx_oac_outline').on(table.outline_id),
     // 同一幕内 sort_order 不重复
     unique('uq_oac_act_order').on(
       table.outline_id,
@@ -142,7 +151,9 @@ export const outline_dialog_sessions = pgTable(
     messages: jsonb('messages').notNull().default([]),
 
     // 创建时间
-    created_at: timestamp('created_at').notNull().defaultNow(),
+    created_at: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (table) => [
     // 按大纲查所有对话历史

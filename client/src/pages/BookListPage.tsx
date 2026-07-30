@@ -63,13 +63,9 @@ export function BookListPage() {
       toast({ title: "作品已创建" });
       navigate(`/books/${res.data.book_id}`);
     },
-    onError: (err: Error) => {
-      // 后端不可用时，本地生成一个假 ID 继续
-      const fakeId = "dev-" + Date.now().toString(36);
-      queryClient.invalidateQueries({ queryKey: ["books"] });
+    onError: () => {
       setDialogOpen(false);
-      toast({ title: "作品已创建（本地模式）" });
-      navigate(`/books/${fakeId}`);
+      toast({ title: "创建失败，请确认后端已启动", variant: "destructive" });
     },
   });
 

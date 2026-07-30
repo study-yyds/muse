@@ -45,7 +45,9 @@ export const token_usage_records = pgTable(
     usage_type: varchar('usage_type', { length: 20 }).notNull(),
 
     // 记录时间
-    created_at: timestamp('created_at').notNull().defaultNow(),
+    created_at: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (table) => [
     // 按用户+时间查询月度用量

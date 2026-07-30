@@ -83,6 +83,41 @@ export function WritingEditor({ bookId }: Props) {
     },
   });
 
+  // 多选（合并用）
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  const mergeMutation = useMutation({
+    mutationFn: (body: { ids: string[]; title: string }) =>
+      api.post(`/books/${bookId}/chapters/merge`, body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["chapters", bookId] });
+      setSelectedIds(new Set());
+      toast({ title: "已合并" });
+    },
+  });
+
+  const splitMutation = useMutation({
+    mutationFn: (chapterId: string) =>
+      api.post(`/books/${bookId}/chapters/${chapterId}/split`, { split_at: Math.floor(editorContent.length / 2) }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["chapters", bookId] });
+      queryClient.invalidateQueries({ queryKey: ["chapter", bookId, activeChapterId] });
+      toast({ title: "已拆分" });
+    },
+  });
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+  };
+
+  const doMerge = () => {
+    const ids = Array.from(selectedIds);
+    if (ids.length < 2) return;
+    const names = chapters.filter((c) => ids.includes(c.chapter_id)).map((c) => c.title);
+    const newTitle = prompt("合并后的章节名", names.join(" + "));
+    if (newTitle) mergeMutation.mutate({ ids, title: newTitle });
+  };
+
   const newChapter = () => {
     createChapterMutation.mutate(`第${chapters.length + 1}章`);
   };
@@ -132,20 +167,26 @@ export function WritingEditor({ bookId }: Props) {
                 </div>
               )}
               {chapters.map((ch) => (
-                <button
+                <div
                   key={ch.chapter_id}
-                  onClick={() => selectChapter(ch.chapter_id)}
                   className={cn(
-                    "w-full text-left px-3 py-2 text-sm hover:bg-muted/50 transition-colors",
+                    "flex items-center gap-1 px-2 py-1.5 text-sm hover:bg-muted/50 transition-colors cursor-pointer",
                     activeChapterId === ch.chapter_id && "bg-muted font-medium text-foreground",
-                    activeChapterId !== ch.chapter_id && "text-muted-foreground"
+                    activeChapterId !== ch.chapter_id && "text-muted-foreground",
                   )}
                 >
-                  <div className="truncate">{ch.title}</div>
-                  <div className="text-xs text-muted-foreground">
-                    {ch.word_count.toLocaleString()} 字
-                  </div>
-                </button>
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(ch.chapter_id)}
+                    onChange={() => toggleSelect(ch.chapter_id)}
+                    className="size-3 shrink-0"
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                  <button onClick={() => selectChapter(ch.chapter_id)} className="flex-1 text-left min-w-0">
+                    <div className="truncate">{ch.title}</div>
+                    <div className="text-xs text-muted-foreground">{ch.word_count.toLocaleString()} 字</div>
+                  </button>
+                </div>
               ))}
               {chapters.length === 0 && !listLoading && (
                 <p className="px-3 py-8 text-xs text-muted-foreground text-center">
@@ -153,13 +194,22 @@ export function WritingEditor({ bookId }: Props) {
                 </p>
               )}
             </ScrollArea>
+            {selectedIds.size >= 2 && (
+              <div className="px-2 py-1">
+                <Button size="xs" variant="outline" className="w-full" onClick={doMerge}>
+                  合并选中 ({selectedIds.size} 章)
+                </Button>
+              </div>
+            )}
+            {activeChapterId && (
+              <div className="px-2 py-1">
+                <Button size="xs" variant="outline" className="w-full" onClick={() => { if (confirm("在中间拆分？")) splitMutation.mutate(activeChapterId); }}>
+                  拆分当前章
+                </Button>
+              </div>
+            )}
             <div className="p-2 border-t border-border">
-              <Button
-                variant="ghost"
-                size="sm"
-                className="w-full justify-start"
-                onClick={newChapter}
-                disabled={createChapterMutation.isPending}
+              <Button variant="ghost" size="sm" className="w-full justify-start" onClick={newChapter} disabled={createChapterMutation.isPending}
               >
                 <Plus className="size-4" />
                 新建章节

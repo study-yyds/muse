@@ -1,6 +1,15 @@
-import { drizzle } from 'drizzle-orm/neon-http';
+import { drizzle, type NeonHttpDatabase } from 'drizzle-orm/neon-http';
 import * as schema from './schema';
 
-const db = drizzle(process.env.DATABASE_URL!, { schema });
+let _db: NeonHttpDatabase<typeof schema> | null = null;
 
-export { db, schema };
+export function getDb() {
+  if (!_db) {
+    const url = process.env.DATABASE_URL;
+    if (!url) throw new Error('DATABASE_URL 未设置，请检查 server/.env');
+    _db = drizzle(url, { schema });
+  }
+  return _db;
+}
+
+export { schema };

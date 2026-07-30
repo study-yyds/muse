@@ -54,7 +54,6 @@ export function BookDetailPage() {
     enabled: !!bookId,
   });
 
-  const isDev = bookId?.startsWith("dev-");
   const book = data?.data;
 
   if (isLoading) {
@@ -66,7 +65,7 @@ export function BookDetailPage() {
     );
   }
 
-  if (!book && !isDev) {
+  if (!book) {
     return (
       <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
         <p>作品不存在</p>
@@ -74,17 +73,6 @@ export function BookDetailPage() {
       </div>
     );
   }
-
-  const displayBook = book ?? {
-    book_id: bookId!,
-    title: "开发模式作品",
-    word_count: 0,
-    status: "writing" as const,
-    cover_url: null,
-    last_updated: new Date().toISOString(),
-    preset_style: "default",
-    auto_save_interval_sec: 300,
-  };
 
   return (
     <div className="flex h-[calc(100vh-48px)]">
@@ -101,10 +89,10 @@ export function BookDetailPage() {
             <ArrowLeft className="size-4" />
           </Button>
           <h1 className="text-sm font-semibold text-foreground truncate">
-            {displayBook.title}
+            {book.title}
           </h1>
           <p className="text-xs text-muted-foreground">
-            {displayBook.word_count.toLocaleString()} 字
+            {book.word_count.toLocaleString()} 字
           </p>
         </div>
 
@@ -143,13 +131,13 @@ export function BookDetailPage() {
                   key={fmt}
                   onClick={() => {
                     const blob = new Blob(
-                      [`【${displayBook.title}】\n导出格式: ${fmt.toUpperCase()}\n导出功能将在后端就绪后可用。`],
+                      [`【${book.title}】\n导出格式: ${fmt.toUpperCase()}\n导出功能将在后端就绪后可用。`],
                       { type: "text/plain" }
                     );
                     const url = URL.createObjectURL(blob);
                     const a = document.createElement("a");
                     a.href = url;
-                    a.download = `${displayBook.title}.${fmt}`;
+                    a.download = `${book.title}.${fmt}`;
                     a.click();
                     URL.revokeObjectURL(url);
                   }}
@@ -188,39 +176,111 @@ export function BookDetailPage() {
       </div>
 
       {/* ======== 右侧 AI 对话面板 ======== */}
-      <AIChatPanel />
+      <AIChatPanel section={section} bookId={bookId ?? ""} />
     </div>
   );
 }
 
 /* ======== AI 对话面板 ======== */
-function AIChatPanel() {
-  const [messages, setMessages] = useState<{ role: "user" | "assistant"; content: string }[]>(() => [
-    {
-      role: "assistant",
-      content: "你好！我是 Muse 写作助手。你可以让我帮你修改角色设定、调整大纲结构、润色世界观描述。随时告诉我你的想法。",
-    },
-  ]);
+function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
+  // 每个菜单独立历史
+  const [histories, setHistories] = useState<Record<string, { role: string; content: string; action?: any }[]>>({});
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [model, setModel] = useState("deepseek-v4-flash");
 
-  const send = () => {
+  const messages = histories[section] ?? [];
+  const token = localStorage.getItem("token");
+
+  const send = async () => {
     if (!input.trim() || loading) return;
-    setMessages((prev) => [...prev, { role: "user", content: input }]);
+    const userMsg = { role: "user", content: input };
+    setHistories((prev) => ({ ...prev, [section]: [...(prev[section] ?? []), userMsg] }));
     setInput("");
     setLoading(true);
 
-    // TODO: 接入 AI API
-    setTimeout(() => {
-      setMessages((prev) => [
+    try {
+      const res = await fetch("/api/ai/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          book_id: bookId,
+          context_type: section,
+          model,
+          message: input,
+          messages: [...(histories[section] ?? []), userMsg].map((m) => ({ role: m.role, content: m.content })),
+        }),
+      });
+
+      const reader = res.body?.getReader();
+      if (!reader) return;
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let aiContent = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (line.startsWith("event: chunk")) {
+            try { aiContent += JSON.parse(line.split("data: ")[1]).content; }
+            catch {}
+          }
+          if (line.startsWith("event: action")) {
+            try {
+              const action = JSON.parse(line.split("data: ")[1]);
+              setHistories((prev) => ({
+                ...prev,
+                [section]: [...(prev[section] ?? []), { role: "assistant", content: aiContent, action }],
+              }));
+              aiContent = "";
+            } catch {}
+          }
+        }
+        // 流式更新
+        if (aiContent) {
+          setHistories((prev) => ({
+            ...prev,
+            [section]: [...(prev[section] ?? []), { role: "assistant", content: aiContent }],
+          }));
+        }
+      }
+    } catch {
+      setHistories((prev) => ({
         ...prev,
-        {
-          role: "assistant",
-          content: "（模拟回复）好的，我理解你的需求。实际 AI 功能将在接入后端后可用。",
-        },
-      ]);
-      setLoading(false);
-    }, 1000);
+        [section]: [...(prev[section] ?? []), { role: "assistant", content: "（AI 请求失败，请检查后端是否已配置 AI Key）" }],
+      }));
+    }
+    setLoading(false);
+  };
+
+  // 采纳 action 并写入数据库
+  const adoptAction = async (action: any) => {
+    try {
+      if (action.action === "create_character") {
+        await fetch(`/api/books/${bookId}/characters`, {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify(action),
+        });
+        alert("角色已创建！请刷新角色列表。");
+      } else if (action.action === "add_chapter") {
+        await fetch(`/api/books/${bookId}/outline/chapters`, {
+          method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify(action),
+        });
+        alert("大纲章节已添加！请刷新大纲列表。");
+      } else if (action.action === "update_section") {
+        alert("世界观分区更新功能前端待完善，请手动复制内容到对应分区。");
+      } else if (action.action === "insert_content") {
+        alert("内容已显示在对话中，请手动复制到编辑器。");
+      }
+    } catch {
+      alert("写入失败，请检查后端是否运行。");
+    }
   };
 
   return (
@@ -230,52 +290,69 @@ function AIChatPanel() {
           <Sparkles className="size-4 text-primary" />
           <span className="text-sm font-medium text-foreground">AI 助手</span>
         </div>
-        <p className="text-xs text-muted-foreground mt-0.5">可以对话修改内容</p>
+        <p className="text-xs text-muted-foreground mt-0.5">可对话修改内容</p>
       </div>
 
       <ScrollArea className="flex-1 p-4">
         <div className="space-y-3">
-          {messages.map((msg, i) => (
-            <div
-              key={i}
-              className={cn(
-                "text-sm rounded-lg px-3 py-2",
-                msg.role === "user"
-                  ? "bg-primary/10 text-foreground ml-2"
-                  : "bg-muted text-foreground mr-2 whitespace-pre-wrap"
-              )}
-            >
-              {msg.content}
-            </div>
-          ))}
-          {loading && (
-            <div className="text-xs text-muted-foreground italic px-3">
-              <Loader2 className="inline size-3 animate-spin mr-1" />思考中...
-            </div>
-          )}
-        </div>
-      </ScrollArea>
+          {messages.map((msg: any, i: number) => (
+              <div
+                key={i}
+                className={cn(
+                  "text-sm rounded-lg px-3 py-2",
+                  msg.role === "user"
+                    ? "bg-primary/10 text-foreground ml-2"
+                    : "bg-muted text-foreground mr-2 whitespace-pre-wrap"
+                )}
+              >
+                {msg.content}
+                {msg.action && (
+                  <Button size="xs" className="mt-2" onClick={() => adoptAction(msg.action)}>
+                    采纳
+                  </Button>
+                )}
+              </div>
+            ))}
+            {loading && (
+              <div className="text-xs text-muted-foreground italic px-3">
+                <Loader2 className="inline size-3 animate-spin mr-1" />思考中...
+              </div>
+            )}
+          </div>
+        </ScrollArea>
 
-      <div className="p-3 border-t border-border">
-        <div className="flex gap-2">
-          <Textarea
-            rows={2}
-            placeholder="输入修改指令..."
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                send();
-              }
-            }}
-            className="text-xs"
-          />
-          <Button size="icon" onClick={send} disabled={loading || !input.trim()}>
-            <Send className="size-4" />
-          </Button>
+        <div className="p-3 border-t border-border space-y-2">
+          <div className="flex gap-2">
+            <Textarea
+              rows={2}
+              placeholder="输入修改指令..."
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  send();
+                }
+              }}
+              className="text-xs"
+            />
+            <Button size="icon" onClick={send} disabled={loading || !input.trim()}>
+              <Send className="size-4" />
+            </Button>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">模型</span>
+            <select
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              className="flex-1 rounded border border-border bg-background px-2 py-1 text-xs text-foreground"
+            >
+              <option value="deepseek-v4-flash">DeepSeek V4 Flash</option>
+              <option value="deepseek-v4-pro">DeepSeek V4 Pro</option>
+              <option value="custom">用户自定义</option>
+            </select>
+          </div>
         </div>
       </div>
-    </div>
-  );
-}
+    );
+  }

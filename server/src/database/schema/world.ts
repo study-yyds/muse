@@ -21,8 +21,12 @@ export const world_settings = pgTable('world_settings', {
   sections: jsonb('sections').notNull().default([]),
 
   // 创建时间
-  created_at: timestamp('created_at').notNull().defaultNow(),
+  created_at: timestamp('created_at', { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 
   // 最后修改时间
-  updated_at: timestamp('updated_at').notNull().defaultNow(),
+  updated_at: timestamp('updated_at', { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });

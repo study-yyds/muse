@@ -39,15 +39,17 @@ export function AppLayout() {
         </button>
 
         <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon-sm" className="rounded-full">
-              <Avatar className="size-7">
-                <AvatarFallback className="text-xs">
-                  {user?.phone_number?.slice(0, 2) ?? <User className="size-3" />}
-                </AvatarFallback>
-              </Avatar>
-            </Button>
-          </DropdownMenuTrigger>
+          <DropdownMenuTrigger
+            render={
+              <Button variant="ghost" size="icon-sm" className="rounded-full">
+                <Avatar className="size-7">
+                  <AvatarFallback className="text-xs">
+                    {user?.phone_number?.slice(0, 2) ?? <User className="size-3" />}
+                  </AvatarFallback>
+                </Avatar>
+              </Button>
+            }
+          />
           <DropdownMenuContent align="end" className="w-40">
             <DropdownMenuItem onClick={logout}>
               <LogOut className="size-4" />

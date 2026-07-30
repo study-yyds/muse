@@ -11,6 +11,7 @@ import {
   boolean,
   integer,
   timestamp,
+  index,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { users } from './users';
@@ -46,12 +47,16 @@ export const user_api_keys = pgTable(
     is_active: boolean('is_active').notNull().default(true),
 
     // 最后使用时间，用于活跃度统计
-    last_used_at: timestamp('last_used_at'),
+    last_used_at: timestamp('last_used_at', { withTimezone: true }),
 
     // 创建时间
-    created_at: timestamp('created_at').notNull().defaultNow(),
+    created_at: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
-  () => [
+  (table) => [
+    // FK 索引：按用户查所有 Key
+    index('idx_apikey_user').on(table.user_id),
     // 部分唯一索引：确保每个用户只有一个活跃 Key
     // WHERE is_active = true 保证只在活跃 Key 上生效
     sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_user_active_key ON user_api_keys(user_id) WHERE is_active = true`,

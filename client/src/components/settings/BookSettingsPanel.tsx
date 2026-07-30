@@ -151,6 +151,17 @@ export function BookSettingsPanel({ bookId }: Props) {
         </div>
       </div>
 
+      <Separator />
+
+      {/* 自定义 AI API Key */}
+      <div className="space-y-3">
+        <Label className="text-sm font-medium">自定义 AI API Key</Label>
+        <p className="text-xs text-muted-foreground">
+          填写你自己的 API Key 和端点，使用私有额度而非平台免费额度
+        </p>
+        <ApiKeyForm bookId={bookId} />
+      </div>
+
       {/* 保存按钮 */}
       <div className="flex justify-end">
         <Button
@@ -167,6 +178,50 @@ export function BookSettingsPanel({ bookId }: Props) {
           {!saveMutation.isPending && <Check className="size-4" />}
           保存设置
         </Button>
+      </div>
+    </div>
+  );
+}
+
+function ApiKeyForm({ bookId: _ }: { bookId: string }) {
+  const [key, setKey] = useState("");
+  const [baseUrl, setBaseUrl] = useState("https://api.deepseek.com/v1");
+  const [modelName, setModelName] = useState("deepseek-chat");
+  const { toast } = useToast();
+
+  const saveKey = async () => {
+    const token = localStorage.getItem("token");
+    try {
+      const res = await fetch("/api/user/api-keys", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ api_key: key, base_url: baseUrl, model_name: modelName }),
+      });
+      if (res.ok) {
+        toast({ title: "API Key 已保存" });
+        setKey("");
+      } else {
+        toast({ title: "保存失败", variant: "destructive" });
+      }
+    } catch {
+      toast({ title: "后端不可用，API Key 将在本地保存", variant: "destructive" });
+      localStorage.setItem("muse-custom-api-key", JSON.stringify({ api_key: key, base_url: baseUrl, model_name: modelName }));
+      setKey("");
+    }
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex gap-2">
+        <input placeholder="API Key" value={key} onChange={(e) => setKey(e.target.value)}
+          className="flex-1 rounded border border-border bg-background px-2 py-1 text-xs" />
+        <Button size="xs" onClick={saveKey}>保存</Button>
+      </div>
+      <div className="flex gap-2">
+        <input placeholder="Base URL" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)}
+          className="flex-1 rounded border border-border bg-background px-2 py-1 text-xs" />
+        <input placeholder="Model" value={modelName} onChange={(e) => setModelName(e.target.value)}
+          className="w-40 rounded border border-border bg-background px-2 py-1 text-xs" />
       </div>
     </div>
   );

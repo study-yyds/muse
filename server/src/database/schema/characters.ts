@@ -67,10 +67,14 @@ export const characters = pgTable(
     custom_fields: jsonb('custom_fields').default([]),
 
     // 创建时间
-    created_at: timestamp('created_at').notNull().defaultNow(),
+    created_at: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
 
     // 最后修改时间
-    updated_at: timestamp('updated_at').notNull().defaultNow(),
+    updated_at: timestamp('updated_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (table) => [
     // 按作品查所有角色

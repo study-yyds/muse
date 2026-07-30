@@ -189,7 +189,7 @@ function renderChapter(
   setEditingChapter: (v: string | null) => void,
   startEdit: (ch: OutlineChapterData) => void,
   saveEdit: () => void,
-  deleteMutation: { mutate: (id: string) => void }
+  deleteMutation: { mutate: (id: string) => void },
 ) {
   if (editingChapter === ch.id) {
     return (

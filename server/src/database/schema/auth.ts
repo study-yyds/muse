@@ -25,13 +25,15 @@ export const verification_codes = pgTable(
     code: varchar('code', { length: 6 }).notNull(),
 
     // 过期时间：创建时间 + 5 分钟
-    expires_at: timestamp('expires_at').notNull(),
+    expires_at: timestamp('expires_at', { withTimezone: true }).notNull(),
 
     // 是否已使用：防止验证码被重复消费
     used: boolean('used').notNull().default(false),
 
     // 创建时间
-    created_at: timestamp('created_at').notNull().defaultNow(),
+    created_at: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   // 索引
   (table) => [

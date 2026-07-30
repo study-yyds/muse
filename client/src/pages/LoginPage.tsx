@@ -40,7 +40,9 @@ export function LoginPage() {
 
     setIsSending(true);
     try {
-      await api.post("/auth/send-code", { phone_number: phone });
+      const res = await api.post<{ data: { code: string } }>("/auth/send-code", { phone_number: phone });
+      // V1 阶段验证码直接在页面展示，V2 接入短信后移除
+      alert(`验证码：${res.data.code}`);
       setCountdown(60);
       const timer = setInterval(() => {
         setCountdown((prev) => {
@@ -105,35 +107,6 @@ export function LoginPage() {
             <Button type="submit" className="w-full" disabled={isSubmitting}>
               {isSubmitting && <Loader2 className="size-4 animate-spin" />}
               登录
-            </Button>
-
-            {/* 开发模式：一键登录 */}
-            <div className="relative">
-              <div className="absolute inset-0 flex items-center">
-                <span className="w-full border-t border-border" />
-              </div>
-              <div className="relative flex justify-center text-xs">
-                <span className="bg-card px-2 text-muted-foreground">开发模式</span>
-              </div>
-            </div>
-            <Button
-              type="button"
-              variant="outline"
-              className="w-full"
-              onClick={() => {
-                useAuthStore.getState().login("13800138000", "0000").catch(() => {
-                  // 后端不通时，手动设置状态
-                  localStorage.setItem("token", "dev-token");
-                  useAuthStore.setState({
-                    token: "dev-token",
-                    isAuthenticated: true,
-                    user: { user_id: "dev-1", phone_number: "13800138000", avatar_path: null },
-                  });
-                  navigate("/", { replace: true });
-                });
-              }}
-            >
-              一键登录（跳过验证码）
             </Button>
           </form>
         </CardContent>

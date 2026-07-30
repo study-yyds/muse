@@ -40,10 +40,14 @@ export const chapters = pgTable(
     word_count: integer('word_count').notNull().default(0),
 
     // 创建时间
-    created_at: timestamp('created_at').notNull().defaultNow(),
+    created_at: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
 
     // 最后修改时间：自动保存时更新
-    updated_at: timestamp('updated_at').notNull().defaultNow(),
+    updated_at: timestamp('updated_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (table) => [
     // 按作品+排序获取章节列表（最常用查询）

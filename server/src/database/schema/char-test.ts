@@ -20,10 +20,14 @@ export const char_test_dialog_sessions = pgTable(
     messages: jsonb('messages').notNull().default([]),
 
     // 最后活跃时间（每次新消息更新）
-    updated_at: timestamp('updated_at').notNull().defaultNow(),
+    updated_at: timestamp('updated_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
 
     // 创建时间
-    created_at: timestamp('created_at').notNull().defaultNow(),
+    created_at: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (table) => [
     // 按角色查其所有对话历史

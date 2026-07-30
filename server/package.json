@@ -18,9 +18,11 @@
   },
   "dependencies": {
     "@muse/shared": "workspace:*",
+    "@neondatabase/serverless": "^1.1.0",
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^4.0.0",
     "@nestjs/core": "^11.0.1",
+    "@nestjs/jwt": "^11.0.2",
     "@nestjs/platform-express": "^11.0.1",
     "docx": "^9.7.1",
     "drizzle-orm": "^0.45.2",

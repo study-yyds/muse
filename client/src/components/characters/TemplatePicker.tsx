@@ -1,7 +1,9 @@
+import { useState, useEffect } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
 export interface CharacterTemplate {
@@ -125,21 +127,29 @@ interface Props {
 }
 
 export function TemplatePicker({ onSelect }: Props) {
+  const [templates, setTemplates] = useState<CharacterTemplate[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch("/api/templates?type=character")
+      .then((r) => r.json())
+      .then((d) => setTemplates(d.data ?? []))
+      .catch(() => setTemplates(TEMPLATES)) // 后端不可用时用硬编码兜底
+      .finally(() => setLoading(false));
+  }, []);
+
   return (
     <div className="space-y-4">
-      <Button
-        variant="outline"
-        className="w-full"
-        onClick={() => onSelect(null)}
-      >
+      <Button variant="outline" className="w-full" onClick={() => onSelect(null)}>
         空白创建
       </Button>
 
       <div className="space-y-2">
         <p className="text-sm text-muted-foreground">或从模板创建</p>
         <ScrollArea className="max-h-64">
+          {loading && <div className="space-y-2">{Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-16 rounded-lg" />)}</div>}
           <div className="space-y-2">
-            {TEMPLATES.map((tpl) => (
+            {templates.map((tpl) => (
               <Card
                 key={tpl.id}
                 className={cn(

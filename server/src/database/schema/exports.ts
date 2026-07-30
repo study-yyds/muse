@@ -8,30 +8,42 @@ import {
   varchar,
   boolean,
   timestamp,
+  index,
 } from 'drizzle-orm/pg-core';
 import { books } from './books';
 import { users } from './users';
 
-export const export_records = pgTable('export_records', {
-  // 主键
-  export_id: uuid('export_id').defaultRandom().primaryKey(),
+export const export_records = pgTable(
+  'export_records',
+  {
+    // 主键
+    export_id: uuid('export_id').defaultRandom().primaryKey(),
 
-  // 被导出的作品
-  book_id: uuid('book_id')
-    .references(() => books.book_id, { onDelete: 'cascade' })
-    .notNull(),
+    // 被导出的作品
+    book_id: uuid('book_id')
+      .references(() => books.book_id, { onDelete: 'cascade' })
+      .notNull(),
 
-  // 执行导出的用户（方便跨表查询，不 JOIN books）
-  user_id: uuid('user_id')
-    .references(() => users.user_id, { onDelete: 'cascade' })
-    .notNull(),
+    // 执行导出的用户（方便跨表查询，不 JOIN books）
+    user_id: uuid('user_id')
+      .references(() => users.user_id, { onDelete: 'cascade' })
+      .notNull(),
 
-  // 导出格式：txt / docx / html / epub
-  format: varchar('format', { length: 10 }).notNull(),
+    // 导出格式：txt / docx / html / epub
+    format: varchar('format', { length: 10 }).notNull(),
 
-  // 是否包含角色设定、世界观和大纲
-  include_settings: boolean('include_settings').notNull().default(true),
+    // 是否包含角色设定、世界观和大纲
+    include_settings: boolean('include_settings').notNull().default(true),
 
-  // 导出时间
-  exported_at: timestamp('exported_at').notNull().defaultNow(),
-});
+    // 导出时间
+    exported_at: timestamp('exported_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    // 按作品查导出记录
+    index('idx_export_book').on(table.book_id),
+    // 按用户查导出记录
+    index('idx_export_user').on(table.user_id),
+  ],
+);

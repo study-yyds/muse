@@ -44,18 +44,22 @@ export const books = pgTable(
     status: varchar('status', { length: 20 }).notNull().default('draft'),
 
     // 软删除时间戳：非空 = 已删除，7 天内可恢复，之后定时清理
-    deleted_at: timestamp('deleted_at'),
+    deleted_at: timestamp('deleted_at', { withTimezone: true }),
 
     // 创建时间
-    created_at: timestamp('created_at').notNull().defaultNow(),
+    created_at: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
 
     // 最后修改时间（任何子表变更都同步更新）
-    updated_at: timestamp('updated_at').notNull().defaultNow(),
+    updated_at: timestamp('updated_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
   },
   (table) => [
     // 按用户+状态查询作品列表
     index('idx_books_user_status').on(table.user_id, table.status),
-    // 软删除按时间清理
+    // 软删除按时间清理（全索引，定时任务用）
     index('idx_books_deleted_at').on(table.deleted_at),
     // status 只允许三个创作阶段值
     sql`CONSTRAINT chk_book_status CHECK (status IN ('draft', 'writing', 'completed'))`,
@@ -88,5 +92,7 @@ export const book_settings = pgTable('book_settings', {
   extra: jsonb('extra').default({}),
 
   // 最后修改时间
-  updated_at: timestamp('updated_at').notNull().defaultNow(),
+  updated_at: timestamp('updated_at', { withTimezone: true })
+    .notNull()
+    .defaultNow(),
 });
