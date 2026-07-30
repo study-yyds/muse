@@ -9,6 +9,7 @@ import { OutlineModule } from './outline/outline.module';
 import { AiModule } from './ai/ai.module';
 import { TemplatesModule } from './templates/templates.module';
 import { ExportModule } from './export/export.module';
+import { CharTestModule } from './char-test/char-test.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { ExportModule } from './export/export.module';
     AiModule,
     TemplatesModule,
     ExportModule,
+    CharTestModule,
   ],
 })
 export class AppModule {}

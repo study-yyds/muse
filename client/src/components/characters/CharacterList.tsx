@@ -293,7 +293,7 @@ export function CharacterList({ bookId }: Props) {
       <Dialog open={!!testChar} onOpenChange={(open) => { if (!open) setTestChar(null); }}>
         <DialogContent className="max-w-md">
           <DialogHeader><DialogTitle>与 {testChar?.name} 对话</DialogTitle></DialogHeader>
-          {testChar && <CharacterTestDialog char={testChar} onClose={() => setTestChar(null)} />}
+          {testChar && <CharacterTestDialog char={testChar} bookId={bookId} onClose={() => setTestChar(null)} />}
         </DialogContent>
       </Dialog>
     </div>
