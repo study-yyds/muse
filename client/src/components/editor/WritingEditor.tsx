@@ -70,6 +70,29 @@ export function WritingEditor({ bookId }: Props) {
     if (activeChapterId) storeSetActive(activeChapterId);
   }, [activeChapterId, storeSetActive]);
 
+  // AI 面板请求插入/替换文本
+  const pendingInsert = useEditorStore((s) => s.pendingInsert);
+  const pendingReplace = useEditorStore((s) => s.pendingReplace);
+  const clearPendingInsert = useEditorStore((s) => s.clearPendingInsert);
+  useEffect(() => {
+    if (pendingReplace) {
+      // 按精确位置替换，避免文本多处匹配时替换错误
+      setEditorContent((prev) => {
+        const { start, end, newText } = pendingReplace;
+        return prev.slice(0, start) + newText + prev.slice(end);
+      });
+      setIsDirty(true);
+      clearPendingInsert();
+    } else if (pendingInsert != null) {
+      setEditorContent((prev) => {
+        const pos = useEditorStore.getState().cursorPosition;
+        return prev.slice(0, pos) + pendingInsert + prev.slice(pos);
+      });
+      setIsDirty(true);
+      clearPendingInsert();
+    }
+  }, [pendingInsert, pendingReplace]);
+
   const saveMutation = useMutation({
     mutationFn: () =>
       api.put(`/books/${bookId}/chapters/${activeChapterId}`, {

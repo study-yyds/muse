@@ -240,6 +240,7 @@ ${(chapter?.content ?? '').slice(0, 3000)}
       context_type: string;
       message: string;
       messages?: any[];
+      model?: string;
     },
   ) {
     const db = getDb();
@@ -305,6 +306,7 @@ ${(chapter?.content ?? '').slice(0, 3000)}
       : '暂无设定';
 
     // 根据 context_type 构建定制的 system prompt
+    // 所有 prompt 统一要求：先输出自然语言，JSON action 放在最后一行
     const prompts: Record<string, string> = {
       write: `你是专业小说写作助手，正在帮助作者完成当前的写作章节。
 
@@ -318,8 +320,17 @@ ${worldText}
 - 根据角色性格写对话：冷淡角色话少、活泼角色语气词多、文雅角色用典
 - 根据世界观限制情节：修真世界遵循境界体系、科幻世界遵循科技设定
 - 续写时自然衔接上文语气和节奏
-- 需要插入正文时，输出 JSON：{"action":"insert_content","content":"<内容>","title":"可选标题"}
-- 其他交互用自然语言回复即可`,
+
+【回复格式——严格遵守】
+你的回复分为两部分：
+1. 正文内容（纯自然语言，不含任何 JSON 标记）
+2. 最后一行为操作指令 JSON（单独一行，不要包含在正文中）
+
+示例：
+久仰尊颜，今日得见，果然名不虚传。
+{"action":"insert_content","content":"久仰尊颜，今日得见，果然名不虚传。"}
+
+如果只是闲聊讨论，则只输出自然语言，不需要 JSON。`,
 
       outline: `你是小说大纲规划助手，帮作者把零散的想法变成清晰的故事结构。
 
@@ -332,8 +343,12 @@ ${outlineNodes || '暂无节点，需要从零开始'}
 【规划指引】
 - 根据角色驱动情节：每个大纲节点应该推动至少一个角色的成长或冲突
 - 保持节奏：幕与幕之间要有转折，章与章之间要有钩子
-- 新增章节时输出 JSON：{"action":"add_chapter","title":"章节名","summary":"该章节的核心情节摘要"}
-- 讨论结构时用自然语言，给具体建议而不是泛泛而谈`,
+- 讨论结构时用自然语言，给具体建议而不是泛泛而谈
+
+【回复格式——严格遵守】
+如果需要新增章节，先简要说明理由，最后一行输出 JSON：
+{"action":"add_chapter","title":"章节名","summary":"该章节的核心情节摘要"}
+如果只是讨论，只输出自然语言。`,
 
       characters: `你是角色创作顾问，帮作者塑造生动、立体的角色。
 
@@ -348,8 +363,12 @@ ${worldText.slice(0, 1500)}
 - 性格不能凭空而来：用背景故事解释性格成因
 - 说话风格要独特：每个角色有标志性的语气、用词习惯
 - 角色之间要有化学反应：师徒、宿敌、暗恋、利用……关系让故事丰富
-- 创建角色时输出 JSON：{"action":"create_character","name":"","gender":"男/女","personality":"","identity":"","backstory":"","motivation":"","catchphrase":"","speech_style":"","appearance":""}
-- 建议修改已有角色时直接描述建议内容`,
+- 建议修改已有角色时直接描述建议内容
+
+【回复格式——严格遵守】
+如果需要创建角色，先简要说明，最后一行输出 JSON：
+{"action":"create_character","name":"","gender":"男/女","personality":"","identity":"","backstory":"","motivation":"","catchphrase":"","speech_style":"","appearance":""}
+如果只是讨论角色设计，只输出自然语言。`,
 
       world: `你是世界观构建专家，帮作者创造自洽、引人入胜的虚构世界。
 
@@ -361,14 +380,21 @@ ${worldText}
 - 设定要推动故事：世界规则不是为了"酷"，而是创造冲突和选择
 - 细节要具体：不要"科技发达"，要"2049年的新东京，义体移植像今天配眼镜一样普遍"
 - 不同势力/阵营要有不同的价值观和利益冲突
-- 需要修改/补充分区时输出 JSON：{"action":"update_section","name":"分区名","content":"完整的修改后内容"}
-- 建议新分区时用自然语言描述，引导作者创建`,
+- 建议新分区时用自然语言描述，引导作者创建
+
+【回复格式——严格遵守】
+如果需要修改/补充分区，先简要说明，最后一行输出 JSON：
+{"action":"update_section","name":"分区名","content":"完整的修改后内容"}
+如果只是讨论设定，只输出自然语言。`,
 
       settings: `你是作品配置助手。帮作者调整写作风格、自动保存间隔、每日字数目标等设置。
 
 【当前状态】
 - 写作风格预设：${params.message}
-- 可根据作者习惯给出建议`,
+- 可根据作者习惯给出建议
+
+【回复格式】
+只输出自然语言建议，不需要 JSON。`,
 
       // 默认兜底
       default: `你是 Muse AI 写作助手，帮小说作者完成创作。
@@ -384,17 +410,26 @@ ${worldText.slice(0, 1000)}
 
     const systemPrompt = prompts[ct] ?? prompts.write;
 
-    this.streamChatToClient(
-      res,
-      systemPrompt,
-      params.messages ?? [{ role: 'user', content: params.message }],
-    );
+    try {
+      void this.streamChatToClient(
+        res,
+        systemPrompt,
+        params.messages ?? [{ role: 'user', content: params.message }],
+        params.model ?? 'deepseek-chat',
+      );
+    } catch (e: any) {
+      res.write(
+        `event: error\ndata: ${JSON.stringify({ message: e.message ?? 'AI 服务异常' })}\n\n`,
+      );
+      res.end();
+    }
   }
 
   private async streamChatToClient(
     res: Response,
     systemPrompt: string,
     messages: any[],
+    model: string = 'deepseek-chat',
   ) {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
@@ -420,7 +455,7 @@ ${worldText.slice(0, 1000)}
           Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
-          model: 'deepseek-chat',
+          model,
           messages: [{ role: 'system', content: systemPrompt }, ...messages],
           stream: true,
           max_tokens: 2048,
@@ -463,9 +498,8 @@ ${worldText.slice(0, 1000)}
                 ?.content;
               if (content) {
                 fullContent += content;
-                res.write(
-                  `event: chunk\ndata: ${JSON.stringify({ content })}\n\n`,
-                );
+                // 直接发原文，不做 JSON 包装（标准 SSE 流式模式）
+                res.write(`event: chunk\ndata: ${content}\n\n`);
               }
             } catch {
               /* empty */

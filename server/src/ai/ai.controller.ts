@@ -33,6 +33,7 @@ export class AiController {
       context_type: string;
       message: string;
       messages?: any[];
+      model?: string;
     },
     @Res() res: Response,
   ) {

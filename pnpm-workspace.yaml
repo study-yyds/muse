@@ -3,7 +3,5 @@ packages:
   - "server"
   - "shared"
 allowBuilds:
-  esbuild: set this to true or false
-  unrs-resolver: false
-onlyBuiltDependencies:
-  - unrs-resolver
+  esbuild: true
+  unrs-resolver: true

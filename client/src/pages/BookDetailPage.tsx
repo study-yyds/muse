@@ -68,10 +68,14 @@ export function BookDetailPage() {
 }
 
 function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
-  const [histories, setHistories] = useState<Record<string, { role: string; content: string; action?: any }[]>>({});
+  type Ver = { content: string; action?: any };
+  type Msg = { role: string; content: string; action?: any; versions?: Ver[]; adoptedVer?: number };
+  const [histories, setHistories] = useState<Record<string, Msg[]>>({});
+  const [streaming, setStreaming] = useState("");
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [model, setModel] = useState("deepseek-v4-flash");
+  const [activeVer, setActiveVer] = useState<Record<number, number>>({});
   const rewriteCtx = useEditorStore((s) => s.aiRewriteContext);
   const clearRewrite = useEditorStore((s) => s.clearAiRewrite);
   const editor = useEditorStore();
@@ -79,54 +83,140 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
   const msgs = histories[section] ?? [];
   const token = localStorage.getItem("token");
 
+  const extractDisplayText = (t: string) => {
+    if (!t.trim()) return "";
+    if (t.trim().startsWith("{")) {
+      try { const p = JSON.parse(t.trim()); if (p.action && p.content) return p.content; } catch { /* incomplete */ }
+    }
+    const lastBrace = t.lastIndexOf("{");
+    if (lastBrace > 0) {
+      try { const p = JSON.parse(t.slice(lastBrace)); if (p.action) return t.slice(0, lastBrace).trim(); } catch { return t.slice(0, lastBrace).trim(); }
+    }
+    return t.trim();
+  };
+
+  // 单次 SSE 流式调用
+  const streamOnce = async (msg: string, prevMsgs: { role: string; content: string }[]): Promise<Ver> => {
+    const r = await fetch("/api/ai/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+      body: JSON.stringify({ book_id: bookId, context_type: section, model, message: msg, messages: prevMsgs }),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const reader = r.body?.getReader(); if (!reader) throw new Error("无响应");
+    const decoder = new TextDecoder(); let buf = ""; let ac = ""; let action: any = undefined;
+    while (true) {
+      const { done, value } = await reader.read(); if (done) break;
+      buf += decoder.decode(value, { stream: true }); const lines = buf.split("\n"); buf = lines.pop() ?? "";
+      let ev = "";
+      for (const line of lines) {
+        if (line.startsWith("event: ")) { ev = line.slice(7); continue; }
+        if (line.startsWith("data: ")) {
+          const payload = line.slice(6);
+          if (ev === "chunk") { ac += payload; }
+          if (ev === "action") { try { action = JSON.parse(payload); } catch { /* ignore */ } }
+          if (ev === "error") {
+            try { const err = JSON.parse(payload); throw new Error(err.message ?? "AI 错误"); } catch (e) { if (e instanceof Error && e.message !== "AI 错误") throw e; throw new Error("AI 请求失败"); }
+          }
+          ev = "";
+        }
+      }
+      if (ac) setStreaming(extractDisplayText(ac));
+    }
+    return { content: ac ? extractDisplayText(ac) : "", action };
+  };
+
   const send = async () => {
     if (!input.trim() || loading) return;
     let msg = input;
     if (section === "write" && editor.activeChapterId) {
       msg = rewriteCtx
-        ? "【改写以下选中文本】\n" + rewriteCtx + "\n\n【用户指令】" + input
+        ? "【改写以下选中文本】\n" + rewriteCtx.text + "\n\n【用户指令】" + input
         : "【续写——光标前内容供参考】\n" + editor.editorContent.slice(Math.max(0, editor.cursorPosition - 1000), editor.cursorPosition) + "\n\n【用户指令】" + input;
     }
-    const um = { role: "user", content: msg };
-    clearRewrite();
+    const um: Msg = { role: "user", content: msg };
+    const prevMsgs = [...msgs, um].map((m) => ({ role: m.role, content: m.content }));
     setHistories((p) => ({ ...p, [section]: [...(p[section] ?? []), um] }));
-    setInput(""); setLoading(true);
+    setInput(""); setLoading(true); setStreaming("");
     try {
-      const r = await fetch("/api/ai/chat", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify({ book_id: bookId, context_type: section, model, message: msg, messages: [...(histories[section] ?? []), um].map((m) => ({ role: m.role, content: m.content })) }) });
-      const reader = r.body?.getReader(); if (!reader) return;
-      const d = new TextDecoder(); let b = ""; let ac = "";
-      while (true) {
-        const { done, value } = await reader.read(); if (done) break;
-        b += d.decode(value, { stream: true }); const lines = b.split("\n"); b = lines.pop() ?? "";
-        for (const l of lines) {
-          if (l.startsWith("event: chunk")) { try { ac += JSON.parse(l.split("data: ")[1]).content; } catch (e) {} }
-          if (l.startsWith("event: action")) { try { const a = JSON.parse(l.split("data: ")[1]); setHistories((p) => ({ ...p, [section]: [...(p[section] ?? []), { role: "assistant", content: ac, action: a }] })); ac = ""; } catch (e) {} }
-        }
-        if (ac) setHistories((p) => ({ ...p, [section]: [...(p[section] ?? []), { role: "assistant", content: ac }] }));
+      const V = 3;
+      const versions: Ver[] = [];
+      const baseMsgs = [...prevMsgs]; // 每个版本共用同一份历史，不互相污染
+      for (let v = 0; v < V; v++) {
+        setStreaming(`版本 ${v + 1}/${V} 生成中...`);
+        const result = await streamOnce(msg, baseMsgs);
+        versions.push(result);
       }
-    } catch (e) { setHistories((p) => ({ ...p, [section]: [...(p[section] ?? []), { role: "assistant", content: "（AI 请求失败）" }] })); }
-    setLoading(false);
+      setStreaming("");
+      setHistories((p) => {
+        const updated = [...(p[section] ?? [])];
+        updated.push({ role: "assistant", content: versions[0].content, action: versions[0].action, versions });
+        return { ...p, [section]: updated };
+      });
+    } catch (e: any) {
+      setHistories((p) => ({ ...p, [section]: [...(p[section] ?? []), { role: "assistant", content: `（${e.message ?? "网络异常"}）` }] }));
+    }
+    setLoading(false); setStreaming("");
   };
 
-  const adopt = async (a: any) => {
+  const adopt = async (a: any, gi: number, vi: number) => {
     try {
       if (a.action === "create_character") { await fetch("/api/books/" + bookId + "/characters", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify(a) }); toast({ title: "角色已创建" }); }
       else if (a.action === "add_chapter") { await fetch("/api/books/" + bookId + "/outline/chapters", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify(a) }); toast({ title: "大纲章节已添加" }); }
-      else toast({ title: "内容已生成，请复制到编辑器" });
+      else {
+        const oldCtx = useEditorStore.getState().aiRewriteContext;
+        if (oldCtx) { useEditorStore.getState().requestReplace(oldCtx.text, a.content, oldCtx.start, oldCtx.end); useEditorStore.getState().clearAiRewrite(); }
+        else useEditorStore.getState().requestInsert(a.content);
+        toast({ title: "已插入编辑器" });
+      }
+      // 标记该消息已采纳（通过 gi 定位）
+      setHistories((p) => {
+        const sec = [...(p[section] ?? [])];
+        if (gi < sec.length) sec[gi] = { ...sec[gi], adoptedVer: vi };
+        return { ...p, [section]: sec };
+      });
     } catch (e) { toast({ title: "写入失败", variant: "destructive" }); }
   };
 
+  // 累计全局消息索引，用于 activeVer 映射
+  let globalIdx = 0;
   return (
-    <div className="w-72 shrink-0 border-l border-border bg-card flex flex-col">
+    <div className="w-72 shrink-0 border-l border-border bg-card flex flex-col h-full">
       <div className="px-4 py-3 border-b border-border"><div className="flex items-center gap-2"><Sparkles className="size-4 text-primary" /><span className="text-sm font-medium text-foreground">AI 助手</span></div><p className="text-xs text-muted-foreground mt-0.5">可对话修改内容</p></div>
-      <ScrollArea className="flex-1 p-4"><div className="space-y-3">
-        {msgs.map((m: any, i: number) => (<div key={i} className={cn("text-sm rounded-lg px-3 py-2", m.role === "user" ? "bg-primary/10 text-foreground ml-2" : "bg-muted text-foreground mr-2 whitespace-pre-wrap")}>{m.content}{m.action && <Button size="xs" className="mt-2" onClick={() => adopt(m.action)}>采纳</Button>}</div>))}
-        {loading && <div className="text-xs text-muted-foreground italic px-3"><Loader2 className="inline size-3 animate-spin mr-1" />思考中...</div>}
+      <ScrollArea className="flex-1 min-h-0"><div className="p-4 space-y-3">
+        {msgs.map((m: Msg, i: number) => {
+          const gi = globalIdx++;
+          const hasVers = m.versions && m.versions.length > 1;
+          const vi = hasVers ? (activeVer[gi] ?? 0) : 0;
+          const displayContent = hasVers && m.versions ? m.versions[vi]?.content : m.content;
+          const displayAction = hasVers && m.versions ? m.versions[vi]?.action : m.action;
+          return (
+            <div key={i} className={cn("text-sm rounded-lg px-3 py-2", m.role === "user" ? "bg-primary/10 text-foreground ml-2" : "bg-muted text-foreground mr-2")}>
+              <div className="whitespace-pre-wrap">{displayContent}</div>
+              {m.adoptedVer !== undefined ? (
+                <div className="mt-2 pt-2 border-t border-border text-xs text-muted-foreground text-center">已采纳{hasVers ? ` (版本 ${m.adoptedVer + 1})` : ""}</div>
+              ) : displayAction && (
+                <div className="mt-2 pt-2 border-t border-border space-y-1.5">
+                  <div className="flex items-center justify-center gap-1">
+                    {hasVers && <Button variant="ghost" size="icon-xs" disabled={vi === 0} onClick={() => setActiveVer((p) => ({ ...p, [gi]: vi - 1 }))}>&lt;</Button>}
+                    <Button size="xs" onClick={() => adopt(displayAction, gi, vi)}>采纳{hasVers ? ` (${vi + 1}/${m.versions!.length})` : ""}</Button>
+                    {hasVers && <Button variant="ghost" size="icon-xs" disabled={vi >= m.versions!.length - 1} onClick={() => setActiveVer((p) => ({ ...p, [gi]: vi + 1 }))}>&gt;</Button>}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {streaming && (<div className="text-sm rounded-lg px-3 py-2 bg-muted text-foreground mr-2 whitespace-pre-wrap">{streaming}<span className="inline-block w-1.5 h-4 bg-primary animate-pulse ml-0.5 align-text-bottom" /></div>)}
+        {loading && !streaming && <div className="text-xs text-muted-foreground italic px-3"><Loader2 className="inline size-3 animate-spin mr-1" />思考中...</div>}
       </div></ScrollArea>
-      <div className="p-3 border-t border-border space-y-2">
-        {section === "write" && (<div className="flex items-center gap-2">{rewriteCtx ? (<div className="flex-1 flex items-center gap-2 rounded border border-primary/30 bg-primary/5 px-2 py-1 text-xs text-foreground"><span className="text-muted-foreground shrink-0">改写：</span><span className="truncate">{rewriteCtx.slice(0, 80)}</span><button onClick={() => clearRewrite()} className="shrink-0 text-muted-foreground hover:text-foreground">&times;</button></div>) : <Button variant="ghost" size="xs" className="text-xs" onClick={()=>{const ta=document.querySelector("textarea[placeholder='开始写作...']") as HTMLTextAreaElement;const sel=ta?.value.substring(ta.selectionStart??0,ta.selectionEnd??0).trim();if(sel)useEditorStore.getState().setAiRewrite(sel)}}>附加编辑器选中</Button>}</div>)}
+      <div className="p-3 border-t border-border space-y-2 shrink-0">
+        {section === "write" && (<div className="flex items-center gap-2">{rewriteCtx ? (<div className="flex-1 flex items-center gap-2 rounded border border-primary/30 bg-primary/5 px-2 py-1 text-xs text-foreground"><span className="text-muted-foreground shrink-0">改写：</span><span className="truncate">{rewriteCtx.text.slice(0, 80)}</span><button onClick={() => clearRewrite()} className="shrink-0 text-muted-foreground hover:text-foreground">&times;</button></div>) : <Button variant="ghost" size="xs" className="text-xs" onClick={()=>{const ta=document.querySelector("textarea[placeholder='开始写作...']") as HTMLTextAreaElement;const start=ta?.selectionStart??0;const end=ta?.selectionEnd??0;const sel=ta?.value.substring(start,end).trim();if(sel)useEditorStore.getState().setAiRewrite(sel,start,end)}}>附加编辑器选中</Button>}</div>)}
         <div className="flex gap-2"><Textarea rows={2} placeholder="输入修改指令..." value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} className="text-xs" /><Button size="icon" onClick={send} disabled={loading || !input.trim()}><Send className="size-4" /></Button></div>
-        <div className="flex items-center gap-2"><span className="text-xs text-muted-foreground">模型</span><select value={model} onChange={(e) => setModel(e.target.value)} className="flex-1 rounded border border-border bg-background px-2 py-1 text-xs text-foreground"><option value="deepseek-v4-flash">DeepSeek V4 Flash</option><option value="deepseek-v4-pro">DeepSeek V4 Pro</option><option value="custom">用户自定义</option></select></div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-muted-foreground">模型</span>
+          <select value={model} onChange={(e) => setModel(e.target.value)} className="flex-1 rounded border border-border bg-background px-2 py-1 text-xs text-foreground"><option value="deepseek-v4-flash">DeepSeek V4 Flash</option><option value="deepseek-v4-pro">DeepSeek V4 Pro</option></select>
+        </div>
       </div>
     </div>
   );
