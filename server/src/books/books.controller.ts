@@ -70,6 +70,7 @@ export class BooksController {
       data: {
         preset_style: book.preset_style,
         auto_save_interval_sec: book.auto_save_interval_sec,
+        extra: book.extra,
       },
     };
   }
@@ -82,6 +83,7 @@ export class BooksController {
       preset_style?: string;
       auto_save_interval_sec?: number;
       daily_word_goal?: number;
+      extra?: Record<string, any>;
     },
   ) {
     await this.books.updateSettings(bookId, body);

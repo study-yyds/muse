@@ -11,11 +11,13 @@ const characterSchema = z.object({
   name: z.string().min(1, "角色名不能为空"),
   gender: z.string().optional(),
   age: z.coerce.number().optional(),
-  appearance: z.string().optional(),
-  personality: z.string().optional(),
+  identity: z.string().optional(),
   catchphrase: z.string().optional(),
   speech_style: z.string().optional(),
-  identity: z.string().optional(),
+  aliases: z.string().optional(),
+  is_main: z.boolean().optional(),
+  appearance: z.string().optional(),
+  personality: z.string().optional(),
   backstory: z.string().optional(),
   motivation: z.string().optional(),
   custom_fields: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
@@ -37,6 +39,7 @@ const FIXED_FIELDS = [
   { name: "identity" as const, label: "身份/职业", component: "input" },
   { name: "catchphrase" as const, label: "口头禅", component: "input" },
   { name: "speech_style" as const, label: "说话风格", component: "input" },
+  { name: "aliases" as const, label: "别名/称呼（逗号分隔，用于正文匹配）", component: "input" },
   { name: "appearance" as const, label: "外貌描写", component: "textarea" },
   { name: "personality" as const, label: "性格描述", component: "textarea" },
   { name: "backstory" as const, label: "背景故事", component: "textarea" },
@@ -55,6 +58,8 @@ export function CharacterForm({ defaultValues, onSubmit, onCancel, isPending }: 
       catchphrase: "",
       speech_style: "",
       identity: "",
+      aliases: "",
+      is_main: false,
       backstory: "",
       motivation: "",
       custom_fields: [],
@@ -99,6 +104,18 @@ export function CharacterForm({ defaultValues, onSubmit, onCancel, isPending }: 
             )}
           </div>
         ))}
+        {/* 主要角色开关 */}
+        <div className="sm:col-span-2 flex items-center gap-2">
+          <input
+            id="is_main"
+            type="checkbox"
+            {...form.register("is_main")}
+            className="size-4 rounded border-border"
+          />
+          <Label htmlFor="is_main" className="text-sm font-normal cursor-pointer">
+            主要角色（始终注入 AI 上下文）
+          </Label>
+        </div>
       </div>
 
       {/* 自定义字段 */}

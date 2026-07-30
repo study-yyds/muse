@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
-import { Textarea } from "@/components/ui/textarea";
+import { TiptapEditor } from "./TiptapEditor";
 import { useToast } from "@/hooks/use-toast";
 import { useEditorStore } from "@/stores/editor";
 import {
@@ -15,8 +15,6 @@ import {
   Loader2,
   ChevronDown,
   ChevronRight,
-  Eye,
-  Pencil,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -50,56 +48,38 @@ export function WritingEditor({ bookId }: Props) {
   const chapter = chapterData?.data;
   const [editorContent, setEditorContent] = useState("");
   const [isDirty, setIsDirty] = useState(false);
+  const [boundNodeId, setBoundNodeId] = useState<string | null>(null);
 
-  const setContent = useEditorStore((s) => s.setContent);
-  const setCursor = useEditorStore((s) => s.setCursor);
+  // 大纲节点列表（用于绑定选择）
+  const { data: outlineData } = useQuery({
+    queryKey: ["outline", bookId],
+    queryFn: () =>
+      api.get<{ data: { chapters: { id: string; title: string; summary: string; status: string }[] } }>(`/books/${bookId}/outline`),
+    enabled: !!bookId,
+  });
+  const outlineNodes = outlineData?.data?.chapters ?? [];
+
   const storeSetActive = useEditorStore((s) => s.setActiveChapter);
 
   // 章节数据到达后同步到编辑器
   useEffect(() => {
     if (chapterData?.data && chapterData.data.chapter_id === activeChapterId) {
       setEditorContent(chapterData.data.content);
+      setBoundNodeId(chapterData.data.bound_outline_node_id ?? null);
       setIsDirty(false);
     }
   }, [chapterData, activeChapterId]);
 
-  // 同步编辑器状态到全局 store（供 AI 面板使用）
-  useEffect(() => {
-    setContent(editorContent);
-  }, [editorContent, setContent]);
-
   useEffect(() => {
     if (activeChapterId) storeSetActive(activeChapterId);
   }, [activeChapterId, storeSetActive]);
-
-  // AI 面板请求插入/替换文本
-  const pendingInsert = useEditorStore((s) => s.pendingInsert);
-  const pendingReplace = useEditorStore((s) => s.pendingReplace);
-  const clearPendingInsert = useEditorStore((s) => s.clearPendingInsert);
-  useEffect(() => {
-    if (pendingReplace) {
-      // 按精确位置替换，避免文本多处匹配时替换错误
-      setEditorContent((prev) => {
-        const { start, end, newText } = pendingReplace;
-        return prev.slice(0, start) + newText + prev.slice(end);
-      });
-      setIsDirty(true);
-      clearPendingInsert();
-    } else if (pendingInsert != null) {
-      setEditorContent((prev) => {
-        const pos = useEditorStore.getState().cursorPosition;
-        return prev.slice(0, pos) + pendingInsert + prev.slice(pos);
-      });
-      setIsDirty(true);
-      clearPendingInsert();
-    }
-  }, [pendingInsert, pendingReplace]);
 
   const saveMutation = useMutation({
     mutationFn: () =>
       api.put(`/books/${bookId}/chapters/${activeChapterId}`, {
         content: editorContent,
         word_count: editorContent.length,
+        bound_outline_node_id: boundNodeId,
       }),
     onSuccess: () => {
       setIsDirty(false);
@@ -163,6 +143,7 @@ export function WritingEditor({ bookId }: Props) {
         saveMutation.mutate();
       }
     }
+    setEditorContent("");
     setActiveChapterId(id);
   };
 
@@ -278,6 +259,21 @@ export function WritingEditor({ bookId }: Props) {
             )}
           </div>
           <div className="flex items-center gap-2">
+            {activeChapterId && outlineNodes.length > 0 && (
+              <select
+                value={boundNodeId ?? ""}
+                onChange={(e) => setBoundNodeId(e.target.value || null)}
+                className="text-xs rounded border border-border bg-background px-2 py-1 text-foreground max-w-[160px]"
+                title="关联大纲节点"
+              >
+                <option value="">无关联大纲</option>
+                {outlineNodes.map((n: any) => (
+                  <option key={n.id} value={n.id}>
+                    {n.title}
+                  </option>
+                ))}
+              </select>
+            )}
             {isDirty && <span className="text-xs text-muted-foreground">未保存</span>}
             <Button size="sm" onClick={() => saveMutation.mutate()} disabled={!isDirty || saveMutation.isPending}>
               {saveMutation.isPending && <Loader2 className="size-4 animate-spin" />}保存
@@ -298,30 +294,15 @@ export function WritingEditor({ bookId }: Props) {
             <Skeleton className="h-full w-full" />
           </div>
         ) : (
-          <>
-            <div className="flex-1 flex flex-col overflow-hidden">
-              <Textarea
-                value={editorContent}
-                onChange={(e) => {
-                  setEditorContent(e.target.value);
-                  setIsDirty(true);
-                }}
-                onClick={(e) => {
-                  const ta = e.target as HTMLTextAreaElement;
-                  setCursor(ta.selectionStart);
-                  const sel = ta.value.substring(ta.selectionStart, ta.selectionEnd);
-                  if (sel) useEditorStore.getState().setSelection(sel, ta.selectionStart);
-                }}
-                onKeyUp={(e) => {
-                  const ta = e.target as HTMLTextAreaElement;
-                  setCursor(ta.selectionStart);
-                }}
-                placeholder="开始写作..."
-                className="flex-1 resize-none text-base leading-relaxed border-none shadow-none focus-visible:ring-0 font-normal"
-                style={{ minHeight: "300px" }}
-              />
-            </div>
-          </>
+          <TiptapEditor
+            key={activeChapterId}
+            content={editorContent}
+            onChange={(text) => {
+              setEditorContent(text);
+              setIsDirty(true);
+            }}
+            placeholder="开始写作..."
+          />
         )}
       </div>
     </div>

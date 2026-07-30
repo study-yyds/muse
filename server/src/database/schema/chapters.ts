@@ -36,6 +36,9 @@ export const chapters = pgTable(
     // 排序序号：同一作品内唯一，拆分/合并时用 ORDER BY sort_order DESC 更新避免冲突
     sort_order: integer('sort_order').notNull(),
 
+    // 绑定的大纲节点（一个节点可对应多章，一章只对应一个节点）
+    bound_outline_node_id: uuid('bound_outline_node_id'),
+
     // 字数统计：内容编辑后应用层计算
     word_count: integer('word_count').notNull().default(0),
 

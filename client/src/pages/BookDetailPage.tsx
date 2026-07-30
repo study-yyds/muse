@@ -226,6 +226,7 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [model, setModel] = useState("deepseek-v4-flash");
+  const [chatStyle, setChatStyle] = useState("default");
   const [activeVer, setActiveVer] = useState<Record<number, number>>({});
   const rewriteCtx = useEditorStore((s) => s.aiRewriteContext);
   const clearRewrite = useEditorStore((s) => s.clearAiRewrite);
@@ -290,6 +291,7 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
     if (section === "write" && editor.activeChapterId) {
       bodyExtra.chapter_id = editor.activeChapterId;
       bodyExtra.cursor_position = rewriteCtx ? rewriteCtx.start : editor.cursorPosition;
+      bodyExtra.style = chatStyle;
     }
     try {
       const V = 3;
@@ -318,7 +320,7 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
       else if (a.action === "add_chapter") { await fetch("/api/books/" + bookId + "/outline/chapters", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify(a) }); toast({ title: "大纲章节已添加" }); }
       else {
         const oldCtx = useEditorStore.getState().aiRewriteContext;
-        if (oldCtx) { useEditorStore.getState().requestReplace(oldCtx.text, a.content, oldCtx.start, oldCtx.end); useEditorStore.getState().clearAiRewrite(); }
+        if (oldCtx) { useEditorStore.getState().requestReplace(oldCtx.text, a.content, oldCtx.start, oldCtx.end, oldCtx.tiptapFrom, oldCtx.tiptapTo); useEditorStore.getState().clearAiRewrite(); }
         else useEditorStore.getState().requestInsert(a.content);
         toast({ title: "已插入编辑器" });
       }
@@ -417,7 +419,10 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
                 className="text-xs"
                 onClick={() => {
                   const s = useEditorStore.getState();
-                  if (s.selectedText) s.setAiRewrite(s.selectedText, s.cursorPosition, s.cursorPosition + s.selectedText.length);
+                  if (s.selectedText) {
+                    const c = s.aiRewriteContext;
+                    s.setAiRewrite(s.selectedText, s.cursorPosition, s.cursorPosition + s.selectedText.length, c?.tiptapFrom, c?.tiptapTo);
+                  }
                 }}
               >
                 <MessageCircle className="size-3 mr-1" />
@@ -441,6 +446,23 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
             <Send className="size-4" />
           </Button>
         </div>
+        {section === "write" && (
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">风格</span>
+            <select
+              value={chatStyle}
+              onChange={(e) => setChatStyle(e.target.value)}
+              className="flex-1 rounded border border-border bg-background px-2 py-1 text-xs text-foreground"
+            >
+              <option value="default">默认</option>
+              <option value="light-novel">轻小说</option>
+              <option value="serious">严肃文学</option>
+              <option value="ancient">古风</option>
+              <option value="plain">小白文</option>
+              <option value="colloquial">口语化</option>
+            </select>
+          </div>
+        )}
         <div className="flex items-center gap-2">
           <span className="text-xs text-muted-foreground">模型</span>
           <select

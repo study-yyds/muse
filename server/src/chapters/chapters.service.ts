@@ -12,6 +12,7 @@ export class ChaptersService {
         title: schema.chapters.title,
         sort_order: schema.chapters.sort_order,
         word_count: schema.chapters.word_count,
+        bound_outline_node_id: schema.chapters.bound_outline_node_id,
         updated_at: schema.chapters.updated_at,
       })
       .from(schema.chapters)
@@ -46,11 +47,20 @@ export class ChaptersService {
     return ch;
   }
 
-  async save(chapterId: string, content: string, wordCount: number) {
+  async save(
+    chapterId: string,
+    content: string,
+    wordCount: number,
+    boundOutlineNodeId?: string | null,
+  ) {
     const db = getDb();
+    const data: any = { content, word_count: wordCount, updated_at: sql`NOW()` };
+    if (boundOutlineNodeId !== undefined) {
+      data.bound_outline_node_id = boundOutlineNodeId || null;
+    }
     await db
       .update(schema.chapters)
-      .set({ content, word_count: wordCount, updated_at: sql`NOW()` })
+      .set(data)
       .where(eq(schema.chapters.chapter_id, chapterId));
   }
 

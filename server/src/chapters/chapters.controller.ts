@@ -38,9 +38,9 @@ export class ChaptersController {
   @Put(':chapterId')
   async save(
     @Param('chapterId') chapterId: string,
-    @Body() body: { content: string; word_count: number },
+    @Body() body: { content: string; word_count: number; bound_outline_node_id?: string | null },
   ) {
-    await this.ch.save(chapterId, body.content, body.word_count);
+    await this.ch.save(chapterId, body.content, body.word_count, body.bound_outline_node_id);
     return { code: 200, message: '已保存' };
   }
 

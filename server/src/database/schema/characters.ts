@@ -11,6 +11,7 @@ import {
   text,
   timestamp,
   jsonb,
+  boolean,
   index,
   unique,
 } from 'drizzle-orm/pg-core';
@@ -62,6 +63,12 @@ export const characters = pgTable(
 
     // 动机/目标（长文本）
     motivation: text('motivation'),
+
+    // 是否为主要角色（始终注入 AI 上下文）
+    is_main: boolean('is_main').notNull().default(false),
+
+    // 角色别名：逗号分隔的称呼列表，用于正文匹配（如"墨哥,林兄,那剑客"）
+    aliases: text('aliases'),
 
     // 自定义键值对：如 [{ "key": "血型", "value": "AB" }, ...]
     custom_fields: jsonb('custom_fields').default([]),

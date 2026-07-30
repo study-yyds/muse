@@ -36,9 +36,18 @@ export class AiController {
       model?: string;
       chapter_id?: string;
       cursor_position?: number;
+      style?: string;
     },
     @Res() res: Response,
   ) {
     await this.ai.chat(res, body);
+  }
+
+  @Post('mimic-style')
+  async mimicStyle(
+    @Body() body: { book_id?: string; model?: string; text?: string },
+  ) {
+    const data = await this.ai.mimicStyle(body.book_id, body.model ?? 'deepseek-v4-flash', body.text);
+    return { code: 200, data };
   }
 }

@@ -98,6 +98,8 @@ export function CharacterList({ bookId }: Props) {
       catchphrase: data.catchphrase,
       speech_style: data.speech_style,
       identity: data.identity,
+      aliases: data.aliases,
+      is_main: data.is_main,
       backstory: data.backstory,
       motivation: data.motivation,
       custom_fields: data.custom_fields,
@@ -175,6 +177,7 @@ export function CharacterList({ bookId }: Props) {
                 <span className="text-sm font-medium text-foreground truncate">
                   {char.name}
                 </span>
+                {char.is_main && <span className="text-[10px] bg-primary/15 text-primary px-1 rounded">主</span>}
                 {char.identity && (
                   <span className="text-xs text-muted-foreground truncate">
                     {char.identity}
@@ -226,6 +229,7 @@ export function CharacterList({ bookId }: Props) {
             <div className="px-10 pb-4 grid gap-3 sm:grid-cols-2">
               {char.gender && <Detail label="性别" value={char.gender} />}
               {char.age != null && <Detail label="年龄" value={String(char.age)} />}
+              {char.aliases && <Detail label="别名" value={char.aliases} />}
               {char.appearance && <Detail label="外貌" value={char.appearance} span />}
               {char.speech_style && <Detail label="说话风格" value={char.speech_style} />}
               {char.catchphrase && <Detail label="口头禅" value={char.catchphrase} />}
@@ -290,6 +294,8 @@ export function CharacterList({ bookId }: Props) {
                 catchphrase: editing.catchphrase ?? "",
                 speech_style: editing.speech_style ?? "",
                 identity: editing.identity ?? "",
+                aliases: editing.aliases ?? "",
+                is_main: editing.is_main ?? false,
                 backstory: editing.backstory ?? "",
                 motivation: editing.motivation ?? "",
                 custom_fields: editing.custom_fields,

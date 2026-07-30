@@ -51,12 +51,44 @@ export function BookSettingsPanel({ bookId }: Props) {
   const [presetStyle, setPresetStyle] = useState("default");
   const [saveInterval, setSaveInterval] = useState(300);
   const [wordGoal, setWordGoal] = useState(0);
+  const [isMimicking, setIsMimicking] = useState(false);
+  const [mimicResult, setMimicResult] = useState<string | null>(null);
+  const [customStyleText, setCustomStyleText] = useState("");
+
+  const doMimic = async (body: Record<string, any>) => {
+    setIsMimicking(true);
+    try {
+      const t = localStorage.getItem("token");
+      const r = await fetch("/api/ai/mimic-style", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
+        body: JSON.stringify(body),
+      });
+      const json = await r.json();
+      const analysis = json.data?.analysis ?? "";
+      setMimicResult(analysis);
+      if (analysis) {
+        api.put(`/books/${bookId}/settings`, { extra: { mimic_style_analysis: analysis } as any });
+        toast({ title: "笔风分析完成" });
+      } else {
+        toast({ title: json.data?.analysis === "" ? "分析失败" : "内容不足", variant: "destructive" });
+      }
+    } catch {
+      toast({ title: "分析失败", variant: "destructive" });
+    } finally {
+      setIsMimicking(false);
+    }
+  };
+
+  const doMimicBook = () => doMimic({ book_id: bookId, model: "deepseek-v4-flash" });
+  const doMimicCustom = () => doMimic({ text: customStyleText, model: "deepseek-v4-flash" });
 
   useEffect(() => {
     if (settings) {
       setPresetStyle(settings.preset_style ?? "default");
       setSaveInterval(settings.auto_save_interval_sec ?? 300);
       setWordGoal(settings.daily_word_goal ?? 0);
+      setMimicResult((settings as any).extra?.mimic_style_analysis ?? null);
     }
   }, [settings]);
 
@@ -129,6 +161,49 @@ export function BookSettingsPanel({ bookId }: Props) {
         <p className="text-xs text-muted-foreground">
           AI 续写时的默认风格，写作过程中可临时切换
         </p>
+      </div>
+
+      <Separator />
+
+      {/* AI 模仿笔风 */}
+      <div className="space-y-3">
+        <Label className="text-sm font-medium">AI 模仿笔风</Label>
+        <p className="text-xs text-muted-foreground">
+          分析已有正文或手动输入样本，提取写作风格特征。AI 后续续写将参考此风格。
+        </p>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={doMimicBook}
+          disabled={isMimicking}
+        >
+          {isMimicking && <Loader2 className="size-4 animate-spin" />}
+          从我的作品分析
+        </Button>
+        <div className="space-y-1.5">
+          <textarea
+            placeholder="或粘贴网上的文字样本（≥200字），如金庸/余华/猫腻的段落..."
+            value={customStyleText}
+            onChange={(e) => setCustomStyleText(e.target.value)}
+            rows={3}
+            className="w-full rounded border border-border bg-background px-2 py-1 text-xs resize-none"
+          />
+          <Button
+            variant="outline"
+            size="xs"
+            onClick={doMimicCustom}
+            disabled={isMimicking || customStyleText.trim().length < 200}
+          >
+            {isMimicking && <Loader2 className="size-4 animate-spin" />}
+            分析这段文字
+          </Button>
+        </div>
+        {mimicResult && (
+          <div className="rounded border border-border bg-muted/50 p-3 text-sm">
+            <p className="font-medium mb-1">当前风格分析：</p>
+            <p className="text-muted-foreground">{mimicResult}</p>
+          </div>
+        )}
       </div>
 
       <Separator />

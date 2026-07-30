@@ -59,6 +59,7 @@ export interface BookListItem {
 export interface BookDetail extends BookListItem {
   preset_style: string;
   auto_save_interval_sec: number;
+  extra?: Record<string, any>;
 }
 
 export interface CreateBookRequest {
@@ -93,6 +94,8 @@ export interface CharacterData {
   identity: string | null;
   backstory: string | null;
   motivation: string | null;
+  is_main: boolean;
+  aliases: string | null;
   custom_fields: CustomField[];
   relations: CharacterRelation[];
   created_at: string;
@@ -110,6 +113,8 @@ export interface CreateCharacterRequest {
   identity?: string;
   backstory?: string;
   motivation?: string;
+  is_main?: boolean;
+  aliases?: string;
   custom_fields?: CustomField[];
 }
 
@@ -167,6 +172,7 @@ export interface ChapterListItem {
   title: string;
   sort_order: number;
   word_count: number;
+  bound_outline_node_id?: string | null;
   status?: OutlineChapterStatus;
   updated_at: string;
 }
@@ -178,6 +184,7 @@ export interface ChapterDetail {
   content: string;
   sort_order: number;
   word_count: number;
+  bound_outline_node_id: string | null;
   created_at: string;
   updated_at: string;
 }

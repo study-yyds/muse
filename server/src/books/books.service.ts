@@ -83,6 +83,7 @@ export class BooksService {
         last_updated: schema.books.updated_at,
         preset_style: schema.book_settings.preset_style,
         auto_save_interval_sec: schema.book_settings.auto_save_interval_sec,
+        extra: schema.book_settings.extra,
       })
       .from(schema.books)
       .leftJoin(
@@ -126,21 +127,37 @@ export class BooksService {
       preset_style?: string;
       auto_save_interval_sec?: number;
       daily_word_goal?: number;
+      extra?: Record<string, any>;
     },
   ) {
     const db = getDb();
+    // 构建更新对象，extra 需要合并而非覆盖
+    const updateData: any = { updated_at: sql`NOW()` };
+    if (data.preset_style) updateData.preset_style = data.preset_style;
+    if (data.auto_save_interval_sec) updateData.auto_save_interval_sec = data.auto_save_interval_sec;
+    if (data.extra) {
+      // 先取当前 extra，合并后再写入
+      const [settings] = await db
+        .select({ extra: schema.book_settings.extra })
+        .from(schema.book_settings)
+        .where(eq(schema.book_settings.book_id, bookId));
+      const currentExtra = (settings?.extra ?? {}) as Record<string, any>;
+      updateData.extra = { ...currentExtra, ...data.extra };
+    }
+    if (data.daily_word_goal !== undefined) {
+      if (!updateData.extra) {
+        const [settings] = await db
+          .select({ extra: schema.book_settings.extra })
+          .from(schema.book_settings)
+          .where(eq(schema.book_settings.book_id, bookId));
+        updateData.extra = { ...((settings?.extra ?? {}) as Record<string, any>), daily_word_goal: data.daily_word_goal };
+      } else {
+        updateData.extra.daily_word_goal = data.daily_word_goal;
+      }
+    }
     await db
       .update(schema.book_settings)
-      .set({
-        ...(data.preset_style ? { preset_style: data.preset_style } : {}),
-        ...(data.auto_save_interval_sec
-          ? { auto_save_interval_sec: data.auto_save_interval_sec }
-          : {}),
-        ...(data.daily_word_goal !== undefined
-          ? { extra: { daily_word_goal: data.daily_word_goal } }
-          : {}),
-        updated_at: sql`NOW()`,
-      })
+      .set(updateData)
       .where(eq(schema.book_settings.book_id, bookId));
   }
 }
