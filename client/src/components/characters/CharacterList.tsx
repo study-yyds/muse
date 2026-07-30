@@ -4,6 +4,7 @@ import { api } from "@/services/api";
 import type { CharacterData, CreateCharacterRequest } from "@muse/shared";
 import { CharacterForm, type CharacterFormData } from "./CharacterForm";
 import { CharacterTestDialog } from "./CharacterTestDialog";
+import { CharacterRelationGraph } from "./CharacterRelationGraph";
 import { TemplatePicker, type CharacterTemplate } from "./TemplatePicker";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -35,6 +36,7 @@ export function CharacterList({ bookId }: Props) {
   const [selectedTemplate, setSelectedTemplate] = useState<CharacterTemplate | null>(null);
   const [editing, setEditing] = useState<CharacterData | null>(null);
   const [testChar, setTestChar] = useState<CharacterData | null>(null);
+  const [showRelations, setShowRelations] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -121,11 +123,22 @@ export function CharacterList({ bookId }: Props) {
             {characters.length} 个
           </span>
         </h2>
-        <Button size="sm" onClick={() => setCreateStep("picker")}>
-          <Plus className="size-4" />
-          添加角色
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant={showRelations ? "secondary" : "ghost"} onClick={() => setShowRelations(!showRelations)}>
+            关系网络
+          </Button>
+          <Button size="sm" onClick={() => setCreateStep("picker")}>
+            <Plus className="size-4" />
+            添加角色
+          </Button>
+        </div>
       </div>
+
+      {/* 关系网络视图 */}
+      {showRelations && <CharacterRelationGraph bookId={bookId} />}
+
+      {/* 角色列表（关系网络模式下隐藏） */}
+      {!showRelations && <>
 
       {/* 加载 */}
       {isLoading &&
@@ -288,6 +301,8 @@ export function CharacterList({ bookId }: Props) {
           )}
         </DialogContent>
       </Dialog>
+
+      </>}
 
       {/* 测试对话弹窗 */}
       <Dialog open={!!testChar} onOpenChange={(open) => { if (!open) setTestChar(null); }}>

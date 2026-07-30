@@ -15,6 +15,8 @@ import {
   Loader2,
   ChevronDown,
   ChevronRight,
+  Eye,
+  Pencil,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -165,7 +167,7 @@ export function WritingEditor({ bookId }: Props) {
   };
 
   return (
-    <div className="flex h-[calc(100vh-150px)] gap-0">
+    <div className="flex h-full min-h-0 gap-0">
       {/* 左侧章节列表 */}
       <div
         className={cn(
@@ -177,17 +179,30 @@ export function WritingEditor({ bookId }: Props) {
           {!sidebarCollapsed && (
             <p className="text-sm font-medium text-foreground">章节</p>
           )}
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-          >
-            {sidebarCollapsed ? (
-              <ChevronRight className="size-4" />
-            ) : (
-              <ChevronDown className="size-4" />
+          <div className="flex items-center gap-0.5">
+            {!sidebarCollapsed && (
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                onClick={newChapter}
+                disabled={createChapterMutation.isPending}
+                title="新建章节"
+              >
+                <Plus className="size-4" />
+              </Button>
             )}
-          </Button>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+            >
+              {sidebarCollapsed ? (
+                <ChevronRight className="size-4" />
+              ) : (
+                <ChevronDown className="size-4" />
+              )}
+            </Button>
+          </div>
         </div>
         {!sidebarCollapsed && (
           <>
@@ -241,13 +256,6 @@ export function WritingEditor({ bookId }: Props) {
                 </Button>
               </div>
             )}
-            <div className="p-2 border-t border-border">
-              <Button variant="ghost" size="sm" className="w-full justify-start" onClick={newChapter} disabled={createChapterMutation.isPending}
-              >
-                <Plus className="size-4" />
-                新建章节
-              </Button>
-            </div>
           </>
         )}
       </div>
@@ -291,8 +299,7 @@ export function WritingEditor({ bookId }: Props) {
           </div>
         ) : (
           <>
-            <div className="flex-1 flex flex-col p-6 overflow-hidden">
-              {/* Markdown 编辑区（后续替换为 Milkdown） */}
+            <div className="flex-1 flex flex-col overflow-hidden">
               <Textarea
                 value={editorContent}
                 onChange={(e) => {
@@ -302,6 +309,8 @@ export function WritingEditor({ bookId }: Props) {
                 onClick={(e) => {
                   const ta = e.target as HTMLTextAreaElement;
                   setCursor(ta.selectionStart);
+                  const sel = ta.value.substring(ta.selectionStart, ta.selectionEnd);
+                  if (sel) useEditorStore.getState().setSelection(sel, ta.selectionStart);
                 }}
                 onKeyUp={(e) => {
                   const ta = e.target as HTMLTextAreaElement;
@@ -312,7 +321,6 @@ export function WritingEditor({ bookId }: Props) {
                 style={{ minHeight: "300px" }}
               />
             </div>
-
           </>
         )}
       </div>

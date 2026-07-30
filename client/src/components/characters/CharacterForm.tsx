@@ -68,11 +68,13 @@ export function CharacterForm({ defaultValues, onSubmit, onCancel, isPending }: 
   });
 
   return (
-    <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-      {/* 固定字段 */}
-      <div className="grid gap-4 sm:grid-cols-2">
+    <form onSubmit={form.handleSubmit(onSubmit)} className="flex flex-col max-h-[60vh]">
+      {/* 可滚动内容区 */}
+      <div className="flex-1 overflow-y-auto space-y-4 px-1">
+        {/* 固定字段 */}
+        <div className="grid gap-4 sm:grid-cols-2">
         {FIXED_FIELDS.map((field) => (
-          <div key={field.name} className={field.component === "textarea" ? "sm:col-span-2" : ""}>
+          <div key={field.name} className={field.component === "textarea" ? "sm:col-span-2 space-y-1.5" : "space-y-1.5"}>
             <Label htmlFor={field.name}>
               {field.label}
               {field.required && <span className="text-destructive ml-0.5">*</span>}
@@ -133,9 +135,10 @@ export function CharacterForm({ defaultValues, onSubmit, onCancel, isPending }: 
           </div>
         ))}
       </div>
+      </div>{/* 关闭自定义字段 space-y-2 + 关闭滚动内容区 flex-1 */}
 
-      {/* 操作按钮 */}
-      <div className="flex justify-end gap-2 pt-4 border-t border-border">
+      {/* 操作按钮 — 底部固定 */}
+      <div className="shrink-0 flex justify-end gap-2 pt-4 border-t border-border bg-card">
         <Button type="button" variant="outline" onClick={onCancel}>
           取消
         </Button>
