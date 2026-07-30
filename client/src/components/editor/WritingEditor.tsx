@@ -4,18 +4,15 @@ import { api } from "@/services/api";
 import type { ChapterDetail } from "@muse/shared";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import { AIGeneratePanel } from "./AIGeneratePanel";
+import { useEditorStore } from "@/stores/editor";
 import {
   Plus,
   FileText,
   Loader2,
-  Send,
-  Sparkles,
   ChevronDown,
   ChevronRight,
 } from "lucide-react";
@@ -52,13 +49,26 @@ export function WritingEditor({ bookId }: Props) {
   const [editorContent, setEditorContent] = useState("");
   const [isDirty, setIsDirty] = useState(false);
 
-  // 切换到新章节时同步内容
+  const setContent = useEditorStore((s) => s.setContent);
+  const setCursor = useEditorStore((s) => s.setCursor);
+  const storeSetActive = useEditorStore((s) => s.setActiveChapter);
+
+  // 章节数据到达后同步到编辑器
   useEffect(() => {
-    if (chapter) {
-      setEditorContent(chapter.content);
+    if (chapterData?.data && chapterData.data.chapter_id === activeChapterId) {
+      setEditorContent(chapterData.data.content);
       setIsDirty(false);
     }
-  }, [activeChapterId]);
+  }, [chapterData, activeChapterId]);
+
+  // 同步编辑器状态到全局 store（供 AI 面板使用）
+  useEffect(() => {
+    setContent(editorContent);
+  }, [editorContent, setContent]);
+
+  useEffect(() => {
+    if (activeChapterId) storeSetActive(activeChapterId);
+  }, [activeChapterId, storeSetActive]);
 
   const saveMutation = useMutation({
     mutationFn: () =>
@@ -237,16 +247,9 @@ export function WritingEditor({ bookId }: Props) {
             )}
           </div>
           <div className="flex items-center gap-2">
-            {isDirty && (
-              <span className="text-xs text-muted-foreground">未保存</span>
-            )}
-            <Button
-              size="sm"
-              onClick={() => saveMutation.mutate()}
-              disabled={!isDirty || saveMutation.isPending}
-            >
-              {saveMutation.isPending && <Loader2 className="size-4 animate-spin" />}
-              保存
+            {isDirty && <span className="text-xs text-muted-foreground">未保存</span>}
+            <Button size="sm" onClick={() => saveMutation.mutate()} disabled={!isDirty || saveMutation.isPending}>
+              {saveMutation.isPending && <Loader2 className="size-4 animate-spin" />}保存
             </Button>
           </div>
         </div>
@@ -273,23 +276,20 @@ export function WritingEditor({ bookId }: Props) {
                   setEditorContent(e.target.value);
                   setIsDirty(true);
                 }}
+                onClick={(e) => {
+                  const ta = e.target as HTMLTextAreaElement;
+                  setCursor(ta.selectionStart);
+                }}
+                onKeyUp={(e) => {
+                  const ta = e.target as HTMLTextAreaElement;
+                  setCursor(ta.selectionStart);
+                }}
                 placeholder="开始写作..."
                 className="flex-1 resize-none text-base leading-relaxed border-none shadow-none focus-visible:ring-0 font-normal"
                 style={{ minHeight: "300px" }}
               />
             </div>
 
-            {/* AI 面板 */}
-            <Separator />
-            <AIGeneratePanel
-              bookId={bookId}
-              chapterId={activeChapterId}
-              editorContent={editorContent}
-              onInsert={(text) => {
-                setEditorContent((prev) => prev + text);
-                setIsDirty(true);
-              }}
-            />
           </>
         )}
       </div>

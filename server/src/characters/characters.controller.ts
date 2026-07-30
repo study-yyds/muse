@@ -30,4 +30,23 @@ export class CharactersController {
     await this.chars.delete(charId);
     return { code: 200, message: "已删除" };
   }
+
+  // 角色关系
+  @Get(":charId/relations")
+  async listRelations(@Param("charId") charId: string) {
+    const data = await this.chars.listRelations(charId);
+    return { code: 200, data };
+  }
+
+  @Post(":charId/relations")
+  async addRelation(@Param("charId") charId: string, @Body() body: { target_char_id: string; relation_type: string; description?: string }) {
+    const data = await this.chars.addRelation(charId, body);
+    return { code: 201, data };
+  }
+
+  @Delete(":charId/relations/:relationId")
+  async deleteRelation(@Param("relationId") relationId: string) {
+    await this.chars.deleteRelation(relationId);
+    return { code: 200, message: "已删除" };
+  }
 }

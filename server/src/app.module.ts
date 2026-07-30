@@ -8,6 +8,7 @@ import { WorldModule } from './world/world.module';
 import { OutlineModule } from './outline/outline.module';
 import { AiModule } from './ai/ai.module';
 import { TemplatesModule } from './templates/templates.module';
+import { ExportModule } from './export/export.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { TemplatesModule } from './templates/templates.module';
     OutlineModule,
     AiModule,
     TemplatesModule,
+    ExportModule,
   ],
 })
 export class AppModule {}
