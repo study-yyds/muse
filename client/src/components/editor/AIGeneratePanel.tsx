@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import { Sparkles, Loader2, ChevronLeft, ChevronRight, Copy, Check } from "lucide-react";
+import { Sparkles, Loader2, ChevronLeft, ChevronRight, Check } from "lucide-react";
 
 interface Props {
   bookId: string;
@@ -16,7 +16,7 @@ interface Version {
   content: string;
 }
 
-export function AIGeneratePanel({ bookId, chapterId, editorContent, onInsert }: Props) {
+export function AIGeneratePanel({ bookId: _bookId, chapterId: _chapterId, editorContent: _editorContent, onInsert }: Props) {
   const { toast } = useToast();
 
   const [mode, setMode] = useState<"continue" | "rewrite">("continue");
