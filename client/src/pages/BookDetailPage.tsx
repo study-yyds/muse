@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/services/api";
 import type { BookDetail } from "@muse/shared";
@@ -105,7 +105,9 @@ function SidebarNav({
 export function BookDetailPage() {
   const { bookId } = useParams<{ bookId: string }>();
   const navigate = useNavigate();
-  const [section, setSection] = useState<Section>("write");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const section = (searchParams.get("tab") as Section) || "write";
+  const setSection = (s: Section) => setSearchParams({ tab: s }, { replace: true });
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [mobileAiExpanded, setMobileAiExpanded] = useState(false);
 
@@ -470,8 +472,8 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
             onChange={(e) => setModel(e.target.value)}
             className="flex-1 rounded border border-border bg-background px-2 py-1 text-xs text-foreground"
           >
-            <option value="deepseek-v4-flash">DeepSeek V4 Flash</option>
-            <option value="deepseek-v4-pro">DeepSeek V4 Pro</option>
+            <option value="deepseek-v4-flash">deepseek-v4-flash</option>
+            <option value="deepseek-v4-pro">deepseek-v4-pro</option>
           </select>
         </div>
       </div>

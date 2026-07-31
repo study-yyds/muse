@@ -28,9 +28,26 @@ export class BooksStatsController {
       daily[day] = (daily[day] ?? 0) + (c.word_count ?? 0);
     }
 
+    // 今日字数
+    const today = new Date().toISOString().slice(0, 10);
+    const todayWords = daily[today] ?? 0;
+
+    // 连续打卡天数（从今天往前数）
+    let streak = 0;
+    const cursor = new Date();
+    while (true) {
+      const key = cursor.toISOString().slice(0, 10);
+      if (daily[key] && daily[key] > 0) {
+        streak++;
+        cursor.setDate(cursor.getDate() - 1);
+      } else {
+        break;
+      }
+    }
+
     return {
       code: 200,
-      data: { total, chapterCount, daily },
+      data: { total, chapterCount, daily, todayWords, streak },
     };
   }
 }

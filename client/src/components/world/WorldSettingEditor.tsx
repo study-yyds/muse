@@ -41,7 +41,7 @@ export function WorldSettingEditor({ bookId }: Props) {
   const [editing, setEditing] = useState<WorldSection[]>(sections);
 
   useEffect(() => {
-    if (data?.data?.sections) {
+    if (data?.data?.sections?.length) {
       setEditing(data.data.sections);
     } else {
       setEditing(DEFAULT_SECTIONS.map((s) => ({ ...s })));

@@ -27,9 +27,9 @@ export class CharTestController {
   async chat(
     @Param('charId') charId: string,
     @Param('sessionId') sessionId: string,
-    @Body() body: { message: string; model?: string },
+    @Body() body: { message: string; model?: string; api_key?: string; base_url?: string },
     @Res() res: Response,
   ) {
-    await this.service.chat(res, charId, sessionId, body.message, body.model);
+    await this.service.chat(res, charId, sessionId, body.message, body.model, body.api_key, body.base_url);
   }
 }

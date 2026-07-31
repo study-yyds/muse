@@ -16,6 +16,7 @@ import {
   Loader2,
   ChevronDown,
   ChevronRight,
+  Target,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -50,6 +51,20 @@ export function WritingEditor({ bookId }: Props) {
   const [editorContent, setEditorContent] = useState("");
   const [isDirty, setIsDirty] = useState(false);
   const [boundNodeId, setBoundNodeId] = useState<string | null>(null);
+
+  // 今日码字进度
+  const { data: statsData } = useQuery({
+    queryKey: ["stats", bookId],
+    queryFn: () => api.get<{ data: { todayWords: number; streak: number } }>(`/books/${bookId}/stats`),
+    refetchInterval: 60000,
+  });
+  const { data: settingsData } = useQuery({
+    queryKey: ["book-settings", bookId],
+    queryFn: () => api.get<{ data: { daily_word_goal?: number; extra?: any } }>(`/books/${bookId}/settings`),
+  });
+  const todayWords = statsData?.data?.todayWords ?? 0;
+  const dailyGoal = settingsData?.data?.daily_word_goal ?? (settingsData?.data?.extra as any)?.daily_word_goal ?? 0;
+  const goalProgress = dailyGoal > 0 ? Math.min(todayWords / dailyGoal, 1) : 0;
 
   // 大纲节点列表（用于绑定选择）
   const { data: outlineData } = useQuery({
@@ -267,6 +282,16 @@ export function WritingEditor({ bookId }: Props) {
             )}
           </div>
           <div className="flex items-center gap-2">
+            {dailyGoal > 0 && (
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground" title={`今日 ${todayWords.toLocaleString()} / ${dailyGoal.toLocaleString()}`}>
+                <Target className="size-3.5" />
+                <div className="w-16 h-1.5 rounded-full bg-muted overflow-hidden">
+                  <div className={`h-full rounded-full transition-all ${goalProgress >= 1 ? 'bg-green-500' : 'bg-primary'}`}
+                    style={{ width: `${goalProgress * 100}%` }} />
+                </div>
+                <span>{Math.round(goalProgress * 100)}%</span>
+              </div>
+            )}
             {activeChapterId && outlineNodes.length > 0 && (
               <select
                 value={boundNodeId ?? ""}

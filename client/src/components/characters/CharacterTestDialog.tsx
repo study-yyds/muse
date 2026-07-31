@@ -21,6 +21,9 @@ export function CharacterTestDialog({ char, bookId }: Props) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [streaming, setStreaming] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const customKey = JSON.parse(localStorage.getItem("muse-custom-api-key") || "null");
+  const customLabel = customKey ? `自定义 (${customKey.model_name || "?"})` : "自定义（未配置）";
+  const [model, setModel] = useState("deepseek-v4-flash");
   const sessionRef = useRef<string | null>(null);
   const token = localStorage.getItem("token");
 
@@ -66,7 +69,12 @@ export function CharacterTestDialog({ char, bookId }: Props) {
             "Content-Type": "application/json",
             Authorization: "Bearer " + token,
           },
-          body: JSON.stringify({ message: input }),
+          body: JSON.stringify({
+            message: input,
+            model: model === "__custom__" ? customKey?.model_name : model,
+            api_key: model === "__custom__" ? customKey?.api_key : undefined,
+            base_url: model === "__custom__" ? customKey?.base_url : undefined,
+          }),
         },
       );
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -82,23 +90,19 @@ export function CharacterTestDialog({ char, bookId }: Props) {
         buf += decoder.decode(value, { stream: true });
         const lines = buf.split("\n");
         buf = lines.pop() ?? "";
-        let ev = "";
         for (const line of lines) {
-          if (line.startsWith("event: ")) { ev = line.slice(7); continue; }
           if (line.startsWith("data: ")) {
-            const payload = line.slice(6);
-            if (ev === "chunk") { ac += payload; }
-            if (ev === "done") {
-              if (ac.trim()) {
-                setMessages((prev) => [...prev, { role: "assistant", content: ac.trim() }]);
-                ac = "";
-              }
-            }
-            if (ev === "error") { throw new Error("AI 错误"); }
-            ev = "";
+            const payload = line.slice(6).trim();
+            if (!payload || payload === "[DONE]" || payload === "{}") continue;
+            // 尝试 JSON 解析，兼容 JSON 编码和纯文本两种格式
+            try { ac += JSON.parse(payload); } catch { ac += payload; }
+            setStreaming(ac);
           }
         }
-        if (ac) setStreaming(ac);
+      }
+      // 流结束后统一保存
+      if (ac.trim()) {
+        setMessages((prev) => [...prev, { role: "assistant", content: ac.trim() }]);
       }
     } catch {
       setMessages((prev) => [...prev, { role: "assistant", content: "（对话失败，请重试）" }]);
@@ -110,13 +114,24 @@ export function CharacterTestDialog({ char, bookId }: Props) {
   return (
     <div className="flex flex-col h-80">
       {/* 角色简介 */}
-      <div className="mb-3 text-xs text-muted-foreground">
-        <span className="font-medium text-foreground">{char.name}</span>
-        {char.personality && <span> · {char.personality.slice(0, 40)}</span>}
+      <div className="mb-3 flex items-center justify-between">
+        <div className="text-xs text-muted-foreground">
+          <span className="font-medium text-foreground">{char.name}</span>
+          {char.personality && <span> · {char.personality.slice(0, 40)}</span>}
+        </div>
+        <select
+          value={model}
+          onChange={(e) => setModel(e.target.value)}
+          className="text-xs rounded border border-border bg-background px-1.5 py-0.5 text-muted-foreground"
+        >
+          <option value="deepseek-v4-flash">deepseek-v4-flash</option>
+          <option value="deepseek-v4-pro">deepseek-v4-pro</option>
+          {customKey && <option value="__custom__">{customLabel}</option>}
+        </select>
       </div>
 
       {/* 对话区 */}
-      <ScrollArea className="flex-1 rounded-md border border-border bg-muted/30 p-3">
+      <ScrollArea className="flex-1 min-h-0 rounded-md border border-border bg-muted/30 p-3">
         {messages.length === 0 && !streaming && (
           <p className="text-xs text-muted-foreground text-center py-8">
             输入一句话，测试 {char.name} 会如何回应

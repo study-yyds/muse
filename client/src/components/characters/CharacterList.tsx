@@ -119,7 +119,7 @@ export function CharacterList({ bookId }: Props) {
   };
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-2 pb-8">
       {/* 顶部：标题 + 新建按钮 */}
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-base font-semibold text-foreground">
@@ -237,7 +237,7 @@ export function CharacterList({ bookId }: Props) {
 
           {/* 展开的详情 */}
           {expandedId === char.char_id && (
-            <div className="px-10 pb-4 grid gap-3 sm:grid-cols-2">
+            <div className="px-10 py-4 grid gap-3 sm:grid-cols-2">
               {char.gender && <Detail label="性别" value={char.gender} />}
               {char.age != null && <Detail label="年龄" value={String(char.age)} />}
               {char.aliases && <Detail label="别名" value={char.aliases} />}

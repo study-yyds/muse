@@ -40,14 +40,16 @@ export class CharTestService {
     charId: string,
     sessionId: string,
     message: string,
-    model: string = 'deepseek-chat',
+    model: string = 'deepseek-v4-flash',
+    customApiKey?: string,
+    customBaseUrl?: string,
   ) {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
     const db = getDb();
-    const apiKey = process.env.AI_PLATFORM_KEY;
+    const apiKey = customApiKey || process.env.AI_PLATFORM_KEY;
     if (!apiKey) {
       res.write(`event: error\ndata: ${JSON.stringify({ message: 'AI 未配置' })}\n\n`);
       res.end();
@@ -112,7 +114,7 @@ export class CharTestService {
     // 保存用户消息
     history.push({ role: 'user', content: message, timestamp: new Date().toISOString() });
 
-    const baseUrl = process.env.AI_PLATFORM_BASE_URL ?? 'https://api.deepseek.com/v1';
+    const baseUrl = customBaseUrl || process.env.AI_PLATFORM_BASE_URL || 'https://api.deepseek.com/v1';
     let fullContent = '';
 
     try {
@@ -122,7 +124,7 @@ export class CharTestService {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${apiKey}`,
         },
-        body: JSON.stringify({ model, messages, stream: true, max_tokens: 1024 }),
+        body: JSON.stringify({ model, messages, stream: true, max_tokens: 2048 }),
         signal: AbortSignal.timeout(60000),
       });
 
@@ -151,7 +153,8 @@ export class CharTestService {
         for (const line of lines) {
           if (line.startsWith('data: ') && line.slice(6) !== '[DONE]') {
             try {
-              const content = JSON.parse(line.slice(6)).choices?.[0]?.delta?.content;
+              const delta = JSON.parse(line.slice(6)).choices?.[0]?.delta;
+              const content = delta?.content || delta?.reasoning_content;
               if (content) {
                 fullContent += content;
                 res.write(`event: chunk\ndata: ${content}\n\n`);
