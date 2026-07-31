@@ -9,7 +9,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { BookOpen, LogOut, User } from "lucide-react";
+import { BookOpen, LogOut, User, Shield } from "lucide-react";
 
 export function AppLayout() {
   const { isAuthenticated, user, logout, fetchProfile } = useAuthStore();
@@ -30,13 +30,24 @@ export function AppLayout() {
     <div className="flex min-h-screen flex-col">
       {/* 顶部导航 */}
       <header className="flex h-12 items-center justify-between border-b border-border px-4 shrink-0">
-        <button
-          onClick={() => navigate("/")}
-          className="flex items-center gap-2 font-medium text-foreground hover:text-primary transition-colors"
-        >
-          <BookOpen className="size-5" />
-          <span className="text-sm">Muse</span>
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => navigate("/")}
+            className="flex items-center gap-2 font-medium text-foreground hover:text-primary transition-colors"
+          >
+            <BookOpen className="size-5" />
+            <span className="text-sm">Muse</span>
+          </button>
+          {user?.role === "admin" && (
+            <button
+              onClick={() => navigate("/admin")}
+              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-primary transition-colors"
+            >
+              <Shield className="size-3.5" />
+              管理
+            </button>
+          )}
+        </div>
 
         <DropdownMenu>
           <DropdownMenuTrigger

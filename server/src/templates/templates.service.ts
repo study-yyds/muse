@@ -1,17 +1,28 @@
 import { Injectable } from '@nestjs/common';
-import { eq, and, isNull } from 'drizzle-orm';
+import { eq, and, or, isNull } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 import { getDb, schema } from '../database/connection';
 
 @Injectable()
 export class TemplatesService {
-  async list(params: { type?: string; category?: string }) {
+  // 用户可见的模板：平台预置 + 公共模板 + 自己的模板
+  async list(params: { type?: string; category?: string }, userId?: string) {
     const db = getDb();
-    const conditions = [];
+    const conditions: any[] = [];
 
     if (params.type) conditions.push(eq(schema.templates.type, params.type));
     if (params.category)
       conditions.push(eq(schema.templates.category, params.category));
-    conditions.push(isNull(schema.templates.creator_user_id)); // 只查预置模板
+
+    // 可见范围：is_preset OR is_public OR 自己创建的
+    const visible: any[] = [
+      eq(schema.templates.is_preset, true),
+      eq(schema.templates.is_public, true),
+    ];
+    if (userId) {
+      visible.push(eq(schema.templates.creator_user_id, userId));
+    }
+    conditions.push(or(...visible));
 
     return db
       .select()
@@ -37,6 +48,7 @@ export class TemplatesService {
       category: string;
       description?: string;
       data: any;
+      is_public?: boolean;
     },
   ) {
     const db = getDb();
@@ -46,7 +58,7 @@ export class TemplatesService {
         ...data,
         creator_user_id: userId,
         is_preset: false,
-        is_public: true,
+        is_public: data.is_public ?? false,
       })
       .returning();
     return tpl;
@@ -56,6 +68,49 @@ export class TemplatesService {
     const db = getDb();
     await db
       .delete(schema.templates)
+      .where(eq(schema.templates.template_id, id));
+  }
+
+  // === 管理员方法 ===
+
+  // 管理员可见：全部模板（含所有用户创建的公开/私有模板）
+  async listAll(params: { type?: string; category?: string }) {
+    const db = getDb();
+    const conditions: any[] = [];
+    if (params.type) conditions.push(eq(schema.templates.type, params.type));
+    if (params.category) conditions.push(eq(schema.templates.category, params.category));
+    return db
+      .select()
+      .from(schema.templates)
+      .where(conditions.length > 0 ? and(...conditions) : undefined);
+  }
+
+  async createPreset(data: {
+    name: string;
+    type: string;
+    category: string;
+    description?: string;
+    data: any;
+    is_preset?: boolean;
+    is_public?: boolean;
+  }) {
+    const db = getDb();
+    const [tpl] = await db
+      .insert(schema.templates)
+      .values({
+        ...data,
+        is_preset: data.is_preset ?? true,
+        is_public: data.is_public ?? true,
+      })
+      .returning();
+    return tpl;
+  }
+
+  async update(id: string, data: any) {
+    const db = getDb();
+    await db
+      .update(schema.templates)
+      .set(data)
       .where(eq(schema.templates.template_id, id));
   }
 

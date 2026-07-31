@@ -8,6 +8,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { TiptapEditor } from "./TiptapEditor";
 import { useToast } from "@/hooks/use-toast";
+import { useThrottle } from "@/hooks/use-throttle";
 import { useEditorStore } from "@/stores/editor";
 import {
   Plus,
@@ -125,17 +126,24 @@ export function WritingEditor({ bookId }: Props) {
     setSelectedIds((prev) => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   };
 
-  const doMerge = () => {
+  const doMerge = useThrottle(() => {
+    if (mergeMutation.isPending) return;
     const ids = Array.from(selectedIds);
     if (ids.length < 2) return;
     const names = chapters.filter((c) => ids.includes(c.chapter_id)).map((c) => c.title);
     const newTitle = prompt("合并后的章节名", names.join(" + "));
     if (newTitle) mergeMutation.mutate({ ids, title: newTitle });
-  };
+  });
 
-  const newChapter = () => {
+  const doSplit = useThrottle(() => {
+    if (splitMutation.isPending) return;
+    if (confirm("在中间拆分？")) splitMutation.mutate(activeChapterId);
+  });
+
+  const newChapter = useThrottle(() => {
+    if (createChapterMutation.isPending) return;
     createChapterMutation.mutate(`第${chapters.length + 1}章`);
-  };
+  });
 
   const selectChapter = (id: string) => {
     if (isDirty && activeChapterId) {
@@ -225,14 +233,14 @@ export function WritingEditor({ bookId }: Props) {
             </ScrollArea>
             {selectedIds.size >= 2 && (
               <div className="px-2 py-1">
-                <Button size="xs" variant="outline" className="w-full" onClick={doMerge}>
+                <Button size="xs" variant="outline" className="w-full" onClick={doMerge} disabled={mergeMutation.isPending}>
                   合并选中 ({selectedIds.size} 章)
                 </Button>
               </div>
             )}
             {activeChapterId && (
               <div className="px-2 py-1">
-                <Button size="xs" variant="outline" className="w-full" onClick={() => { if (confirm("在中间拆分？")) splitMutation.mutate(activeChapterId); }}>
+                <Button size="xs" variant="outline" className="w-full" onClick={doSplit} disabled={splitMutation.isPending}>
                   拆分当前章
                 </Button>
               </div>

@@ -7,7 +7,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Trash2, ChevronDown, ChevronRight, Globe, Loader2 } from "lucide-react";
+import { SaveAsTemplateDialog } from "@/components/templates/SaveAsTemplateDialog";
+import { Plus, Trash2, ChevronDown, ChevronRight, Globe, Loader2, BookmarkPlus } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const DEFAULT_SECTIONS = [
@@ -25,6 +26,7 @@ export function WorldSettingEditor({ bookId }: Props) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [saveTplOpen, setSaveTplOpen] = useState(false);
 
   const { data, isLoading } = useQuery({
     queryKey: ["world-setting", bookId],
@@ -112,6 +114,14 @@ export function WorldSettingEditor({ bookId }: Props) {
           <Button
             variant="ghost"
             size="xs"
+            onClick={() => setSaveTplOpen(true)}
+          >
+            <BookmarkPlus className="size-3" />
+            保存为模板
+          </Button>
+          <Button
+            variant="ghost"
+            size="xs"
             onClick={addSection}
           >
             <Plus className="size-3" />
@@ -193,6 +203,13 @@ export function WorldSettingEditor({ bookId }: Props) {
           </div>
         ))}
       </div>
+
+      <SaveAsTemplateDialog
+        open={saveTplOpen}
+        onOpenChange={setSaveTplOpen}
+        type="world"
+        data={{ sections: editing }}
+      />
     </div>
   );
 }

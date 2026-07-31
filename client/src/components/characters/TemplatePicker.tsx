@@ -133,8 +133,14 @@ export function TemplatePicker({ onSelect }: Props) {
   useEffect(() => {
     fetch("/api/templates?type=character")
       .then((r) => r.json())
-      .then((d) => setTemplates(d.data ?? []))
-      .catch(() => setTemplates(TEMPLATES)) // 后端不可用时用硬编码兜底
+      .then((d) => {
+        const items = (d.data ?? []).map((t: any) => ({
+          id: t.template_id, name: t.name, category: t.category,
+          description: t.description, data: t.data,
+        }));
+        setTemplates(items.length > 0 ? items : TEMPLATES);
+      })
+      .catch(() => setTemplates(TEMPLATES))
       .finally(() => setLoading(false));
   }, []);
 

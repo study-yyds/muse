@@ -6,6 +6,7 @@ interface User {
   user_id: string;
   phone_number: string;
   avatar_path: string | null;
+  role: string;
 }
 
 interface AuthState {

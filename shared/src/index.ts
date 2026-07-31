@@ -41,6 +41,7 @@ export interface UserProfile {
   user_id: string;
   phone_number: string;
   avatar_path: string | null;
+  role: string;
   created_at: string;
   book_limit: number;
 }

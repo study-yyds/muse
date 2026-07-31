@@ -6,6 +6,7 @@ import { CharacterForm, type CharacterFormData } from "./CharacterForm";
 import { CharacterTestDialog } from "./CharacterTestDialog";
 import { CharacterRelationGraph } from "./CharacterRelationGraph";
 import { TemplatePicker, type CharacterTemplate } from "./TemplatePicker";
+import { SaveAsTemplateDialog } from "@/components/templates/SaveAsTemplateDialog";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
@@ -24,6 +25,7 @@ import {
   Trash2,
   ChevronDown,
   ChevronRight,
+  BookmarkPlus,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -37,6 +39,7 @@ export function CharacterList({ bookId }: Props) {
   const [editing, setEditing] = useState<CharacterData | null>(null);
   const [testChar, setTestChar] = useState<CharacterData | null>(null);
   const [showRelations, setShowRelations] = useState(false);
+  const [saveTplChar, setSaveTplChar] = useState<CharacterData | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -199,6 +202,14 @@ export function CharacterList({ bookId }: Props) {
               <Button
                 variant="ghost"
                 size="icon-xs"
+                title="保存为模板"
+                onClick={() => setSaveTplChar(char)}
+              >
+                <BookmarkPlus className="size-3" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-xs"
                 title="测试对话"
                 onClick={() => setTestChar(char)}
               >
@@ -309,6 +320,24 @@ export function CharacterList({ bookId }: Props) {
       </Dialog>
 
       </>}
+
+      {/* 保存为模板弹窗 */}
+      <SaveAsTemplateDialog
+        open={!!saveTplChar}
+        onOpenChange={(open) => { if (!open) setSaveTplChar(null); }}
+        type="character"
+        data={{
+          name: saveTplChar?.name,
+          gender: saveTplChar?.gender,
+          personality: saveTplChar?.personality,
+          catchphrase: saveTplChar?.catchphrase,
+          speech_style: saveTplChar?.speech_style,
+          identity: saveTplChar?.identity,
+          backstory: saveTplChar?.backstory,
+          motivation: saveTplChar?.motivation,
+          appearance: saveTplChar?.appearance,
+        }}
+      />
 
       {/* 测试对话弹窗 */}
       <Dialog open={!!testChar} onOpenChange={(open) => { if (!open) setTestChar(null); }}>

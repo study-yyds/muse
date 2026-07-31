@@ -6,6 +6,7 @@ import { AppLayout } from "@/components/layout/AppLayout";
 import { LoginPage } from "@/pages/LoginPage";
 import { BookListPage } from "@/pages/BookListPage";
 import { BookDetailPage } from "@/pages/BookDetailPage";
+import { AdminPage } from "@/pages/AdminPage";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -23,6 +24,7 @@ export default function App() {
             <Route element={<AppLayout />}>
               <Route path="/" element={<BookListPage />} />
               <Route path="/books/:bookId" element={<BookDetailPage />} />
+              <Route path="/admin" element={<AdminPage />} />
             </Route>
           </Routes>
         </BrowserRouter>
