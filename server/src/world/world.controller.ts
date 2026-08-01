@@ -1,8 +1,9 @@
 import { Controller, Get, Put, Param, Body, UseGuards } from "@nestjs/common";
 import { WorldService } from "./world.service";
 import { AuthGuard } from "../auth/auth.guard";
+import { BookOwnerGuard } from "../auth/book-owner.guard";
 
-@UseGuards(AuthGuard)
+@UseGuards(AuthGuard, BookOwnerGuard)
 @Controller("api/books/:bookId/world-setting")
 export class WorldController {
   constructor(private readonly world: WorldService) {}

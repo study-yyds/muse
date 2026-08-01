@@ -10,8 +10,9 @@ import {
 } from '@nestjs/common';
 import { ChaptersService } from './chapters.service';
 import { AuthGuard } from '../auth/auth.guard';
+import { BookOwnerGuard } from '../auth/book-owner.guard';
 
-@UseGuards(AuthGuard)
+@UseGuards(AuthGuard, BookOwnerGuard)
 @Controller('api/books/:bookId/chapters')
 export class ChaptersController {
   constructor(private readonly ch: ChaptersService) {}

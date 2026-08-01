@@ -14,8 +14,9 @@ import {
 import type { Request } from 'express';
 import { BooksService } from './books.service';
 import { AuthGuard } from '../auth/auth.guard';
+import { BookOwnerGuard } from '../auth/book-owner.guard';
 
-@UseGuards(AuthGuard)
+@UseGuards(AuthGuard, BookOwnerGuard)
 @Controller('api/books')
 export class BooksController {
   constructor(private readonly books: BooksService) {}

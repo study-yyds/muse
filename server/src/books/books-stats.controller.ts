@@ -2,8 +2,9 @@ import { Controller, Get, Param, UseGuards } from '@nestjs/common';
 import { eq, sql } from 'drizzle-orm';
 import { getDb, schema } from '../database/connection';
 import { AuthGuard } from '../auth/auth.guard';
+import { BookOwnerGuard } from '../auth/book-owner.guard';
 
-@UseGuards(AuthGuard)
+@UseGuards(AuthGuard, BookOwnerGuard)
 @Controller('api/books/:bookId/stats')
 export class BooksStatsController {
   @Get()

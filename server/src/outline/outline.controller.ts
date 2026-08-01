@@ -10,8 +10,9 @@ import {
 } from '@nestjs/common';
 import { OutlineService } from './outline.service';
 import { AuthGuard } from '../auth/auth.guard';
+import { BookOwnerGuard } from '../auth/book-owner.guard';
 
-@UseGuards(AuthGuard)
+@UseGuards(AuthGuard, BookOwnerGuard)
 @Controller('api/books/:bookId/outline')
 export class OutlineController {
   constructor(private readonly outline: OutlineService) {}

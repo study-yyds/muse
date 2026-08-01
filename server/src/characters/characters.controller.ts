@@ -1,8 +1,9 @@
 import { Controller, Get, Post, Patch, Delete, Param, Body, UseGuards } from "@nestjs/common";
 import { CharactersService } from "./characters.service";
 import { AuthGuard } from "../auth/auth.guard";
+import { BookOwnerGuard } from "../auth/book-owner.guard";
 
-@UseGuards(AuthGuard)
+@UseGuards(AuthGuard, BookOwnerGuard)
 @Controller("api/books/:bookId/characters")
 export class CharactersController {
   constructor(private readonly chars: CharactersService) {}

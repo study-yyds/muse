@@ -2,8 +2,9 @@ import { Controller, Post, Get, Param, Body, Res, UseGuards } from '@nestjs/comm
 import type { Response } from 'express';
 import { CharTestService } from './char-test.service';
 import { AuthGuard } from '../auth/auth.guard';
+import { BookOwnerGuard } from '../auth/book-owner.guard';
 
-@UseGuards(AuthGuard)
+@UseGuards(AuthGuard, BookOwnerGuard)
 @Controller('api/books/:bookId/characters/:charId/test')
 export class CharTestController {
   constructor(private readonly service: CharTestService) {}

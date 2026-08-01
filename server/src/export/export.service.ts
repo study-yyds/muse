@@ -159,6 +159,10 @@ export class ExportService {
     return out;
   }
 
+  private esc(s: string): string {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
   private buildHtml(
     title: string,
     chapters: any[],
@@ -166,15 +170,15 @@ export class ExportService {
     world: any,
     outlineChapters: any[],
   ) {
-    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${title}</title>
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${this.esc(title)}</title>
 <style>body{max-width:800px;margin:0 auto;padding:40px;font:16px/1.8 system-ui;color:#333}h1{font-size:24px}h2{font-size:18px;margin-top:30px}.char{margin:10px 0;padding:10px;background:#f8f8f8;border-radius:4px}</style></head><body>
-<h1>${title}</h1>
-${chapters.map((ch) => `<h2>${ch.title}</h2>\n${marked.parse(ch.content)}`).join('\n')}
+<h1>${this.esc(title)}</h1>
+${chapters.map((ch) => `<h2>${this.esc(ch.title)}</h2>\n${marked.parse(this.esc(ch.content))}`).join('\n')}
 <hr><h2>角色设定</h2>
-${characters.map((c) => `<div class="char"><strong>${c.name}</strong>${c.gender ? ' · ' + c.gender : ''}${c.identity ? ' · ' + c.identity : ''}<br>${c.personality ?? ''}</div>`).join('\n')}
+${characters.map((c) => `<div class="char"><strong>${this.esc(c.name)}</strong>${c.gender ? ' · ' + this.esc(c.gender) : ''}${c.identity ? ' · ' + this.esc(c.identity) : ''}<br>${this.esc(c.personality ?? '')}</div>`).join('\n')}
 <hr><h2>世界观</h2>
-${world?.sections ? (world.sections as any[]).map((s) => `<h3>${s.name}</h3><p>${s.content}</p>`).join('\n') : ''}
-<hr><h2>大纲</h2><ul>${outlineChapters.map((o) => `<li>${o.title}：${o.summary}</li>`).join('\n')}</ul>
+${world?.sections ? (world.sections as any[]).map((s) => `<h3>${this.esc(s.name)}</h3><p>${this.esc(s.content)}</p>`).join('\n') : ''}
+<hr><h2>大纲</h2><ul>${outlineChapters.map((o) => `<li>${this.esc(o.title)}：${this.esc(o.summary)}</li>`).join('\n')}</ul>
 </body></html>`;
   }
 }
