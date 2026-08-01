@@ -91,8 +91,9 @@ export class TemplatesController {
   // === 普通用户端点 ===
 
   @Get(':id')
-  async get(@Param('id') id: string) {
-    const data = await this.tpl.get(id);
+  async get(@Param('id') id: string, @Req() req: Request) {
+    const userId = (req as any).userId;
+    const data = await this.tpl.get(id, userId);
     return data ? { code: 200, data } : { code: 404, message: '模板不存在' };
   }
 
@@ -106,6 +107,7 @@ export class TemplatesController {
       category: string;
       description?: string;
       data: any;
+      is_public?: boolean;
     },
     @Req() req: Request,
   ) {
@@ -115,8 +117,12 @@ export class TemplatesController {
 
   @UseGuards(AuthGuard)
   @Delete(':id')
-  async delete(@Param('id') id: string) {
-    await this.tpl.delete(id);
-    return { code: 200, message: '已删除' };
+  async delete(@Param('id') id: string, @Req() req: Request) {
+    try {
+      await this.tpl.delete(id, (req as any).userId);
+      return { code: 200, message: '已删除' };
+    } catch (e: any) {
+      return { code: 403, message: e.message };
+    }
   }
 }

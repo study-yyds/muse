@@ -52,8 +52,14 @@ export class ChaptersService {
     content: string,
     wordCount: number,
     boundOutlineNodeId?: string | null,
+    expectedBookId?: string,
   ) {
     const db = getDb();
+    // 校验章节属于该书
+    if (expectedBookId) {
+      const [ch] = await db.select({ book_id: schema.chapters.book_id }).from(schema.chapters).where(eq(schema.chapters.chapter_id, chapterId)).limit(1);
+      if (!ch || ch.book_id !== expectedBookId) throw new Error('章节不属于该作品');
+    }
     const data: any = { content, word_count: wordCount, updated_at: sql`NOW()` };
     if (boundOutlineNodeId !== undefined) {
       data.bound_outline_node_id = boundOutlineNodeId || null;

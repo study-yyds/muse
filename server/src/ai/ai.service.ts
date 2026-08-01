@@ -18,8 +18,10 @@ export class AiService {
       style?: string;
       model: string;
       usePlatformKey: boolean;
+      user_id?: string;
     },
   ) {
+    if (params.user_id) await this.checkBookOwnership(params.bookId, params.user_id);
     const db = getDb();
 
     // 获取角色设定
@@ -232,6 +234,19 @@ ${(chapter?.content ?? '').slice(0, 3000)}
     }
   }
 
+  // 校验 book_id 所有权
+  async checkBookOwnership(bookId: string, userId: string) {
+    const db = getDb();
+    const [book] = await db
+      .select({ user_id: schema.books.user_id })
+      .from(schema.books)
+      .where(eq(schema.books.book_id, bookId))
+      .limit(1);
+    if (!book || book.user_id !== userId) {
+      throw new Error('无权访问该作品');
+    }
+  }
+
   // 全局 AI 对话（根据菜单切换上下文和动作）
   async chat(
     res: Response,
@@ -244,10 +259,16 @@ ${(chapter?.content ?? '').slice(0, 3000)}
       chapter_id?: string;
       cursor_position?: number;
       style?: string;
+      user_id?: string;
     },
   ) {
     const db = getDb();
     const ct = params.context_type;
+
+    // 校验所有权
+    if (params.user_id) {
+      await this.checkBookOwnership(params.book_id, params.user_id);
+    }
 
     // 通用上下文：角色（完整字段）、世界观、大纲
     const chars = await db

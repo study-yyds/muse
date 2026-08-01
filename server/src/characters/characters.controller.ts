@@ -21,9 +21,13 @@ export class CharactersController {
   }
 
   @Patch(":charId")
-  async update(@Param("charId") charId: string, @Body() body: any) {
-    await this.chars.update(charId, body);
-    return { code: 200, message: "已更新" };
+  async update(@Param("bookId") bookId: string, @Param("charId") charId: string, @Body() body: any) {
+    try {
+      await this.chars.update(charId, body, bookId);
+      return { code: 200, message: "已更新" };
+    } catch (e: any) {
+      return { code: 403, message: e.message };
+    }
   }
 
   @Delete(":charId")

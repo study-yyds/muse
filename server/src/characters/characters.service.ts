@@ -9,15 +9,33 @@ export class CharactersService {
     return db.select().from(schema.characters).where(eq(schema.characters.book_id, bookId));
   }
 
+  private allowedFields = [
+    'name', 'gender', 'age', 'appearance', 'personality',
+    'catchphrase', 'speech_style', 'identity', 'backstory',
+    'motivation', 'custom_fields', 'is_main', 'aliases',
+  ];
+
   async create(bookId: string, data: any) {
     const db = getDb();
-    const [char] = await db.insert(schema.characters).values({ book_id: bookId, ...data }).returning();
+    const clean: any = { book_id: bookId };
+    for (const f of this.allowedFields) {
+      if (data[f] !== undefined) clean[f] = data[f];
+    }
+    const [char] = await db.insert(schema.characters).values(clean).returning();
     return char;
   }
 
-  async update(charId: string, data: any) {
+  async update(charId: string, data: any, expectedBookId?: string) {
     const db = getDb();
-    await db.update(schema.characters).set(data).where(eq(schema.characters.char_id, charId));
+    if (expectedBookId) {
+      const [c] = await db.select({ book_id: schema.characters.book_id }).from(schema.characters).where(eq(schema.characters.char_id, charId)).limit(1);
+      if (!c || c.book_id !== expectedBookId) throw new Error('角色不属于该作品');
+    }
+    const clean: any = {};
+    for (const f of this.allowedFields) {
+      if (data[f] !== undefined) clean[f] = data[f];
+    }
+    await db.update(schema.characters).set(clean).where(eq(schema.characters.char_id, charId));
   }
 
   async delete(charId: string) {

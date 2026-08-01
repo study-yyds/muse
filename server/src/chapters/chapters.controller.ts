@@ -38,11 +38,16 @@ export class ChaptersController {
 
   @Put(':chapterId')
   async save(
+    @Param('bookId') bookId: string,
     @Param('chapterId') chapterId: string,
     @Body() body: { content: string; word_count: number; bound_outline_node_id?: string | null },
   ) {
-    await this.ch.save(chapterId, body.content, body.word_count, body.bound_outline_node_id);
-    return { code: 200, message: '已保存' };
+    try {
+      await this.ch.save(chapterId, body.content, body.word_count, body.bound_outline_node_id, bookId);
+      return { code: 200, message: '已保存' };
+    } catch (e: any) {
+      return { code: 403, message: e.message };
+    }
   }
 
   @Delete(':chapterId')

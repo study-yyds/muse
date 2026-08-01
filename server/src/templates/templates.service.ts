@@ -30,14 +30,19 @@ export class TemplatesService {
       .where(and(...conditions));
   }
 
-  async get(id: string) {
+  async get(id: string, userId?: string) {
     const db = getDb();
     const [tpl] = await db
       .select()
       .from(schema.templates)
       .where(eq(schema.templates.template_id, id))
       .limit(1);
-    return tpl ?? null;
+    if (!tpl) return null;
+    // 公开或预置或自己创建的才返回
+    if (tpl.is_preset || tpl.is_public || (userId && tpl.creator_user_id === userId)) {
+      return tpl;
+    }
+    return null; // 私有模板对非所有者不可见
   }
 
   async create(
@@ -64,8 +69,18 @@ export class TemplatesService {
     return tpl;
   }
 
-  async delete(id: string) {
+  async delete(id: string, userId?: string) {
     const db = getDb();
+    if (userId) {
+      const [tpl] = await db
+        .select({ creator_user_id: schema.templates.creator_user_id })
+        .from(schema.templates)
+        .where(eq(schema.templates.template_id, id))
+        .limit(1);
+      if (tpl && tpl.creator_user_id !== userId) {
+        throw new Error('无权删除此模板');
+      }
+    }
     await db
       .delete(schema.templates)
       .where(eq(schema.templates.template_id, id));

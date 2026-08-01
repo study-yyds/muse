@@ -115,6 +115,21 @@ export class CharTestService {
     history.push({ role: 'user', content: message, timestamp: new Date().toISOString() });
 
     const baseUrl = customBaseUrl || process.env.AI_PLATFORM_BASE_URL || 'https://api.deepseek.com/v1';
+    // SSRF 防护：只允许白名单域名
+    const allowedHosts = ['api.deepseek.com', 'api.openai.com', 'dashscope.aliyuncs.com'];
+    try {
+      const host = new URL(baseUrl).hostname;
+      if (!allowedHosts.some((h) => host === h || host.endsWith('.' + h))) {
+        console.warn('[char-test] blocked SSRF attempt to:', host);
+        res.write(`event: error\ndata: ${JSON.stringify({ message: '不允许的 API 端点' })}\n\n`);
+        res.end();
+        return;
+      }
+    } catch {
+      res.write(`event: error\ndata: ${JSON.stringify({ message: '无效的 API 地址' })}\n\n`);
+      res.end();
+      return;
+    }
     let fullContent = '';
 
     try {
