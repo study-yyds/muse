@@ -3,6 +3,10 @@ import { eq, asc } from 'drizzle-orm';
 import { Response } from 'express';
 import { getDb, schema } from '../database/connection';
 import { marked } from 'marked';
+import crypto from 'crypto';
+
+// archiver v8 ESM — 用 require 兼容
+const archiver = require('archiver');
 
 @Injectable()
 export class ExportService {
@@ -130,6 +134,15 @@ export class ExportService {
         res.end();
         break;
 
+      case 'epub':
+        res.setHeader('Content-Type', 'application/epub+zip');
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="${encodeURIComponent(book.title)}.epub"`,
+        );
+        await this.buildEpub(res, book.title, chapters, characters, world, outlineChapters);
+        break;
+
       default:
         res.status(400).json({ message: '不支持的格式' });
     }
@@ -161,6 +174,94 @@ export class ExportService {
 
   private esc(s: string): string {
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  private async buildEpub(
+    res: Response,
+    title: string,
+    chapters: any[],
+    characters: any[],
+    world: any,
+    outlineChapters: any[],
+  ) {
+    const esc = this.esc.bind(this);
+
+    // EPUB 章节 XHTML
+    const chapterFiles = chapters.map((ch, i) => ({
+      id: `chapter${i + 1}`,
+      title: ch.title,
+      html: `<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="zh-CN">
+<head><title>${esc(ch.title)}</title><link rel="stylesheet" type="text/css" href="style.css"/></head>
+<body><h2>${esc(ch.title)}</h2>${ch.content.split('\n').map((l: string) => `<p>${esc(l)}</p>`).join('\n')}</body></html>`,
+    }));
+
+    // 角色页
+    const charHtml = characters.map((c) =>
+      `<div class="char"><h3>${esc(c.name)}</h3><p>${esc(c.gender ?? '')} · ${esc(c.identity ?? '')}</p><p>${esc(c.personality ?? '')}</p></div>`
+    ).join('\n');
+
+    // content.opf
+    const opf = `<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="bookid" version="2.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>${esc(title)}</dc:title>
+    <dc:creator>Muse User</dc:creator>
+    <dc:language>zh-CN</dc:language>
+    <dc:identifier id="bookid">urn:uuid:${crypto.randomUUID()}</dc:identifier>
+  </metadata>
+  <manifest>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+    <item id="css" href="style.css" media-type="text/css"/>
+    ${chapterFiles.map((cf) => `<item id="${cf.id}" href="${cf.id}.xhtml" media-type="application/xhtml+xml"/>`).join('\n')}
+    <item id="chars" href="characters.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine toc="ncx">
+    ${chapterFiles.map((cf) => `<itemref idref="${cf.id}"/>`).join('\n')}
+    <itemref idref="chars"/>
+  </spine>
+</package>`;
+
+    // toc.ncx
+    const ncx = `<?xml version="1.0" encoding="utf-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+  <head><meta name="dtb:uid" content="urn:uuid:${crypto.randomUUID()}"/></head>
+  <docTitle><text>${esc(title)}</text></docTitle>
+  <navMap>
+    ${chapterFiles.map((cf, i) => `<navPoint id="nav${i + 1}" playOrder="${i + 1}"><navLabel><text>${esc(cf.title)}</text></navLabel><content src="${cf.id}.xhtml"/></navPoint>`).join('\n')}
+    <navPoint id="navChars" playOrder="${chapterFiles.length + 1}"><navLabel><text>角色设定</text></navLabel><content src="characters.xhtml"/></navPoint>
+  </navMap>
+</ncx>`;
+
+    const css = `body { font-family: serif; line-height: 1.8; margin: 1em; } h2 { text-align: center; margin: 1em 0; } .char { margin: 0.5em 0; padding: 0.5em; border-left: 3px solid #ccc; }`;
+
+    const container = `<?xml version="1.0" encoding="utf-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>`;
+
+    const charactersXhtml = `<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="zh-CN">
+<head><title>角色设定</title><link rel="stylesheet" type="text/css" href="style.css"/></head>
+<body><h2>角色设定</h2>${charHtml}</body></html>`;
+
+    const archive = archiver('zip', { store: false });
+    archive.pipe(res);
+
+    // EPUB spec: 第一个文件必须是 mimetype，且不压缩
+    archive.append('application/epub+zip', { store: true, name: 'mimetype' });
+    archive.append(container, { name: 'META-INF/container.xml' });
+    archive.append(opf, { name: 'OEBPS/content.opf' });
+    archive.append(ncx, { name: 'OEBPS/toc.ncx' });
+    archive.append(css, { name: 'OEBPS/style.css' });
+    archive.append(charactersXhtml, { name: 'OEBPS/characters.xhtml' });
+    for (const cf of chapterFiles) {
+      archive.append(cf.html, { name: `OEBPS/${cf.id}.xhtml` });
+    }
+
+    await archive.finalize();
   }
 
   private buildHtml(

@@ -5,6 +5,11 @@ import { AppModule } from './app.module';
 
 jest.mock('marked', () => ({ marked: { parse: jest.fn((s: string) => `<p>${s}</p>`) } }));
 jest.mock('@neondatabase/serverless', () => ({}));
+jest.mock('archiver', () => () => ({
+  pipe: jest.fn(),
+  append: jest.fn(),
+  finalize: jest.fn(() => Promise.resolve()),
+}));
 
 describe('API — 四层覆盖（正常/校验/权限/边界）', () => {
   let app: INestApplication;

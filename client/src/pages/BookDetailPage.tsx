@@ -80,7 +80,7 @@ function SidebarNav({
             }
           />
           <DropdownMenuContent side="right" align="start">
-            {(["txt", "docx", "html"] as const).map((fmt) => (
+            {(["txt", "docx", "html", "epub"] as const).map((fmt) => (
               <DropdownMenuItem
                 key={fmt}
                 onClick={() => {
