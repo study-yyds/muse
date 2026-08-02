@@ -10,7 +10,4 @@ DESIGN_SYSTEM.md
 .claude/
 
 # 测试文件（MVP 阶段先不提交）
-*.test.ts
-*.test.tsx
-*.spec.ts
-test-setup.ts
+# 测试文件已纳入版本管理

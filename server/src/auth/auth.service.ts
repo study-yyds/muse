@@ -2,7 +2,21 @@ import { Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { eq, and, gte } from 'drizzle-orm';
 import { sql } from 'drizzle-orm';
+import { createHash } from 'crypto';
 import { getDb, schema } from '../database/connection';
+import { encryptPhone, decryptPhone } from './crypto.util';
+
+function hashPhone(phone: string): string {
+  return createHash('sha256').update(phone).digest('hex');
+}
+
+function decryptUser(user: any) {
+  if (!user) return user;
+  if (user.phone_encrypted) {
+    try { user.phone_number = decryptPhone(user.phone_encrypted); } catch { /* 解密失败保留原文 */ }
+  }
+  return user;
+}
 
 @Injectable()
 export class AuthService {
@@ -24,7 +38,7 @@ export class AuthService {
         ),
       );
 
-    // 写入新验证码
+    // 写入新验证码（验证码本身不加密，按手机号明文匹配）
     await getDb().insert(schema.verification_codes).values({
       phone_number: phone,
       code,
@@ -60,20 +74,29 @@ export class AuthService {
       .set({ used: true })
       .where(eq(schema.verification_codes.id, record.id));
 
-    // 查找或创建用户
-    let [user] = await getDb()
+    // 查找或创建用户（通过 phone_hash 或 phone_number 查询）
+    const phoneHash = hashPhone(phone);
+    const db = getDb();
+    let [user] = await db
       .select()
       .from(schema.users)
-      .where(eq(schema.users.phone_number, phone))
+      .where(eq(schema.users.phone_hash, phoneHash))
       .limit(1);
 
     if (!user) {
-      const [newUser] = await getDb()
+      const [newUser] = await db
         .insert(schema.users)
-        .values({ phone_number: phone })
+        .values({
+          phone_number: phone,
+          phone_hash: phoneHash,
+          phone_encrypted: encryptPhone(phone),
+        })
         .returning();
       user = newUser;
     }
+
+    // 解密返回
+    user = decryptUser(user);
 
     // 签发 JWT
     const token = this.jwt.sign({
@@ -91,6 +114,6 @@ export class AuthService {
       .from(schema.users)
       .where(eq(schema.users.user_id, userId))
       .limit(1);
-    return user ?? null;
+    return decryptUser(user ?? null);
   }
 }

@@ -2,8 +2,11 @@ import { Controller, Post, Body, Res, Req, UseGuards } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { AiService } from './ai.service';
 import { AuthGuard } from '../auth/auth.guard';
+import { RateLimitGuard } from '../auth/rate-limit.guard';
 
-@UseGuards(AuthGuard)
+const aiRateLimit = new RateLimitGuard(10, 60_000); // 每分钟10次
+
+@UseGuards(AuthGuard, aiRateLimit)
 @Controller('api/ai')
 export class AiController {
   constructor(private readonly ai: AiService) {}

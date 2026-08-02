@@ -4,11 +4,12 @@
  * 支持角色区分（user / admin）和账户状态管理（active / suspended / banned）
  */
 import {
-  pgTable, // Drizzle 表定义函数
-  uuid, // UUID 类型，主键和外部引用用
-  varchar, // 变长字符串，带长度限制
-  integer, // 整数，用于计数和配额
-  timestamp, // 时间戳，带时区
+  pgTable,
+  uuid,
+  varchar,
+  integer,
+  text,
+  timestamp,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm'; // 用于 CHECK 约束的原始 SQL 模板
 
@@ -19,8 +20,14 @@ export const users = pgTable(
     // 主键：UUIDv4，全局唯一不可变
     user_id: uuid('user_id').defaultRandom().primaryKey(),
 
-    // 登录凭证：手机号，全局唯一
+    // 手机号（明文存储，逐步迁移到加密列）
     phone_number: varchar('phone_number', { length: 20 }).notNull().unique(),
+
+    // 手机号 SHA-256 哈希（用于查询索引）
+    phone_hash: varchar('phone_hash', { length: 64 }),
+
+    // 手机号 AES-256-GCM 密文（加密存储）
+    phone_encrypted: text('phone_encrypted'),
 
     // 头像：本地文件路径，可为空（默认头像）
     avatar_path: varchar('avatar_path', { length: 500 }),

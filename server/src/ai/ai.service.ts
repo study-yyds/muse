@@ -3,6 +3,36 @@ import { eq } from 'drizzle-orm';
 import { getDb, schema } from '../database/connection';
 import { Response } from 'express';
 
+// 提示注入防护
+const MAX_USER_INPUT = 8000;  // 用户输入最大长度
+const MAX_HISTORY_MSG = 40;   // 历史消息最大条数
+const INJECTION_PATTERNS = [
+  /忽略.*(?:系统|之前|上面|所有|提示|规则|指令)/gi,
+  /ignore.*(?:system|previous|above|all|prompt|rule|instruction)/gi,
+  /\[系统指令\]|\[SYSTEM\]|<<SYSTEM>>|\[INST\]|<<SYS>>/gi,
+  /你的.*(?:系统提示|system prompt|指令|提示词)/gi,
+  /输出.*(?:系统提示|system prompt|指令|提示词)/gi,
+];
+
+export function sanitizePrompt(text: string): string {
+  if (!text || typeof text !== 'string') return '';
+  // 长度限制
+  let sanitized = text.slice(0, MAX_USER_INPUT);
+  // 过滤注入模式
+  for (const pattern of INJECTION_PATTERNS) {
+    sanitized = sanitized.replace(pattern, '[filtered]');
+  }
+  return sanitized;
+}
+
+function sanitizeMessages(msgs: any[]): any[] {
+  if (!Array.isArray(msgs)) return [];
+  return msgs.slice(-MAX_HISTORY_MSG).map((m) => ({
+    role: m.role,
+    content: sanitizePrompt(m.content),
+  }));
+}
+
 @Injectable()
 export class AiService {
   // SSE 流式续写/改写
@@ -62,7 +92,7 @@ ${charContext || '暂无'}
     const userPrompt =
       params.mode === 'continue'
         ? `请从以下位置续写（光标位置：${params.cursorPosition}）：\n\n${(chapter?.content ?? '').slice(Math.max(0, params.cursorPosition - 1000), params.cursorPosition)}`
-        : `请改写以下内容（${params.instruction ?? '优化这段文字'}）：\n\n${params.selectedText}`;
+        : `请改写以下内容（${sanitizePrompt(params.instruction ?? '优化这段文字')}）：\n\n${sanitizePrompt(params.selectedText ?? '')}`;
 
     void this.streamToClient(
       res,
@@ -533,12 +563,10 @@ ${worldText.slice(0, 1000)}
     const systemPrompt = prompts[ct] ?? prompts.write;
 
     try {
-      void this.streamChatToClient(
-        res,
-        systemPrompt,
-        params.messages ?? [{ role: 'user', content: params.message }],
-        params.model ?? 'deepseek-chat',
-      );
+      const cleanMessages = params.messages
+        ? sanitizeMessages(params.messages)
+        : [{ role: 'user', content: sanitizePrompt(params.message) }];
+      void this.streamChatToClient(res, systemPrompt, cleanMessages, params.model ?? 'deepseek-chat');
     } catch (e: any) {
       res.write(
         `event: error\ndata: ${JSON.stringify({ message: e.message ?? 'AI 服务异常' })}\n\n`,
@@ -660,8 +688,8 @@ ${worldText.slice(0, 1000)}
     let sample = '';
 
     if (customText && customText.trim().length >= 200) {
-      // 使用手动输入的文本
-      sample = customText.slice(0, 8000);
+      // 使用手动输入的文本（消毒 + 长度限制）
+      sample = sanitizePrompt(customText);
     } else if (bookId) {
       const db = getDb();
       const chapters = await db
