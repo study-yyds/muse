@@ -74,7 +74,7 @@ export class AuthService {
       .set({ used: true })
       .where(eq(schema.verification_codes.id, record.id));
 
-    // 查找或创建用户（通过 phone_hash 或 phone_number 查询）
+    // 查找或创建用户：phone_hash 优先，phone_number 兜底（兼容老用户无哈希）
     const phoneHash = hashPhone(phone);
     const db = getDb();
     let [user] = await db
@@ -84,6 +84,16 @@ export class AuthService {
       .limit(1);
 
     if (!user) {
+      // 兼容老用户：通过明文手机号查找
+      [user] = await db
+        .select()
+        .from(schema.users)
+        .where(eq(schema.users.phone_number, phone))
+        .limit(1);
+    }
+
+    if (!user) {
+      // 真正的新用户
       const [newUser] = await db
         .insert(schema.users)
         .values({

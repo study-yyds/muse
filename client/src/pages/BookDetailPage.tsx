@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/services/api";
 import type { BookDetail } from "@muse/shared";
 import { Button } from "@/components/ui/button";
@@ -18,7 +18,7 @@ import { useEditorStore } from "@/stores/editor";
 import { useToast } from "@/hooks/use-toast";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { ArrowLeft, UserRound, Globe, ListTree, FileText, Download, Send, Loader2, Sparkles, Settings, BarChart3, Menu, MessageCircle } from "lucide-react";
+import { ArrowLeft, UserRound, Globe, ListTree, FileText, Download, Send, Loader2, Sparkles, Settings, BarChart3, Menu, MessageCircle, Square, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type Section = "write" | "outline" | "characters" | "world" | "settings" | "stats";
@@ -221,44 +221,253 @@ export function BookDetailPage() {
 }
 
 function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
-  type Ver = { content: string; action?: any };
-  type Msg = { role: string; content: string; action?: any; versions?: Ver[]; adoptedVer?: number };
-  const [histories, setHistories] = useState<Record<string, Msg[]>>({});
+  type Ver = { content: string; action?: any; reasoning?: string };
+  type Msg = { role: string; content: string; action?: any; adoptedVer?: number; reasoning?: string; versions?: Ver[] };
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [msgs, setMsgs] = useState<Msg[]>([]);
+  const [sessions, setSessions] = useState<any[]>([]);
   const [streaming, setStreaming] = useState("");
+  const [reasoning, setReasoning] = useState("");
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [model, setModel] = useState("deepseek-v4-flash");
   const [chatStyle, setChatStyle] = useState("default");
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [expandedReasoning, setExpandedReasoning] = useState<Set<number>>(new Set());
+  const [streamReasonCollapsed, setStreamReasonCollapsed] = useState(false);
   const [activeVer, setActiveVer] = useState<Record<number, number>>({});
+  const abortRef = useRef<AbortController | null>(null);
+  const scrollBottomRef = useRef<HTMLDivElement | null>(null);
+  const msgsRef = useRef<Msg[]>([]);
+  const isRegeneratingRef = useRef(false);
+  useEffect(() => { msgsRef.current = msgs; }, [msgs]);
+  const saveTimer = useRef<ReturnType<typeof setTimeout>>();
   const rewriteCtx = useEditorStore((s) => s.aiRewriteContext);
   const clearRewrite = useEditorStore((s) => s.clearAiRewrite);
   const editor = useEditorStore();
   const { toast } = useToast();
-  const msgs = histories[section] ?? [];
+  const queryClient = useQueryClient();
   const token = localStorage.getItem("token");
+
+  // 从后端加载会话
+  const loadSessions = async () => {
+    try {
+      const res = await fetch(
+        `/api/ai/chat-sessions/${bookId}?section=${encodeURIComponent(section)}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      const json = await res.json();
+      const data = json?.data;
+      if (data?.active) {
+        setSessionId(data.active.id);
+        setMsgs(data.active.messages ?? []);
+      } else {
+        setSessionId(null);
+        setMsgs([]);
+      }
+      setSessions(data?.sessions ?? []);
+    } catch { /* ignore */ }
+  };
+
+  useEffect(() => {
+    loadSessions();
+    return () => clearTimeout(saveTimer.current);
+  }, [bookId, section]);
+
+  // 消息变化时自动滚到底部
+  useEffect(() => {
+    scrollBottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [msgs, streaming, reasoning]);
+
+  // 防抖保存消息到后端
+  const saveMsgs = (newMsgs: Msg[]) => {
+    setMsgs(newMsgs);
+    if (!sessionId) return;
+    clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(async () => {
+      try {
+        await fetch(`/api/ai/chat-sessions/${sessionId}/messages`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ messages: newMsgs }),
+        });
+      } catch { /* ignore */ }
+    }, 1000);
+  };
+
+  // 有新消息时立即保存（不等 debounce）
+  const flushSave = async (session: string, msgsList: Msg[]) => {
+    clearTimeout(saveTimer.current);
+    try {
+      await fetch(`/api/ai/chat-sessions/${session}/messages`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ messages: msgsList }),
+      });
+    } catch { /* ignore */ }
+  };
+
+  // 确保有活跃会话，没有则创建（不调用 loadSessions 避免覆盖当前消息）
+  const ensureSession = async (): Promise<string | null> => {
+    if (sessionId) return sessionId;
+    try {
+      const res = await fetch("/api/ai/chat-sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ book_id: bookId, section }),
+      });
+      const json = await res.json();
+      const id = json?.data?.id;
+      if (id) {
+        setSessionId(id);
+        // 异步刷新会话列表（不影响当前消息状态）
+        loadSessions();
+        return id;
+      }
+    } catch {
+      toast({ title: "无法创建会话", variant: "destructive" });
+    }
+    return null;
+  };
+
+  // "新对话"按钮
+  const newSession = async () => {
+    try {
+      const res = await fetch("/api/ai/chat-sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ book_id: bookId, section }),
+      });
+      const json = await res.json();
+      if (json?.data?.id) {
+        setSessionId(json.data.id);
+        setMsgs([]);
+        await loadSessions();
+        toast({ title: "已开启新对话" });
+      }
+    } catch {
+      toast({ title: "创建失败", variant: "destructive" });
+    }
+  };
+
+  // 恢复历史会话
+  const restoreSession = async (id: string) => {
+    try {
+      await fetch(`/api/ai/chat-sessions/${id}/restore`, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      await loadSessions();
+      setHistoryOpen(false);
+      toast({ title: "已恢复对话" });
+    } catch {
+      toast({ title: "恢复失败", variant: "destructive" });
+    }
+  };
+
+  // 删除历史会话
+  const deleteSession = async (id: string) => {
+    try {
+      await fetch(`/api/ai/chat-sessions/${id}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      await loadSessions();
+    } catch {
+      toast({ title: "删除失败", variant: "destructive" });
+    }
+  };
+
+  // 渲染时兜底：从末尾 JSON action 位置一刀切
+  const stripActionJson = (t: string) => {
+    if (!t) return "";
+    // 优先匹配 JSON 独立行：\n{ 或 \n[
+    let idx = t.lastIndexOf('\n{"action"');
+    if (idx < 0) idx = t.lastIndexOf('\n[{"action"');
+    if (idx > 0) return t.slice(0, idx).trim();
+    // fallback：JSON 直接跟在正文后面
+    idx = t.lastIndexOf('{"action"');
+    if (idx < 0) idx = t.lastIndexOf('[{"action"');
+    if (idx > 0) return t.slice(0, idx).trim();
+    return t;
+  };
 
   const extractDisplayText = (t: string) => {
     if (!t.trim()) return "";
-    if (t.trim().startsWith("{")) {
-      try { const p = JSON.parse(t.trim()); if (p.action && p.content) return p.content; } catch { /* incomplete */ }
+    let s = t.trim();
+    // 处理 markdown 代码块包裹（可能在开头或中间或末尾）
+    if (s.startsWith("\`\`\`json")) s = s.slice(7);
+    if (s.startsWith("\`\`\`")) s = s.slice(3);
+    if (s.endsWith("\`\`\`")) s = s.slice(0, -3);
+    // 末尾有 ```json 代码块 → 整体切掉
+    const fenceIdx = s.lastIndexOf("\n\`\`\`json\n");
+    if (fenceIdx > 0) s = s.slice(0, fenceIdx);
+    s = s.trim();
+    // 纯 JSON → 提取可读内容
+    if (s.startsWith("{")) {
+      try {
+        const p = JSON.parse(s);
+        if (p.sections?.length) {
+          return p.sections
+            .map((sec: any) => `【${sec.name}】\n${sec.content}`)
+            .join("\n\n");
+        }
+        if (p.name) return `角色：${p.name}\n${p.personality ?? ""}`;
+        return p.content || p.action || s;
+      } catch {
+        return s;
+      }
     }
-    const lastBrace = t.lastIndexOf("{");
+    if (s.startsWith("[")) {
+      try {
+        const arr = JSON.parse(s);
+        // world sections 数组
+        if (arr.length && arr[0].name && arr[0].content) {
+          return arr
+            .map((sec: any) => `【${sec.name}】\n${sec.content}`)
+            .join("\n\n");
+        }
+        // character actions 数组
+        if (arr.length && arr[0].action === "create_character") {
+          return arr
+            .map((c: any) => `【${c.name}】${c.gender ?? ""} · ${c.identity ?? ""}\n${c.personality ?? ""}`)
+            .join("\n\n");
+        }
+      } catch { /* fall through */ }
+    }
+    // 末尾有 JSON action（完整或截断）→ 去掉
+    const lastBrace = s.lastIndexOf("{");
     if (lastBrace > 0) {
-      try { const p = JSON.parse(t.slice(lastBrace)); if (p.action) return t.slice(0, lastBrace).trim(); } catch { return t.slice(0, lastBrace).trim(); }
+      try {
+        const p = JSON.parse(s.slice(lastBrace));
+        if (p.action) return s.slice(0, lastBrace).trim();
+      } catch {
+        // JSON 解析失败（可能被截断），仍尝试去除末尾的 JSON 片段
+        // 检查末尾是否像 JSON action：含 "action" 或 "sections"
+        const tail = s.slice(lastBrace);
+        if (tail.includes('"action"') || tail.includes('"sections"')) {
+          return s.slice(0, lastBrace).trim();
+        }
+        return s;
+      }
     }
-    return t.trim();
+    return s;
   };
 
-  // 单次 SSE 流式调用
-  const streamOnce = async (msg: string, prevMsgs: { role: string; content: string }[], bodyExtra?: Record<string, any>): Promise<Ver> => {
+  const streamOnce = async (
+    msg: string, prevMsgs: { role: string; content: string }[],
+    bodyExtra?: Record<string, any>, signal?: AbortSignal,
+    onStream?: (ac: string, ar: string) => void,
+  ): Promise<{ content: string; action?: any; reasoning: string }> => {
     const r = await fetch("/api/ai/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
       body: JSON.stringify({ book_id: bookId, context_type: section, model, message: msg, messages: prevMsgs, ...bodyExtra }),
+      signal,
     });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const reader = r.body?.getReader(); if (!reader) throw new Error("无响应");
-    const decoder = new TextDecoder(); let buf = ""; let ac = ""; let action: any = undefined;
+    const decoder = new TextDecoder(); let buf = ""; let ac = ""; let ar = ""; let action: any = undefined;
     while (true) {
       const { done, value } = await reader.read(); if (done) break;
       buf += decoder.decode(value, { stream: true }); const lines = buf.split("\n"); buf = lines.pop() ?? "";
@@ -267,7 +476,12 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
         if (line.startsWith("event: ")) { ev = line.slice(7); continue; }
         if (line.startsWith("data: ")) {
           const payload = line.slice(6);
-          if (ev === "chunk") { ac += payload; }
+          if (ev === "chunk") {
+            try { ac += JSON.parse(payload); } catch { ac += payload; }
+          }
+          if (ev === "reasoning") {
+            try { ar += JSON.parse(payload); } catch { ar += payload; }
+          }
           if (ev === "action") { try { action = JSON.parse(payload); } catch { /* ignore */ } }
           if (ev === "error") {
             try { const err = JSON.parse(payload); throw new Error(err.message ?? "AI 错误"); } catch (e) { if (e instanceof Error && e.message !== "AI 错误") throw e; throw new Error("AI 请求失败"); }
@@ -275,83 +489,337 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
           ev = "";
         }
       }
-      if (ac) setStreaming(extractDisplayText(ac));
+      if (onStream) {
+        onStream(ac, ar);
+      } else {
+        if (ar) setReasoning(ar);
+        if (ac) setStreaming(extractDisplayText(ac));
+      }
     }
-    return { content: ac ? extractDisplayText(ac) : "", action };
+    return { content: ac ? extractDisplayText(ac) : "", action, reasoning: ar };
   };
 
-  const send = async () => {
-    if (!input.trim() || loading) return;
-    const msg = rewriteCtx
-      ? "【改写以下选中文本】\n" + rewriteCtx.text + "\n\n【用户指令】" + input
-      : input;
-    const um: Msg = { role: "user", content: msg };
+  const doSend = async (userMsg: string) => {
+    const um: Msg = { role: "user", content: userMsg };
     const prevMsgs = [...msgs, um].map((m) => ({ role: m.role, content: m.content }));
-    setHistories((p) => ({ ...p, [section]: [...(p[section] ?? []), um] }));
-    setInput(""); setLoading(true); setStreaming("");
+    const newMsgs = [...msgs, um];
+    setMsgs(newMsgs);
+    // 立即保存用户消息到 DB（不等 debounce），避免刷新丢失
+    if (sessionId) flushSave(sessionId, newMsgs);
+    setInput(""); setLoading(true); setStreaming(""); setReasoning(""); setStreamReasonCollapsed(false);
+    const controller = new AbortController();
+    abortRef.current = controller;
     const bodyExtra: Record<string, any> = {};
     if (section === "write" && editor.activeChapterId) {
       bodyExtra.chapter_id = editor.activeChapterId;
       bodyExtra.cursor_position = rewriteCtx ? rewriteCtx.start : editor.cursorPosition;
       bodyExtra.style = chatStyle;
     }
+    // 确保有活跃会话
+    const sid = await ensureSession();
     try {
-      const V = 3;
-      const versions: Ver[] = [];
-      const baseMsgs = [...prevMsgs];
-      for (let v = 0; v < V; v++) {
-        setStreaming(`版本 ${v + 1}/${V} 生成中...`);
-        const result = await streamOnce(msg, baseMsgs, bodyExtra);
-        versions.push(result);
-      }
-      setStreaming("");
-      setHistories((p) => {
-        const updated = [...(p[section] ?? [])];
-        updated.push({ role: "assistant", content: versions[0].content, action: versions[0].action, versions });
-        return { ...p, [section]: updated };
-      });
+      const result = await streamOnce(userMsg, prevMsgs, bodyExtra, controller.signal);
+      setStreaming(""); setReasoning("");
+      const finalMsgs = [...newMsgs, { role: "assistant", content: result.content, action: result.action, reasoning: result.reasoning || undefined }];
+      setMsgs(finalMsgs);
+      if (sid) flushSave(sid, finalMsgs);
     } catch (e: any) {
-      setHistories((p) => ({ ...p, [section]: [...(p[section] ?? []), { role: "assistant", content: `（${e.message ?? "网络异常"}）` }] }));
+      const errMsgs = [...newMsgs, { role: "assistant", content: `（${e.message ?? "网络异常"}）` }];
+      setMsgs(errMsgs);
+      if (sid) flushSave(sid, errMsgs);
     }
     setLoading(false); setStreaming("");
   };
 
-  const adopt = async (a: any, gi: number, vi: number) => {
-    try {
-      if (a.action === "create_character") { await fetch("/api/books/" + bookId + "/characters", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify(a) }); toast({ title: "角色已创建" }); }
-      else if (a.action === "add_chapter") { await fetch("/api/books/" + bookId + "/outline/chapters", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + token }, body: JSON.stringify(a) }); toast({ title: "大纲章节已添加" }); }
-      else {
-        const oldCtx = useEditorStore.getState().aiRewriteContext;
-        if (oldCtx) { useEditorStore.getState().requestReplace(oldCtx.text, a.content, oldCtx.start, oldCtx.end, oldCtx.tiptapFrom, oldCtx.tiptapTo); useEditorStore.getState().clearAiRewrite(); }
-        else useEditorStore.getState().requestInsert(a.content);
-        toast({ title: "已插入编辑器" });
-      }
-      setHistories((p) => {
-        const sec = [...(p[section] ?? [])];
-        if (gi < sec.length) sec[gi] = { ...sec[gi], adoptedVer: vi };
-        return { ...p, [section]: sec };
-      });
-    } catch (e) { toast({ title: "写入失败", variant: "destructive" }); }
+  const send = () => {
+    if (!input.trim() || loading) return;
+    const msg = rewriteCtx
+      ? "【改写以下选中文本】\n" + rewriteCtx.text + "\n\n【用户指令】" + input
+      : input;
+    doSend(msg);
   };
 
-  let globalIdx = 0;
+  const regenerate = () => {
+    if (loading) return;
+    let lastUserIdx = -1;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role === "user") { lastUserIdx = i; break; }
+    }
+    if (lastUserIdx < 0) return;
+    const lastAiIdx = msgs.length - 1;
+    if (lastAiIdx <= lastUserIdx) return;
+
+    const userMsg = msgs[lastUserIdx].content;
+    const prevMsgs = msgs.slice(0, lastUserIdx + 1).map((m) => ({ role: m.role, content: m.content }));
+
+    setLoading(true); setStreamReasonCollapsed(false); isRegeneratingRef.current = true;
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    const bodyExtra: Record<string, any> = {};
+    if (section === "write" && editor.activeChapterId) {
+      bodyExtra.chapter_id = editor.activeChapterId;
+      bodyExtra.cursor_position = rewriteCtx ? rewriteCtx.start : editor.cursorPosition;
+      bodyExtra.style = chatStyle;
+    }
+
+    // 在位更新：先保存原始版本为 versions[0]
+    setMsgs((prev) => {
+      const updated = [...prev];
+      const target = { ...updated[lastAiIdx] };
+      if (!target.versions?.length) {
+        target.versions = [{ content: target.content, action: target.action, reasoning: target.reasoning }];
+      }
+      // 追加一个空版本作为流式占位
+      target.versions = [...target.versions, { content: "", action: undefined, reasoning: "" }];
+      target.content = "";
+      target.reasoning = "";
+      target.action = undefined;
+      target.adoptedVer = undefined;
+      updated[lastAiIdx] = target;
+      setActiveVer((p) => ({ ...p, [lastAiIdx]: target.versions!.length - 1 }));
+      return updated;
+    });
+    // 立即保存当前版本状态，避免刷新丢失
+    setTimeout(() => {
+      const sid = sessionId;
+      if (sid) flushSave(sid, msgsRef.current);
+    }, 50);
+
+    streamOnce(userMsg, prevMsgs, bodyExtra, controller.signal, (ac, ar) => {
+      // 实时更新当前版本
+      setMsgs((prev) => {
+        const updated = [...prev];
+        const m = { ...updated[lastAiIdx] };
+        if (m.versions) {
+          const vIdx = m.versions.length - 1;
+          m.versions = [...m.versions];
+          m.versions[vIdx] = { content: extractDisplayText(ac), action: undefined, reasoning: ar };
+          m.content = extractDisplayText(ac);
+          m.reasoning = ar;
+        }
+        updated[lastAiIdx] = m;
+        return updated;
+      });
+    }).then((result) => {
+      if (!result.content && !result.action) {
+        // 空响应：移除占位版本，回到之前的状态
+        setMsgs((prev) => {
+          const updated = [...prev];
+          const m = { ...updated[lastAiIdx] };
+          if (m.versions && m.versions.length > 1) {
+            m.versions = m.versions.slice(0, -1);
+            const prevVer = m.versions[m.versions.length - 1];
+            m.content = prevVer.content;
+            m.reasoning = prevVer.reasoning;
+            m.action = prevVer.action;
+          }
+          updated[lastAiIdx] = m;
+          setActiveVer((p) => ({ ...p, [lastAiIdx]: m.versions ? m.versions.length - 1 : 0 }));
+          return updated;
+        });
+        toast({ title: "AI 未生成有效内容，请重试", variant: "destructive" });
+      } else {
+        setMsgs((prev) => {
+          const updated = [...prev];
+          const m = { ...updated[lastAiIdx] };
+          if (m.versions) {
+            const vIdx = m.versions.length - 1;
+            m.versions = [...m.versions];
+            m.versions[vIdx] = { content: result.content, action: result.action, reasoning: result.reasoning || undefined };
+            m.content = result.content;
+            m.reasoning = result.reasoning || undefined;
+            m.action = result.action;
+          }
+          updated[lastAiIdx] = m;
+          return updated;
+        });
+      }
+      setLoading(false); isRegeneratingRef.current = false;
+      // 保存
+      setTimeout(() => {
+        const finalMsgs = msgsRef.current;
+        const sid = sessionId;
+        if (sid && finalMsgs[lastAiIdx]?.versions) flushSave(sid, finalMsgs);
+      }, 100);
+    }).catch((e: any) => {
+      setLoading(false); isRegeneratingRef.current = false;
+      toast({ title: e.message ?? "重新生成失败", variant: "destructive" });
+    });
+  };
+
+  const stop = () => {
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+  };
+
+  const adopt = async (a: any, gi: number) => {
+    try {
+      // 支持数组格式：多个角色逐个创建
+      if (Array.isArray(a)) {
+        let created = 0;
+        for (const item of a) {
+          if (item.action === "create_character") {
+            await fetch("/api/books/" + bookId + "/characters", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+              body: JSON.stringify(item),
+            });
+            created++;
+          } else if (item.action === "update_character" && item.char_id) {
+            const { action, char_id, ...fields } = item;
+            await fetch(`/api/books/${bookId}/characters/${char_id}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+              body: JSON.stringify(fields),
+            });
+            created++;
+          }
+        }
+        queryClient.invalidateQueries({ queryKey: ["characters", bookId] });
+        toast({ title: `已创建/更新 ${created} 个角色` });
+      } else if (a.action === "create_character") {
+        await fetch("/api/books/" + bookId + "/characters", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+          body: JSON.stringify(a),
+        });
+        queryClient.invalidateQueries({ queryKey: ["characters", bookId] });
+        toast({ title: "角色已创建" });
+      } else if (a.action === "update_character" && a.char_id) {
+        const { action, char_id, ...fields } = a;
+        await fetch(`/api/books/${bookId}/characters/${char_id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+          body: JSON.stringify(fields),
+        });
+        queryClient.invalidateQueries({ queryKey: ["characters", bookId] });
+        toast({ title: "角色已更新" });
+      } else if (a.action === "add_chapter") {
+        await fetch("/api/books/" + bookId + "/outline/chapters", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+          body: JSON.stringify(a),
+        });
+        queryClient.invalidateQueries({ queryKey: ["outline", bookId] });
+        toast({ title: "大纲章节已添加" });
+      } else if (a.action === "update_sections" && a.sections) {
+        await fetch("/api/books/" + bookId + "/world-setting", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+          body: JSON.stringify({ sections: a.sections }),
+        });
+        queryClient.invalidateQueries({ queryKey: ["world-setting", bookId] });
+        toast({ title: "世界观已更新" });
+      } else if (a.action === "update_section") {
+        await fetch("/api/books/" + bookId + "/world-setting", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+          body: JSON.stringify({ sections: [{ name: a.name, content: a.content }] }),
+        });
+        queryClient.invalidateQueries({ queryKey: ["world-setting", bookId] });
+        toast({ title: "世界观已更新" });
+      } else {
+        const oldCtx = useEditorStore.getState().aiRewriteContext;
+        if (oldCtx) {
+          useEditorStore.getState().requestReplace(oldCtx.text, a.content, oldCtx.start, oldCtx.end, oldCtx.tiptapFrom, oldCtx.tiptapTo);
+          useEditorStore.getState().clearAiRewrite();
+        } else {
+          useEditorStore.getState().requestInsert(a.content);
+        }
+        toast({ title: "已插入编辑器" });
+      }
+      const verIdx = msgs[gi]?.versions ? (activeVer[gi] ?? msgs[gi].versions!.length - 1) : 0;
+      const updated = msgs.map((m, i) => (i === gi ? { ...m, adoptedVer: verIdx } : m));
+      saveMsgs(updated);
+    } catch {
+      toast({ title: "写入失败", variant: "destructive" });
+    }
+  };
+
+  // 历史会话列表（归档的，非活跃）
+  const archived = sessions.filter((s: any) => s.id !== sessionId);
+
   return (
     <div className="flex flex-col h-full">
+      {/* 标题栏 + 新对话/历史 */}
       <div className="px-4 py-3 border-b border-border shrink-0">
-        <div className="flex items-center gap-2">
-          <Sparkles className="size-4 text-primary" />
-          <span className="text-sm font-medium text-foreground">AI 助手</span>
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Sparkles className="size-4 text-primary" />
+            <span className="text-sm font-medium text-foreground">AI 助手</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="xs"
+              onClick={newSession}
+              title="新对话（归档当前）"
+            >
+              + 新对话
+            </Button>
+            {archived.length > 0 && (
+              <DropdownMenu open={historyOpen} onOpenChange={setHistoryOpen}>
+                <DropdownMenuTrigger
+                  render={
+                    <Button variant="ghost" size="xs" className="text-xs">
+                      历史
+                    </Button>
+                  }
+                />
+                <DropdownMenuContent side="bottom" align="end" className="w-56">
+                  {archived.map((s: any) => (
+                    <div key={s.id} className="flex items-center gap-1 px-2 py-1.5">
+                      <DropdownMenuItem
+                        className="flex-1 cursor-pointer text-xs"
+                        onClick={() => restoreSession(s.id)}
+                      >
+                        <div className="min-w-0">
+                          <div className="truncate">{s.title ?? "无标题"}</div>
+                          <div className="text-[10px] text-muted-foreground">
+                            {s.messages?.length ?? 0} 条消息
+                          </div>
+                        </div>
+                      </DropdownMenuItem>
+                      <button
+                        className="text-red-400 hover:text-red-600 text-[10px] shrink-0 px-1"
+                        onClick={() => deleteSession(s.id)}
+                      >
+                        删除
+                      </button>
+                    </div>
+                  ))}
+                  {archived.length === 0 && (
+                    <div className="px-3 py-2 text-xs text-muted-foreground">
+                      暂无历史对话
+                    </div>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
+          </div>
         </div>
-        <p className="text-xs text-muted-foreground mt-0.5">可对话修改内容</p>
+        {sessionId ? (
+          <p className="text-xs text-muted-foreground mt-0.5">可对话修改内容</p>
+        ) : (
+          <p className="text-xs text-muted-foreground mt-0.5">发送消息后将自动创建会话</p>
+        )}
       </div>
+
       <ScrollArea className="flex-1 min-h-0">
         <div className="p-4 space-y-3">
           {msgs.map((m: Msg, i: number) => {
-            const gi = globalIdx++;
-            const hasVers = m.versions && m.versions.length > 1;
-            const vi = hasVers ? (activeVer[gi] ?? 0) : 0;
-            const displayContent = hasVers && m.versions ? m.versions[vi]?.content : m.content;
-            const displayAction = hasVers && m.versions ? m.versions[vi]?.action : m.action;
+            const reasonExpanded = expandedReasoning.has(i);
+            const toggleReasoning = () => {
+              setExpandedReasoning((prev) => {
+                const next = new Set(prev);
+                if (next.has(i)) next.delete(i);
+                else next.add(i);
+                return next;
+              });
+            };
             return (
               <div
                 key={i}
@@ -359,50 +827,133 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
                   "text-sm rounded-lg px-3 py-2",
                   m.role === "user"
                     ? "bg-primary/10 text-foreground ml-2"
-                    : "bg-muted text-foreground mr-2"
+                    : "bg-muted text-foreground mr-2",
                 )}
               >
-                <div className="whitespace-pre-wrap">{displayContent}</div>
-                {m.adoptedVer !== undefined ? (
-                  <div className="mt-2 pt-2 border-t border-border text-xs text-muted-foreground text-center">
-                    已采纳{hasVers ? ` (版本 ${m.adoptedVer + 1})` : ""}
-                  </div>
-                ) : displayAction && (
-                  <div className="mt-2 pt-2 border-t border-border space-y-1.5">
-                    <div className="flex items-center justify-center gap-1">
-                      {hasVers && (
-                        <Button variant="ghost" size="icon-xs" disabled={vi === 0} onClick={() => setActiveVer((p) => ({ ...p, [gi]: vi - 1 }))}>
-                          &lt;
+                {m.role === "user" ? (
+                  <div className="whitespace-pre-wrap">{m.content}</div>
+                ) : (() => {
+                  const hasVersions = m.versions && m.versions.length > 0;
+                  const verIdx = hasVersions ? (activeVer[i] ?? m.versions!.length - 1) : 0;
+                  const curVer: Ver = hasVersions
+                    ? m.versions![verIdx]
+                    : { content: m.content, action: m.action, reasoning: m.reasoning };
+                  const isLastAi = i === msgs.length - 1 && m.role === "assistant";
+                  const isAdopted = m.adoptedVer !== undefined;
+                  const hasAction = !!curVer.action;
+
+                  return (
+                  <div>
+                    {/* 思考块（折叠） */}
+                    {curVer.reasoning && (
+                      <div className="mb-2">
+                        <button
+                          onClick={toggleReasoning}
+                          className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors w-full text-left"
+                        >
+                          <ChevronRight
+                            className={cn(
+                              "size-3 transition-transform",
+                              reasonExpanded && "rotate-90",
+                            )}
+                          />
+                          思考
+                        </button>
+                        {reasonExpanded && (
+                          <div className="mt-1.5 pl-4 border-l-2 border-border text-xs text-muted-foreground whitespace-pre-wrap leading-relaxed max-h-48 overflow-y-auto">
+                            {curVer.reasoning}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    <div className="whitespace-pre-wrap">{stripActionJson(curVer.content) || "(空白)"}</div>
+                    {isAdopted ? (
+                      <div className="mt-2 pt-2 border-t border-border text-xs text-muted-foreground text-center">
+                        已采纳
+                      </div>
+                    ) : isLastAi ? (
+                      <div className="mt-2 pt-2 border-t border-border flex items-center gap-2 flex-wrap">
+                        {hasAction && (
+                          <Button size="xs" onClick={() => adopt(curVer.action!, i)}>
+                            采纳
+                          </Button>
+                        )}
+                        <Button size="xs" variant="ghost" onClick={regenerate}>
+                          重新生成
                         </Button>
-                      )}
-                      <Button size="xs" onClick={() => adopt(displayAction, gi, vi)}>
-                        采纳{hasVers ? ` (${vi + 1}/${m.versions!.length})` : ""}
-                      </Button>
-                      {hasVers && (
-                        <Button variant="ghost" size="icon-xs" disabled={vi >= m.versions!.length - 1} onClick={() => setActiveVer((p) => ({ ...p, [gi]: vi + 1 }))}>
-                          &gt;
-                        </Button>
-                      )}
-                    </div>
+                        {hasVersions && m.versions!.length > 1 && (
+                          <span className="text-xs text-muted-foreground ml-auto flex items-center gap-1">
+                            <button
+                              className="hover:text-foreground disabled:opacity-30"
+                              disabled={verIdx === 0}
+                              onClick={() => setActiveVer((p) => ({ ...p, [i]: verIdx - 1 }))}
+                            >
+                              ◀
+                            </button>
+                            版本 {verIdx + 1}/{m.versions!.length}
+                            <button
+                              className="hover:text-foreground disabled:opacity-30"
+                              disabled={verIdx === m.versions!.length - 1}
+                              onClick={() => setActiveVer((p) => ({ ...p, [i]: verIdx + 1 }))}
+                            >
+                              ▶
+                            </button>
+                          </span>
+                        )}
+                      </div>
+                    ) : hasAction ? (
+                      <div className="mt-2 pt-2 border-t border-border text-xs text-muted-foreground text-center">
+                        已覆盖
+                      </div>
+                    ) : null}
                   </div>
-                )}
+                );})()}
               </div>
             );
           })}
-          {streaming && (
-            <div className="text-sm rounded-lg px-3 py-2 bg-muted text-foreground mr-2 whitespace-pre-wrap">
-              {streaming}
-              <span className="inline-block w-1.5 h-4 bg-primary animate-pulse ml-0.5 align-text-bottom" />
+          {/* 流式输出：思考（可折叠） + 正文 */}
+          {(reasoning || streaming) && (
+            <div className="text-sm rounded-lg px-3 py-2 bg-muted text-foreground mr-2">
+              {reasoning && (
+                <div className={cn(streaming && "mb-2")}>
+                  <button
+                    onClick={() => setStreamReasonCollapsed(!streamReasonCollapsed)}
+                    className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <ChevronRight
+                      className={cn(
+                        "size-3 transition-transform",
+                        !streamReasonCollapsed && "rotate-90",
+                      )}
+                    />
+                    <Loader2 className="size-3 animate-spin" />
+                    思考中...
+                  </button>
+                  {!streamReasonCollapsed && (
+                    <div className="mt-1.5 pl-4 border-l-2 border-border text-xs text-muted-foreground whitespace-pre-wrap leading-relaxed max-h-48 overflow-y-auto">
+                      {reasoning}
+                    </div>
+                  )}
+                </div>
+              )}
+              {streaming && (
+                <div className={cn("whitespace-pre-wrap", reasoning && "pt-2 border-t border-border")}>
+                  {stripActionJson(streaming)}
+                  <span className="inline-block w-1.5 h-4 bg-primary animate-pulse ml-0.5 align-text-bottom" />
+                </div>
+              )}
             </div>
           )}
-          {loading && !streaming && (
+          {loading && !reasoning && !streaming && !isRegeneratingRef.current && (
             <div className="text-xs text-muted-foreground italic px-3">
               <Loader2 className="inline size-3 animate-spin mr-1" />
-              思考中...
+              连接中...
             </div>
           )}
+          <div ref={scrollBottomRef} />
         </div>
       </ScrollArea>
+
       <div className="p-3 border-t border-border space-y-2 shrink-0">
         {section === "write" && (
           <div className="flex items-center gap-2">
@@ -411,7 +962,7 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
                 <span className="text-muted-foreground shrink-0">改写：</span>
                 <span className="truncate">{rewriteCtx.text.slice(0, 80)}</span>
                 <button onClick={() => clearRewrite()} className="shrink-0 text-muted-foreground hover:text-foreground">
-                  &times;
+                  ×
                 </button>
               </div>
             ) : (
@@ -423,7 +974,13 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
                   const s = useEditorStore.getState();
                   if (s.selectedText) {
                     const c = s.aiRewriteContext;
-                    s.setAiRewrite(s.selectedText, s.cursorPosition, s.cursorPosition + s.selectedText.length, c?.tiptapFrom, c?.tiptapTo);
+                    s.setAiRewrite(
+                      s.selectedText,
+                      s.cursorPosition,
+                      s.cursorPosition + s.selectedText.length,
+                      c?.tiptapFrom,
+                      c?.tiptapTo,
+                    );
                   }
                 }}
               >
@@ -444,9 +1001,15 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
             }}
             className="text-xs"
           />
-          <Button size="icon" onClick={send} disabled={loading || !input.trim()}>
-            <Send className="size-4" />
-          </Button>
+          {loading ? (
+            <Button size="icon" onClick={stop} variant="destructive" title="停止生成">
+              <Square className="size-4" />
+            </Button>
+          ) : (
+            <Button size="icon" onClick={send} disabled={!input.trim()}>
+              <Send className="size-4" />
+            </Button>
+          )}
         </div>
         {section === "write" && (
           <div className="flex items-center gap-2">

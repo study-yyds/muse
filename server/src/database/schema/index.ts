@@ -47,5 +47,8 @@ export { token_usage_records, user_monthly_quota } from './usage';
 // ---- 模板库 ----
 export { templates } from './templates';
 
+// ---- AI 对话会话 ----
+export { ai_chat_sessions } from './chat-sessions';
+
 // ---- 角色测试对话 ----
 export { char_test_dialog_sessions } from './char-test';

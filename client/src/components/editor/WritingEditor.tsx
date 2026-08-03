@@ -7,6 +7,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { TiptapEditor } from "./TiptapEditor";
+import { ExtractSettingDialog } from "./ExtractSettingDialog";
 import { useToast } from "@/hooks/use-toast";
 import { useThrottle } from "@/hooks/use-throttle";
 import { useEditorStore } from "@/stores/editor";
@@ -17,6 +18,7 @@ import {
   ChevronDown,
   ChevronRight,
   Target,
+  Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -51,6 +53,7 @@ export function WritingEditor({ bookId }: Props) {
   const [editorContent, setEditorContent] = useState("");
   const [isDirty, setIsDirty] = useState(false);
   const [boundNodeId, setBoundNodeId] = useState<string | null>(null);
+  const [extractOpen, setExtractOpen] = useState(false);
 
   // 今日码字进度
   const { data: statsData } = useQuery({
@@ -308,6 +311,17 @@ export function WritingEditor({ bookId }: Props) {
               </select>
             )}
             {isDirty && <span className="text-xs text-muted-foreground">未保存</span>}
+            {activeChapterId && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setExtractOpen(true)}
+                title="AI 提取角色/世界观设定"
+              >
+                <Sparkles className="size-4 mr-1" />
+                提取设定
+              </Button>
+            )}
             <Button size="sm" onClick={() => saveMutation.mutate()} disabled={!isDirty || saveMutation.isPending}>
               {saveMutation.isPending && <Loader2 className="size-4 animate-spin" />}保存
             </Button>
@@ -338,6 +352,13 @@ export function WritingEditor({ bookId }: Props) {
           />
         )}
       </div>
+
+      <ExtractSettingDialog
+        open={extractOpen}
+        onOpenChange={setExtractOpen}
+        bookId={bookId}
+        chapterId={activeChapterId ?? ""}
+      />
     </div>
   );
 }
