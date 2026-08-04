@@ -20,6 +20,16 @@ async function request<T>(
       },
     });
 
+    // 登录态过期 → 清除 token 并跳转登录页
+    if (res.status === 401 || res.status === 403) {
+      localStorage.removeItem("token");
+      // 避免在登录页本身触发无限跳转
+      if (!window.location.pathname.startsWith("/login")) {
+        window.location.href = "/login";
+      }
+      throw new ApiError(res.status, "登录已过期，请重新登录");
+    }
+
     if (!res.ok) {
       const error = await res.json().catch(() => ({ message: res.statusText }));
       throw new ApiError(res.status, error.message ?? "请求失败");

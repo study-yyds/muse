@@ -68,13 +68,35 @@ export class ChaptersService {
       .update(schema.chapters)
       .set(data)
       .where(eq(schema.chapters.chapter_id, chapterId));
+
+    // 同步更新作品总字数
+    if (expectedBookId) await this.#recalcBookWords(expectedBookId);
   }
 
   async delete(chapterId: string) {
     const db = getDb();
+    const [ch] = await db
+      .select({ book_id: schema.chapters.book_id })
+      .from(schema.chapters)
+      .where(eq(schema.chapters.chapter_id, chapterId))
+      .limit(1);
     await db
       .delete(schema.chapters)
       .where(eq(schema.chapters.chapter_id, chapterId));
+    if (ch) await this.#recalcBookWords(ch.book_id);
+  }
+
+  // 重算作品总字数
+  async #recalcBookWords(bookId: string) {
+    const db = getDb();
+    const [row] = await db
+      .select({ total: sql<number>`COALESCE(SUM(${schema.chapters.word_count}), 0)` })
+      .from(schema.chapters)
+      .where(eq(schema.chapters.book_id, bookId));
+    await db
+      .update(schema.books)
+      .set({ word_count: row?.total ?? 0, updated_at: sql`NOW()` })
+      .where(eq(schema.books.book_id, bookId));
   }
 
   // 合并两章：拼接内容，删旧建新
@@ -109,6 +131,7 @@ export class ChaptersService {
         sort_order: targetOrder,
       })
       .returning();
+    await this.#recalcBookWords(bookId);
     return ch;
   }
 
@@ -151,6 +174,7 @@ export class ChaptersService {
         sort_order: ch.sort_order + 1,
       })
       .returning();
+    await this.#recalcBookWords(bookId);
     return newCh;
   }
 }

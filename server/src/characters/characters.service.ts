@@ -6,13 +6,18 @@ import { getDb, schema } from '../database/connection';
 export class CharactersService {
   async list(bookId: string) {
     const db = getDb();
-    return db.select().from(schema.characters).where(eq(schema.characters.book_id, bookId));
+    return db
+      .select()
+      .from(schema.characters)
+      .where(eq(schema.characters.book_id, bookId))
+      .orderBy(schema.characters.created_at);
   }
 
   private allowedFields = [
     'name', 'gender', 'age', 'appearance', 'personality',
     'catchphrase', 'speech_style', 'identity', 'backstory',
     'motivation', 'custom_fields', 'is_main', 'aliases',
+    'avatar_url',
   ];
 
   async create(bookId: string, data: any) {

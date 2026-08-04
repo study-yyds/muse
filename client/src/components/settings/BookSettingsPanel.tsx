@@ -17,6 +17,8 @@ interface BookSettings {
 
 interface Props {
   bookId: string;
+  coverUrl?: string | null;
+  onCoverChange?: (url: string) => void;
 }
 
 const WRITING_STYLES = [
@@ -37,7 +39,7 @@ const SAVE_INTERVALS = [
   { value: 1800, label: "30 分钟" },
 ];
 
-export function BookSettingsPanel({ bookId }: Props) {
+export function BookSettingsPanel({ bookId, coverUrl, onCoverChange }: Props) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
@@ -54,6 +56,8 @@ export function BookSettingsPanel({ bookId }: Props) {
   const [isMimicking, setIsMimicking] = useState(false);
   const [mimicResult, setMimicResult] = useState<string | null>(null);
   const [customStyleText, setCustomStyleText] = useState("");
+  const [visualStyle, setVisualStyle] = useState("");
+  const [coverLightbox, setCoverLightbox] = useState(false);
 
   const doMimic = async (body: Record<string, any>) => {
     setIsMimicking(true);
@@ -123,6 +127,39 @@ export function BookSettingsPanel({ bookId }: Props) {
         <Settings className="size-5" />
         作品设置
       </h2>
+
+      {/* 封面管理 */}
+      <div className="space-y-3">
+        <Label className="text-sm font-medium">作品封面</Label>
+        <div className="flex gap-4">
+          <div className="w-32 aspect-[2/3] rounded-lg overflow-hidden bg-muted flex-shrink-0">
+            {coverUrl ? (
+              <img src={coverUrl} alt="封面" className="w-full h-full object-cover cursor-pointer hover:ring-2 hover:ring-primary/50 transition-all" onClick={() => setCoverLightbox(true)} />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center text-xs text-muted-foreground">
+                暂无封面
+              </div>
+            )}
+          </div>
+          <div className="flex-1 space-y-2">
+            <p className="text-xs text-muted-foreground">
+              根据作品世界观、角色设定自动生成封面图
+            </p>
+            <CoverGenerateButton
+              bookId={bookId}
+              onGenerated={(url) => onCoverChange?.(url)}
+              style={visualStyle}
+            />
+          </div>
+        </div>
+      </div>
+
+      <Separator />
+
+      {/* 视觉风格 */}
+      <VisualStyleSetting bookId={bookId} style={visualStyle} onStyleChange={setVisualStyle} />
+
+      <Separator />
 
       {/* 自动保存间隔 */}
       <div className="space-y-3">
@@ -254,7 +291,199 @@ export function BookSettingsPanel({ bookId }: Props) {
           保存设置
         </Button>
       </div>
+
+      {/* 封面全屏 lightbox */}
+      {coverLightbox && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center cursor-pointer"
+          onClick={() => setCoverLightbox(false)}
+        >
+          <img
+            src={coverUrl!}
+            alt="封面预览"
+            className="max-w-[90vw] max-h-[90vh] object-contain rounded-lg"
+          />
+        </div>
+      )}
     </div>
+  );
+}
+
+function VisualStyleSetting({
+  bookId,
+  style,
+  onStyleChange,
+}: {
+  bookId: string;
+  style: string;
+  onStyleChange: (s: string) => void;
+}) {
+  const [loading, setLoading] = useState(false);
+  const { toast } = useToast();
+
+  useEffect(() => {
+    api.get<{ data: { extra?: any } }>(`/books/${bookId}/settings`).then((res) => {
+      const s = res?.data?.extra?.visual_style;
+      if (s) onStyleChange(s);
+    }).catch(() => {});
+  }, [bookId]);
+
+  const getRecommendation = async () => {
+    setLoading(true);
+    try {
+      const token = localStorage.getItem("token");
+      const res = await fetch("/api/ai/recommend-style", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ book_id: bookId }),
+      });
+      const json = await res.json();
+      const recommended = json?.data?.style || "电影写实风";
+      onStyleChange(recommended);
+      await api.put(`/books/${bookId}/settings`, { extra: { visual_style: recommended } as any });
+      toast({ title: `推荐风格：${recommended}` });
+    } catch {
+      toast({ title: "获取推荐失败", variant: "destructive" });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const saveStyle = async () => {
+    try {
+      await api.put(`/books/${bookId}/settings`, { extra: { visual_style: style } as any });
+      toast({ title: "视觉风格已保存" });
+    } catch {
+      toast({ title: "保存失败", variant: "destructive" });
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <Label className="text-sm font-medium">视觉风格（生图用）</Label>
+      <div className="flex gap-2">
+        <Input
+          value={style}
+          onChange={(e) => onStyleChange(e.target.value)}
+          placeholder="如：废土朋克、水墨武侠..."
+          className="flex-1"
+        />
+        <Button size="sm" variant="outline" onClick={getRecommendation} disabled={loading}>
+          {loading ? <Loader2 className="size-3 animate-spin" /> : "AI 推荐"}
+        </Button>
+        <Button size="sm" onClick={saveStyle}>保存</Button>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        所有封面和角色图将统一使用此风格。AI 推荐基于世界观自动分析。
+      </p>
+    </div>
+  );
+}
+
+function CoverGenerateButton({
+  bookId,
+  onGenerated,
+  style,
+}: {
+  bookId: string;
+  onGenerated: (url: string) => void;
+  style?: string;
+}) {
+  const [generating, setGenerating] = useState(false);
+  const [prompt, setPrompt] = useState("");
+  const [showPrompt, setShowPrompt] = useState(false);
+  const { toast } = useToast();
+
+  const doGenerate = async () => {
+    setGenerating(true);
+    try {
+      const token = localStorage.getItem("token");
+      const res = await fetch("/api/ai/generate-cover", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ book_id: bookId, prompt: prompt || undefined, size: "2K", style }),
+      });
+      if (!res.ok) throw new Error("生成失败");
+      const json = await res.json();
+      const url = json?.data?.url;
+      if (url) {
+        onGenerated(url);
+        toast({ title: "封面已生成" });
+        setShowPrompt(false);
+      }
+    } catch {
+      toast({ title: "生成失败，请稍后重试", variant: "destructive" });
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  return (
+    <>
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={async () => {
+          setGenerating(true);
+          try {
+            const token = localStorage.getItem("token");
+            const res = await fetch("/api/ai/generate-cover", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+              body: JSON.stringify({ book_id: bookId, size: "2K", style }),
+            });
+            if (res.ok) {
+              const json = await res.json();
+              if (json?.data?.url) {
+                onGenerated(json.data.url);
+                toast({ title: "封面已生成" });
+                return;
+              }
+            }
+            setShowPrompt(true);
+          } catch {
+            setShowPrompt(true);
+          } finally {
+            setGenerating(false);
+          }
+        }}
+        disabled={generating}
+      >
+        {generating && <Loader2 className="size-3 animate-spin mr-1" />}
+        快速生成
+      </Button>
+      <Button
+        size="sm"
+        variant="ghost"
+        onClick={() => setShowPrompt(true)}
+        disabled={generating}
+      >
+        自定义 Prompt
+      </Button>
+
+      {showPrompt && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-card rounded-xl p-6 w-full max-w-lg mx-4 space-y-4">
+            <h3 className="text-sm font-semibold">封面 Prompt</h3>
+            <textarea
+              className="w-full h-32 rounded border border-border bg-background px-3 py-2 text-xs resize-none"
+              placeholder="描述你想要的封面..."
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+            />
+            <div className="flex justify-end gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setShowPrompt(false)}>
+                取消
+              </Button>
+              <Button size="sm" onClick={doGenerate} disabled={generating}>
+                {generating && <Loader2 className="size-3 animate-spin mr-1" />}
+                生成
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 

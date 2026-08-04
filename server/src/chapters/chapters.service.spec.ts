@@ -20,6 +20,7 @@ jest.mock('../database/connection', () => ({
   getDb: () => mockDb,
   schema: {
     chapters: { chapter_id: 'ch_id', book_id: 'ch_book_id', title: 'ch_title', content: 'ch_content', sort_order: 'ch_sort', word_count: 'ch_wc' },
+    books: { book_id: 'b_id', word_count: 'b_wc', updated_at: 'b_upd' },
   },
 }));
 
@@ -33,18 +34,24 @@ describe('ChaptersService', () => {
 
   describe('save — 跨书校验', () => {
     it('expectedBookId 匹配时正常保存', async () => {
-      mockDb.select.mockImplementation(() => mockDb);
-      mockDb.from.mockImplementation(() => mockDb);
-      mockDb.where.mockImplementation(() => mockDb);
-      mockDb.limit.mockReturnValue(mockDb);
-      // Mock: chapter belongs to the right book
-      jest.spyOn(mockDb, 'select').mockReturnValue({
-        from: () => ({
-          where: () => ({
-            limit: () => Promise.resolve([{ book_id: 'book-123' }]),
+      let selectCallCount = 0;
+      jest.spyOn(mockDb, 'select').mockImplementation(() => {
+        selectCallCount++;
+        return {
+          from: () => ({
+            where: () => {
+              if (selectCallCount === 1) {
+                // 第一次：所有权校验 → 调用 .limit()
+                return {
+                  limit: () => Promise.resolve([{ book_id: 'book-123' }]),
+                };
+              }
+              // 第二次：recalcBookWords 的 SELECT SUM → 直接返回结果
+              return Promise.resolve([{ total: 100 }]);
+            },
           }),
-        }),
-      } as any);
+        } as any;
+      });
 
       await expect(
         service.save('chapter-1', 'content', 100, undefined, 'book-123')

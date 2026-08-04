@@ -15,6 +15,8 @@ import type { Request, Response } from 'express';
 import { AiService } from './ai.service';
 import { AuthGuard } from '../auth/auth.guard';
 import { RateLimitGuard } from '../auth/rate-limit.guard';
+import { eq } from 'drizzle-orm';
+import { getDb, schema } from '../database/connection';
 
 const aiRateLimit = new RateLimitGuard(10, 60_000); // 每分钟10次
 
@@ -162,5 +164,57 @@ export class AiController {
   ) {
     await this.ai.deleteSession(sessionId, (req as any).userId);
     return { code: 200, message: '已删除' };
+  }
+
+  // ============== AI 生图 ==============
+
+  @Post('recommend-style')
+  async recommendStyle(
+    @Body() body: { book_id: string },
+    @Req() req: Request,
+  ) {
+    await this.ai.checkBookOwnership(body.book_id, (req as any).userId);
+    const data = await this.ai.recommendVisualStyle(body.book_id);
+    return { code: 200, data };
+  }
+
+  @Post('generate-cover')
+  async generateCover(
+    @Body()
+    body: { book_id: string; prompt?: string; size?: string; style?: string },
+    @Req() req: Request,
+  ) {
+    await this.ai.checkBookOwnership(body.book_id, (req as any).userId);
+    const prompt =
+      body.prompt || (await this.ai.buildCoverPrompt(body.book_id));
+    const url = await this.ai.generateImage(prompt, body.size, body.style);
+
+    // 写入 cover_url
+    await getDb()
+      .update(schema.books)
+      .set({ cover_url: url })
+      .where(eq(schema.books.book_id, body.book_id));
+
+    return { code: 200, data: { url } };
+  }
+
+  @Post('generate-char-image')
+  async generateCharImage(
+    @Body()
+    body: { book_id: string; char_id: string; prompt?: string; size?: string; style?: string },
+    @Req() req: Request,
+  ) {
+    await this.ai.checkBookOwnership(body.book_id, (req as any).userId);
+    const prompt =
+      body.prompt || (await this.ai.buildCharPrompt(body.char_id));
+    const url = await this.ai.generateImage(prompt, body.size, body.style);
+
+    // 写入 avatar_url
+    await getDb()
+      .update(schema.characters)
+      .set({ avatar_url: url })
+      .where(eq(schema.characters.char_id, body.char_id));
+
+    return { code: 200, data: { url } };
   }
 }

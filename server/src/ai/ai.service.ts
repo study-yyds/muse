@@ -2,6 +2,9 @@ import { Injectable } from '@nestjs/common';
 import { eq, and, desc } from 'drizzle-orm';
 import { getDb, schema } from '../database/connection';
 import { Response } from 'express';
+import crypto from 'crypto';
+import { writeFile, mkdir } from 'fs/promises';
+import path from 'path';
 
 // 提示注入防护
 const MAX_USER_INPUT = 8000; // 用户输入最大长度
@@ -572,9 +575,12 @@ ${after || '（结尾）'}`;
       )
       .join('\n');
 
-    // 大纲全部节点列表
+    // 大纲全部节点列表（含 ID 供 update 引用）
     const outlineNodes = allOutlineNodes
-      .map((oc) => `- ${oc.title}（${oc.status}）：${oc.summary ?? ''}`)
+      .map(
+        (oc) =>
+          `- id=${oc.id} | ${oc.title}（${oc.status}）：${oc.summary ?? ''}`,
+      )
       .join('\n');
 
     // 风格说明
@@ -627,18 +633,29 @@ ${styleBlock}
 【已有角色】
 ${charBrief}
 
-【当前大纲节点】
+【当前大纲节点（情节关键点），修改已有节点时用对应的 id】
 ${outlineNodes || '暂无节点，需要从零开始'}
 
 【规划指引】
-- 根据角色驱动情节：每个大纲节点应该推动至少一个角色的成长或冲突
-- 保持节奏：幕与幕之间要有转折，章与章之间要有钩子
-- 讨论结构时用自然语言，给具体建议而不是泛泛而谈
+- 每个节点是一个独立的情节事件，标题精炼有冲突感，摘要写清"谁做了什么，导致了什么变化"
+- 节点之间必须有因果链：上一个节点的结果 = 下一个节点的起因
+- 故事弧线完整：铺垫 → 激励事件 → 上升冲突 → 转折 → 高潮 → 收束
+- 每个节点至少推动一个角色的状态变化（成长、堕落、觉悟、牺牲等）
 
-【回复格式——严格遵守】
-如果需要新增章节，先简要说明理由，最后一行输出纯 JSON（前后不加任何额外字符，不要用反引号包裹）：
-{"action":"add_chapter","title":"章节名","summary":"该章节的核心情节摘要"}
-如果只是讨论，只输出自然语言。`,
+【输出格式】
+先按序号列出每个节点（标题 + 一句话摘要），最后一行输出纯 JSON 数组。
+
+JSON 格式：
+[{"action":"add_chapter","title":"节点标题","summary":"谁做了什么事，导致了什么变化或后果"}]
+
+示例：
+1. 血路重逢：陆启鸣在灰潮禁区偶遇失踪七年的师父柯常，发现对方双手已被灰石替代，正在替路币公会秘密测绘禁区。
+2. 旧账翻新：霍青当众公开三年前的隧道事故记录，指控陆启鸣伪造数据——实则是顾长明栽赃的证据浮出水面。
+
+[{"action":"add_chapter","title":"血路重逢","summary":"陆启鸣在灰潮禁区偶遇失踪七年的师父柯常，发现对方双手已被灰石替代，正在替路币公会秘密测绘禁区，陆启鸣对自己的过去产生怀疑。"}]
+
+修改已有节点（用上面列表中的节点 ID）：
+{"action":"update_chapter","chapter_id":"上面列表中的节点ID","title":"新标题","summary":"新摘要"}`,
 
       characters: `你是角色创作顾问，帮作者塑造生动、立体的角色。
 
@@ -813,9 +830,7 @@ ${worldText.slice(0, 1000)}
               }
               if (content) {
                 fullContent += content;
-                res.write(
-                  `event: chunk\ndata: ${JSON.stringify(content)}\n\n`,
-                );
+                res.write(`event: chunk\ndata: ${JSON.stringify(content)}\n\n`);
               }
             } catch {
               /* empty */
@@ -837,7 +852,10 @@ ${worldText.slice(0, 1000)}
           if (fenceIdx >= 0) trimmed = trimmed.slice(fenceIdx + 7).trim();
           if (trimmed.startsWith('```')) trimmed = trimmed.slice(3).trim();
           // 支持 JSON 对象 {...} 或数组 [{...}]
-          if ((trimmed.startsWith('{') || trimmed.startsWith('[')) && trimmed.includes('"action"')) {
+          if (
+            (trimmed.startsWith('{') || trimmed.startsWith('[')) &&
+            trimmed.includes('"action"')
+          ) {
             let parsed: any = null;
             try {
               parsed = JSON.parse(trimmed);
@@ -846,11 +864,18 @@ ${worldText.slice(0, 1000)}
               const fixed = trimmed.replace(
                 /"content"\s*:\s*"([\s\S]*?)"\s*[,}]/g,
                 (_: string, inner: string) => {
-                  const escaped = inner.replace(/(?<!\\)"(?!"\s*[,:}\]])/g, '"');
+                  const escaped = inner.replace(
+                    /(?<!\\)"(?!"\s*[,:}\]])/g,
+                    '"',
+                  );
                   return `"content":"${escaped}"`;
                 },
               );
-              try { parsed = JSON.parse(fixed); } catch { /* 放弃 */ }
+              try {
+                parsed = JSON.parse(fixed);
+              } catch {
+                /* 放弃 */
+              }
             }
             if (parsed) {
               if (Array.isArray(parsed) && parsed.length > 0) {
@@ -1081,4 +1106,162 @@ ${sample.slice(0, 5000)}`,
       .delete(schema.ai_chat_sessions)
       .where(eq(schema.ai_chat_sessions.id, sessionId));
   }
-}
+
+  // ============== AI 生图 ==============
+
+  // 通用生图方法
+  async generateImage(prompt: string, size = '2K', style?: string): Promise<string> {
+    const styledPrompt = style ? `${prompt} 整体视觉风格：${style}` : prompt;
+    const apiKey = process.env.VOLCANO_IMAGE_KEY;
+    if (!apiKey) throw new Error('生图 API Key 未配置');
+
+    const res = await fetch(
+      'https://ark.cn-beijing.volces.com/api/v3/images/generations',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: 'doubao-seedream-5-0-260128',
+          prompt: styledPrompt,
+          size,
+          response_format: 'url',
+          watermark: true,
+        }),
+        signal: AbortSignal.timeout(60000),
+      },
+    );
+
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`生图失败: ${err}`);
+    }
+
+    const data: any = await res.json();
+    const imageUrl: string = data?.data?.[0]?.url;
+    if (!imageUrl) throw new Error('生图返回无 URL');
+
+    // 下载图片到本地
+    const imgRes = await fetch(imageUrl);
+    const buffer = Buffer.from(await imgRes.arrayBuffer());
+    const filename = `img-${crypto.randomUUID()}.png`;
+    const uploadsDir = path.join(__dirname, '..', '..', 'public', 'uploads');
+    await mkdir(uploadsDir, { recursive: true });
+    await writeFile(path.join(uploadsDir, filename), buffer);
+
+    return `/uploads/${filename}`;
+  }
+
+  // 构建封面 prompt（根据作品信息）
+  async buildCoverPrompt(bookId: string) {
+    const db = getDb();
+    const [book] = await db
+      .select({ title: schema.books.title })
+      .from(schema.books)
+      .where(eq(schema.books.book_id, bookId))
+      .limit(1);
+    if (!book) throw new Error('作品不存在');
+
+    // 世界观简介
+    const [world] = await db
+      .select({ sections: schema.world_settings.sections })
+      .from(schema.world_settings)
+      .where(eq(schema.world_settings.book_id, bookId));
+
+    const worldBrief =
+      world?.sections && Array.isArray(world.sections)
+        ? (world.sections as any[])
+            .map((s: any) => s.content?.slice(0, 100))
+            .filter(Boolean)
+            .join('；')
+        : '';
+
+    // 主要角色
+    const chars = await db
+      .select({
+        name: schema.characters.name,
+        appearance: schema.characters.appearance,
+        is_main: schema.characters.is_main,
+      })
+      .from(schema.characters)
+      .where(eq(schema.characters.book_id, bookId))
+      .limit(5);
+
+    const charBrief = chars
+      .map((c) => `${c.name}：${c.appearance ?? ''}`)
+      .filter((s) => s.length > 5)
+      .join('；');
+
+    return [
+      `为小说《${book.title}》设计封面。`,
+      worldBrief ? `世界观：${worldBrief}` : '',
+      charBrief ? `主要角色外貌参考：${charBrief}` : '',
+      '适合作为小说封面。',
+    ]
+      .filter(Boolean)
+      .join(' ');
+  }
+
+  // AI 推荐视觉风格（根据世界观内容）
+  async recommendVisualStyle(bookId: string) {
+    const db = getDb();
+    const [world] = await db
+      .select({ sections: schema.world_settings.sections })
+      .from(schema.world_settings)
+      .where(eq(schema.world_settings.book_id, bookId));
+
+    const worldText = world?.sections && Array.isArray(world.sections)
+      ? (world.sections as any[]).map((s: any) => s.content).join('\n').slice(0, 2000)
+      : '';
+
+    if (!worldText.trim()) return { style: '电影写实风' };
+
+    // 用 DeepSeek 分析并推荐
+    const baseUrl = process.env.AI_PLATFORM_BASE_URL ?? 'https://api.deepseek.com/v1';
+    const apiKey = process.env.AI_PLATFORM_KEY;
+    if (!apiKey) return { style: '电影写实风' };
+
+    try {
+      const res = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model: 'deepseek-chat',
+          messages: [{
+            role: 'user',
+            content: `根据以下小说世界观，推荐一个适合AI生图的视觉风格。只输出风格关键词（10字以内），如"水墨武侠风""废土朋克""日系赛博""国风玄幻"等，不要解释。\n\n世界观：\n${worldText.slice(0, 1500)}`,
+          }],
+          max_tokens: 32,
+        }),
+        signal: AbortSignal.timeout(10000),
+      });
+      const data = await res.json();
+      const style = data.choices?.[0]?.message?.content?.trim() || '电影写实风';
+      return { style };
+    } catch {
+      return { style: '电影写实风' };
+    }
+  }
+
+  // 构建角色图 prompt
+  async buildCharPrompt(charId: string) {
+    const db = getDb();
+    const [ch] = await db
+      .select()
+      .from(schema.characters)
+      .where(eq(schema.characters.char_id, charId))
+      .limit(1);
+    if (!ch) throw new Error('角色不存在');
+
+    const parts = [
+      `角色立绘：${ch.name}`,
+      ch.gender ? `性别：${ch.gender}` : '',
+      ch.appearance ? `外貌：${ch.appearance}` : '',
+      ch.identity ? `身份：${ch.identity}` : '',
+      ch.personality ? `气质：${ch.personality}` : '',
+      '要求：高质量角色立绘，精细刻画，符合角色设定，半身像，光影细腻，oc渲染风格。',
+    ];
+    return parts.filter(Boolean).join('，');
+  }}

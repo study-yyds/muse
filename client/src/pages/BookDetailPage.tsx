@@ -37,14 +37,34 @@ function SidebarNav({
   section,
   onSectionChange,
   onNavigate,
+  coverUrl,
 }: {
   book: BookDetail;
   section: Section;
   onSectionChange: (s: Section) => void;
   onNavigate: () => void;
+  coverUrl?: string | null;
 }) {
   return (
     <div className="flex flex-col h-full">
+      {/* 封面缩略图 */}
+      <div
+        className="mx-3 mt-3 rounded-lg overflow-hidden bg-muted cursor-pointer hover:ring-2 hover:ring-primary/50 transition-all"
+        onClick={onSectionChange.bind(null, "settings")}
+        title="点击进入设置管理封面"
+      >
+        {coverUrl ? (
+          <img
+            src={coverUrl}
+            alt={book.title}
+            className="w-full aspect-[2/3] object-cover"
+          />
+        ) : (
+          <div className="w-full aspect-[2/3] flex items-center justify-center">
+            <span className="text-muted-foreground text-xs">暂无封面</span>
+          </div>
+        )}
+      </div>
       <div className="px-4 py-3 border-b border-border">
         <Button variant="ghost" size="icon-xs" className="mb-2" onClick={onNavigate}>
           <ArrowLeft className="size-4" />
@@ -83,12 +103,23 @@ function SidebarNav({
             {(["txt", "docx", "html", "epub"] as const).map((fmt) => (
               <DropdownMenuItem
                 key={fmt}
-                onClick={() => {
+                onClick={async () => {
                   const t = localStorage.getItem("token");
-                  window.open(
-                    "/api/books/" + book.book_id + "/export?format=" + fmt + "&token=" + t,
-                    "_blank"
-                  );
+                  try {
+                    const res = await fetch(`/api/books/${book.book_id}/export?format=${fmt}`, {
+                      headers: { Authorization: `Bearer ${t}` },
+                    });
+                    if (!res.ok) throw new Error("导出失败");
+                    const blob = await res.blob();
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = `${book.title}.${fmt}`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  } catch {
+                    alert("导出失败，请稍后重试");
+                  }
                 }}
               >
                 导出 {fmt.toUpperCase()}
@@ -110,6 +141,7 @@ export function BookDetailPage() {
   const setSection = (s: Section) => setSearchParams({ tab: s }, { replace: true });
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [mobileAiExpanded, setMobileAiExpanded] = useState(false);
+  const [coverUrl, setCoverUrl] = useState<string | null>(null);
 
   const { data, isLoading } = useQuery({
     queryKey: ["book", bookId],
@@ -117,6 +149,8 @@ export function BookDetailPage() {
     enabled: !!bookId,
   });
   const book = data?.data;
+
+  useEffect(() => { if (book?.cover_url) setCoverUrl(book.cover_url); }, [book]);
 
   if (isLoading)
     return (
@@ -144,6 +178,7 @@ export function BookDetailPage() {
           section={section}
           onSectionChange={setSection}
           onNavigate={() => navigate("/")}
+          coverUrl={coverUrl}
         />
       </nav>
 
@@ -161,6 +196,7 @@ export function BookDetailPage() {
               setMobileNavOpen(false);
               navigate("/");
             }}
+            coverUrl={coverUrl}
           />
         </SheetContent>
       </Sheet>
@@ -188,7 +224,7 @@ export function BookDetailPage() {
         <div className="flex-1 min-h-0">
           {section === "write" && bookId && <WritingEditor bookId={bookId} />}
           {section === "outline" && bookId && (
-            <div className="p-4 h-full"><OutlinePanel bookId={bookId} /></div>
+            <div className="p-4 h-full min-h-0"><OutlinePanel bookId={bookId} /></div>
           )}
           {section === "characters" && bookId && (
             <div className="p-4 h-full overflow-y-auto"><CharacterList bookId={bookId} /></div>
@@ -200,7 +236,7 @@ export function BookDetailPage() {
             <div className="p-4 h-full overflow-y-auto"><WritingStats bookId={bookId} /></div>
           )}
           {section === "settings" && bookId && (
-            <div className="h-full overflow-y-auto"><BookSettingsPanel bookId={bookId} /></div>
+            <div className="h-full overflow-y-auto"><BookSettingsPanel bookId={bookId} coverUrl={coverUrl} onCoverChange={setCoverUrl} /></div>
           )}
         </div>
 
@@ -240,8 +276,15 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
   const scrollBottomRef = useRef<HTMLDivElement | null>(null);
   const msgsRef = useRef<Msg[]>([]);
   const isRegeneratingRef = useRef(false);
+  const stoppedByUserRef = useRef(false);
+  const autoSaveIntervalRef = useRef<ReturnType<typeof setInterval>>(undefined);
+  const adoptingRef = useRef(false);
+  const streamingRef = useRef("");
+  const reasoningRef = useRef("");
   useEffect(() => { msgsRef.current = msgs; }, [msgs]);
-  const saveTimer = useRef<ReturnType<typeof setTimeout>>();
+  useEffect(() => { streamingRef.current = streaming; }, [streaming]);
+  useEffect(() => { reasoningRef.current = reasoning; }, [reasoning]);
+  const saveTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const rewriteCtx = useEditorStore((s) => s.aiRewriteContext);
   const clearRewrite = useEditorStore((s) => s.clearAiRewrite);
   const editor = useEditorStore();
@@ -270,7 +313,14 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
   };
 
   useEffect(() => {
-    loadSessions();
+    loadSessions().then(() => {
+      // 检测刷新前中断的生成，自动重新生成
+      const curMsgs = msgsRef.current;
+      const last = curMsgs[curMsgs.length - 1];
+      if (last?.role === "assistant" && last.content === "（生成中...）") {
+        setTimeout(() => regenerate(), 500);
+      }
+    });
     return () => clearTimeout(saveTimer.current);
   }, [bookId, section]);
 
@@ -381,13 +431,12 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
   // 渲染时兜底：从末尾 JSON action 位置一刀切
   const stripActionJson = (t: string) => {
     if (!t) return "";
-    // 优先匹配 JSON 独立行：\n{ 或 \n[
-    let idx = t.lastIndexOf('\n{"action"');
-    if (idx < 0) idx = t.lastIndexOf('\n[{"action"');
+    let idx = t.lastIndexOf('\n[{"action"');
+    if (idx < 0) idx = t.lastIndexOf('\n{"action"');
     if (idx > 0) return t.slice(0, idx).trim();
-    // fallback：JSON 直接跟在正文后面
-    idx = t.lastIndexOf('{"action"');
-    if (idx < 0) idx = t.lastIndexOf('[{"action"');
+    idx = t.lastIndexOf('[{"action"');
+    if (idx < 0) idx = t.lastIndexOf('{"action"');
+    if (idx === 0) return ""; // 整个文本就是 JSON
     if (idx > 0) return t.slice(0, idx).trim();
     return t;
   };
@@ -421,34 +470,39 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
     if (s.startsWith("[")) {
       try {
         const arr = JSON.parse(s);
-        // world sections 数组
         if (arr.length && arr[0].name && arr[0].content) {
           return arr
             .map((sec: any) => `【${sec.name}】\n${sec.content}`)
             .join("\n\n");
         }
-        // character actions 数组
         if (arr.length && arr[0].action === "create_character") {
           return arr
             .map((c: any) => `【${c.name}】${c.gender ?? ""} · ${c.identity ?? ""}\n${c.personality ?? ""}`)
             .join("\n\n");
         }
+        if (arr.length && arr[0].action === "add_chapter") {
+          return arr
+            .map((n: any) => {
+              const act = n.act_name ? `【${n.act_name}】` : "";
+              return `${act}${n.title}\n${n.summary}`;
+            })
+            .join("\n\n");
+        }
       } catch { /* fall through */ }
     }
-    // 末尾有 JSON action（完整或截断）→ 去掉
-    const lastBrace = s.lastIndexOf("{");
-    if (lastBrace > 0) {
+    // 末尾有 JSON action（完整或截断）→ 找 {"action" 而非最后一个 {（后者可能在嵌套对象里）
+    let actionIdx = s.lastIndexOf('\n{"action"');
+    if (actionIdx < 0) actionIdx = s.lastIndexOf('\n[{"action"');
+    if (actionIdx < 0) actionIdx = s.lastIndexOf('{"action"');
+    if (actionIdx < 0) actionIdx = s.lastIndexOf('[{"action"');
+    if (actionIdx >= 0) {
+      if (actionIdx === 0) return ""; // 整个文本就是 JSON action
       try {
-        const p = JSON.parse(s.slice(lastBrace));
-        if (p.action) return s.slice(0, lastBrace).trim();
+        const p = JSON.parse(s.slice(actionIdx));
+        if (p.action || (Array.isArray(p) && p.length > 0)) return s.slice(0, actionIdx).trim();
       } catch {
-        // JSON 解析失败（可能被截断），仍尝试去除末尾的 JSON 片段
-        // 检查末尾是否像 JSON action：含 "action" 或 "sections"
-        const tail = s.slice(lastBrace);
-        if (tail.includes('"action"') || tail.includes('"sections"')) {
-          return s.slice(0, lastBrace).trim();
-        }
-        return s;
+        // 截断的 JSON：仍尝试去除
+        return s.slice(0, actionIdx).trim();
       }
     }
     return s;
@@ -517,16 +571,33 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
     }
     // 确保有活跃会话
     const sid = await ensureSession();
+    // 每3秒自动保存当前流式内容，避免刷新丢失
+    clearInterval(autoSaveIntervalRef.current);
+    autoSaveIntervalRef.current = setInterval(() => {
+      if (sid) {
+        const curContent = streamingRef.current;
+        const curReasoning = reasoningRef.current;
+        const partialMsgs = [...newMsgs, { role: "assistant", content: curContent || "（生成中...）", reasoning: curReasoning || undefined }];
+        flushSave(sid, partialMsgs);
+      }
+    }, 3000);
     try {
       const result = await streamOnce(userMsg, prevMsgs, bodyExtra, controller.signal);
+      clearInterval(autoSaveIntervalRef.current);
       setStreaming(""); setReasoning("");
       const finalMsgs = [...newMsgs, { role: "assistant", content: result.content, action: result.action, reasoning: result.reasoning || undefined }];
       setMsgs(finalMsgs);
       if (sid) flushSave(sid, finalMsgs);
     } catch (e: any) {
-      const errMsgs = [...newMsgs, { role: "assistant", content: `（${e.message ?? "网络异常"}）` }];
-      setMsgs(errMsgs);
-      if (sid) flushSave(sid, errMsgs);
+      clearInterval(autoSaveIntervalRef.current);
+      if (stoppedByUserRef.current) {
+        stoppedByUserRef.current = false;
+        // stop() 已经保存了内容，不再覆盖
+      } else {
+        const errMsgs = [...newMsgs, { role: "assistant", content: `（${e.message ?? "网络异常"}）` }];
+        setMsgs(errMsgs);
+        if (sid) flushSave(sid, errMsgs);
+      }
     }
     setLoading(false); setStreaming("");
   };
@@ -541,18 +612,24 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
 
   const regenerate = () => {
     if (loading) return;
+    const curMsgs = msgsRef.current;
     let lastUserIdx = -1;
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      if (msgs[i].role === "user") { lastUserIdx = i; break; }
+    for (let i = curMsgs.length - 1; i >= 0; i--) {
+      if (curMsgs[i].role === "user") { lastUserIdx = i; break; }
     }
     if (lastUserIdx < 0) return;
-    const lastAiIdx = msgs.length - 1;
+    const lastAiIdx = curMsgs.length - 1;
     if (lastAiIdx <= lastUserIdx) return;
 
-    const userMsg = msgs[lastUserIdx].content;
-    const prevMsgs = msgs.slice(0, lastUserIdx + 1).map((m) => ({ role: m.role, content: m.content }));
+    const userMsg = curMsgs[lastUserIdx].content;
+    const prevMsgs = curMsgs.slice(0, lastUserIdx + 1).map((m) => ({ role: m.role, content: m.content }));
 
     setLoading(true); setStreamReasonCollapsed(false); isRegeneratingRef.current = true;
+    clearInterval(autoSaveIntervalRef.current);
+    autoSaveIntervalRef.current = setInterval(() => {
+      const sid = sessionId;
+      if (sid) flushSave(sid, msgsRef.current);
+    }, 3000);
     const controller = new AbortController();
     abortRef.current = controller;
 
@@ -563,15 +640,19 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
       bodyExtra.style = chatStyle;
     }
 
-    // 在位更新：先保存原始版本为 versions[0]
+    // 在位更新：先保存原始版本为 versions[0]（占位消息不存档为版本）
+    const isPlaceholder = curMsgs[lastAiIdx].content === "（生成中...）";
     setMsgs((prev) => {
       const updated = [...prev];
       const target = { ...updated[lastAiIdx] };
-      if (!target.versions?.length) {
-        target.versions = [{ content: target.content, action: target.action, reasoning: target.reasoning }];
+      if (!isPlaceholder) {
+        if (!target.versions?.length) {
+          target.versions = [{ content: target.content, action: target.action, reasoning: target.reasoning }];
+        }
+        target.versions = [...target.versions, { content: "", action: undefined, reasoning: "" }];
+      } else {
+        target.versions = [{ content: "", action: undefined, reasoning: "" }];
       }
-      // 追加一个空版本作为流式占位
-      target.versions = [...target.versions, { content: "", action: undefined, reasoning: "" }];
       target.content = "";
       target.reasoning = "";
       target.action = undefined;
@@ -636,6 +717,7 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
         });
       }
       setLoading(false); isRegeneratingRef.current = false;
+      clearInterval(autoSaveIntervalRef.current);
       // 保存
       setTimeout(() => {
         const finalMsgs = msgsRef.current;
@@ -644,20 +726,55 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
       }, 100);
     }).catch((e: any) => {
       setLoading(false); isRegeneratingRef.current = false;
-      toast({ title: e.message ?? "重新生成失败", variant: "destructive" });
+      clearInterval(autoSaveIntervalRef.current);
+      if (stoppedByUserRef.current) {
+        stoppedByUserRef.current = false;
+      } else {
+        toast({ title: e.message ?? "重新生成失败", variant: "destructive" });
+      }
     });
   };
 
   const stop = () => {
     if (abortRef.current) {
+      // 先保存当前流式内容为消息，再中断
+      const curContent = streamingRef.current;
+      const curReasoning = reasoningRef.current;
+      if (curContent || curReasoning) {
+        setMsgs((prev) => {
+          const lastMsg = prev[prev.length - 1];
+          // 如果最后一条是用户消息，追加一条 AI 消息
+          if (lastMsg?.role === "user") {
+            return [...prev, { role: "assistant", content: curContent || "（已中断）", reasoning: curReasoning || undefined }];
+          }
+          // 如果最后一条正在被 regenerate 更新，把当前版本写进去
+          const updated = [...prev];
+          const m = { ...updated[updated.length - 1] };
+          m.content = curContent || m.content;
+          m.reasoning = curReasoning || m.reasoning;
+          updated[updated.length - 1] = m;
+          return updated;
+        });
+        setStreaming(""); setReasoning("");
+        // 保存到 DB
+        setTimeout(() => {
+          const sid = sessionId;
+          if (sid) flushSave(sid, msgsRef.current);
+        }, 50);
+      }
+      stoppedByUserRef.current = true;
+      clearInterval(autoSaveIntervalRef.current);
       abortRef.current.abort();
       abortRef.current = null;
+      setLoading(false); isRegeneratingRef.current = false;
     }
   };
 
   const adopt = async (a: any, gi: number) => {
+    if (adoptingRef.current) return;
+    adoptingRef.current = true;
     try {
-      // 支持数组格式：多个角色逐个创建
+      // 支持数组格式：多个 action 逐个处理
       if (Array.isArray(a)) {
         let created = 0;
         for (const item of a) {
@@ -676,10 +793,26 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
               body: JSON.stringify(fields),
             });
             created++;
+          } else if (item.action === "add_chapter") {
+            await fetch("/api/books/" + bookId + "/outline/chapters", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+              body: JSON.stringify({ title: item.title, summary: item.summary, act_name: item.act_name }),
+            });
+            created++;
+          } else if (item.action === "update_chapter" && item.chapter_id) {
+            const { action, chapter_id, ...fields } = item;
+            await fetch(`/api/books/${bookId}/outline/chapters/${chapter_id}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+              body: JSON.stringify(fields),
+            });
+            created++;
           }
         }
         queryClient.invalidateQueries({ queryKey: ["characters", bookId] });
-        toast({ title: `已创建/更新 ${created} 个角色` });
+        queryClient.invalidateQueries({ queryKey: ["outline", bookId] });
+        toast({ title: `已处理 ${created} 条` });
       } else if (a.action === "create_character") {
         await fetch("/api/books/" + bookId + "/characters", {
           method: "POST",
@@ -701,10 +834,19 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
         await fetch("/api/books/" + bookId + "/outline/chapters", {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
-          body: JSON.stringify(a),
+          body: JSON.stringify({ title: a.title, summary: a.summary, act_name: a.act_name }),
         });
         queryClient.invalidateQueries({ queryKey: ["outline", bookId] });
-        toast({ title: "大纲章节已添加" });
+        toast({ title: "大纲节点已添加" });
+      } else if (a.action === "update_chapter" && a.chapter_id) {
+        const { action, chapter_id, ...fields } = a;
+        await fetch(`/api/books/${bookId}/outline/chapters/${chapter_id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+          body: JSON.stringify(fields),
+        });
+        queryClient.invalidateQueries({ queryKey: ["outline", bookId] });
+        toast({ title: "大纲节点已更新" });
       } else if (a.action === "update_sections" && a.sections) {
         await fetch("/api/books/" + bookId + "/world-setting", {
           method: "PUT",
@@ -734,8 +876,10 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
       const verIdx = msgs[gi]?.versions ? (activeVer[gi] ?? msgs[gi].versions!.length - 1) : 0;
       const updated = msgs.map((m, i) => (i === gi ? { ...m, adoptedVer: verIdx } : m));
       saveMsgs(updated);
+      adoptingRef.current = false;
     } catch {
       toast({ title: "写入失败", variant: "destructive" });
+      adoptingRef.current = false;
     }
   };
 
@@ -866,7 +1010,9 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
                         )}
                       </div>
                     )}
-                    <div className="whitespace-pre-wrap">{stripActionJson(curVer.content) || "(空白)"}</div>
+                    {curVer.content ? (
+                      <div className="whitespace-pre-wrap">{stripActionJson(curVer.content)}</div>
+                    ) : null}
                     {isAdopted ? (
                       <div className="mt-2 pt-2 border-t border-border text-xs text-muted-foreground text-center">
                         已采纳
@@ -874,8 +1020,8 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
                     ) : isLastAi ? (
                       <div className="mt-2 pt-2 border-t border-border flex items-center gap-2 flex-wrap">
                         {hasAction && (
-                          <Button size="xs" onClick={() => adopt(curVer.action!, i)}>
-                            采纳
+                          <Button size="xs" disabled={adoptingRef.current} onClick={() => adopt(curVer.action!, i)}>
+                            {adoptingRef.current ? "采纳中..." : "采纳"}
                           </Button>
                         )}
                         <Button size="xs" variant="ghost" onClick={regenerate}>

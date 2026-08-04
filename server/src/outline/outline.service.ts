@@ -45,14 +45,20 @@ export class OutlineService {
     };
   }
 
-  async addChapter(bookId: string, title: string, summary: string) {
+  async addChapter(bookId: string, title: string, summary: string, actName?: string) {
     const db = getDb();
-    const [outline] = await db
+    // 确保大纲存在
+    let [outline] = await db
       .select({ outline_id: schema.outlines.outline_id })
       .from(schema.outlines)
       .where(eq(schema.outlines.book_id, bookId))
       .limit(1);
-    if (!outline) throw new Error('大纲不存在');
+    if (!outline) {
+      [outline] = await db
+        .insert(schema.outlines)
+        .values({ book_id: bookId })
+        .returning({ outline_id: schema.outlines.outline_id });
+    }
 
     const [last] = await db
       .select({
@@ -70,6 +76,25 @@ export class OutlineService {
         sort_order: Number(last?.max ?? 0) + 1,
       })
       .returning();
+
+    // 有幕名时写入幕-节点关系表
+    if (actName) {
+      const [lastAct] = await db
+        .select({
+          max: sql<number>`coalesce(max(${schema.outline_act_chapters.sort_order}), 0)`,
+        })
+        .from(schema.outline_act_chapters)
+        .where(
+          eq(schema.outline_act_chapters.outline_id, outline.outline_id),
+        );
+      await db.insert(schema.outline_act_chapters).values({
+        outline_id: outline.outline_id,
+        act_name: actName,
+        chapter_id: ch.id,
+        sort_order: Number(lastAct?.max ?? 0) + 1,
+      });
+    }
+
     return ch;
   }
 

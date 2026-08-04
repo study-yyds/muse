@@ -73,6 +73,9 @@ export const characters = pgTable(
     // 自定义键值对：如 [{ "key": "血型", "value": "AB" }, ...]
     custom_fields: jsonb('custom_fields').default([]),
 
+    // AI 生成的角色立绘图路径
+    avatar_url: varchar('avatar_url', { length: 500 }),
+
     // 创建时间
     created_at: timestamp('created_at', { withTimezone: true })
       .notNull()

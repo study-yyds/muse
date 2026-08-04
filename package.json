@@ -16,5 +16,8 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "jszip": "^3.10.1"
   }
 }

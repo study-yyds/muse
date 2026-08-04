@@ -4,7 +4,6 @@ import { api } from "@/services/api";
 import type { CharacterData, CreateCharacterRequest } from "@muse/shared";
 import { CharacterForm, type CharacterFormData } from "./CharacterForm";
 import { CharacterTestDialog } from "./CharacterTestDialog";
-import { CharacterRelationGraph } from "./CharacterRelationGraph";
 import { TemplatePicker, type CharacterTemplate } from "./TemplatePicker";
 import { SaveAsTemplateDialog } from "@/components/templates/SaveAsTemplateDialog";
 import { Button } from "@/components/ui/button";
@@ -26,6 +25,8 @@ import {
   ChevronDown,
   ChevronRight,
   BookmarkPlus,
+  Sparkles,
+  Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -38,9 +39,10 @@ export function CharacterList({ bookId }: Props) {
   const [selectedTemplate, setSelectedTemplate] = useState<CharacterTemplate | null>(null);
   const [editing, setEditing] = useState<CharacterData | null>(null);
   const [testChar, setTestChar] = useState<CharacterData | null>(null);
-  const [showRelations, setShowRelations] = useState(false);
   const [saveTplChar, setSaveTplChar] = useState<CharacterData | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [generatingCharId, setGeneratingCharId] = useState<string | null>(null);
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
@@ -129,9 +131,6 @@ export function CharacterList({ bookId }: Props) {
           </span>
         </h2>
         <div className="flex items-center gap-2">
-          <Button size="sm" variant={showRelations ? "secondary" : "ghost"} onClick={() => setShowRelations(!showRelations)}>
-            关系网络
-          </Button>
           <Button size="sm" onClick={() => setCreateStep("picker")}>
             <Plus className="size-4" />
             添加角色
@@ -139,11 +138,6 @@ export function CharacterList({ bookId }: Props) {
         </div>
       </div>
 
-      {/* 关系网络视图 */}
-      {showRelations && <CharacterRelationGraph bookId={bookId} />}
-
-      {/* 角色列表（关系网络模式下隐藏） */}
-      {!showRelations && <>
 
       {/* 加载 */}
       {isLoading &&
@@ -166,15 +160,25 @@ export function CharacterList({ bookId }: Props) {
           className="rounded-lg border border-border bg-card"
         >
           {/* 行头 */}
-          <button
+          <div
             onClick={() => toggleExpand(char.char_id)}
-            className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-muted/50 transition-colors rounded-lg"
+            className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-muted/50 transition-colors rounded-lg cursor-pointer"
           >
             {expandedId === char.char_id ? (
               <ChevronDown className="size-4 text-muted-foreground shrink-0" />
             ) : (
               <ChevronRight className="size-4 text-muted-foreground shrink-0" />
             )}
+            {/* 头像缩略图 */}
+            <div className="size-8 rounded-full overflow-hidden bg-muted shrink-0">
+              {char.avatar_url ? (
+                <img src={char.avatar_url} alt={char.name} className="size-full object-cover" />
+              ) : (
+                <div className="size-full flex items-center justify-center text-xs text-muted-foreground font-medium">
+                  {char.name.charAt(0)}
+                </div>
+              )}
+            </div>
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2">
                 <span className="text-sm font-medium text-foreground truncate">
@@ -218,6 +222,44 @@ export function CharacterList({ bookId }: Props) {
               <Button
                 variant="ghost"
                 size="icon-xs"
+                title="AI 生成立绘"
+                disabled={generatingCharId === char.char_id}
+                onClick={async () => {
+                  setGeneratingCharId(char.char_id);
+                  const t = localStorage.getItem("token");
+                  let style = "";
+                  try {
+                    const sRes = await api.get<{ data: { extra?: any } }>(`/books/${bookId}/settings`);
+                    style = sRes?.data?.extra?.visual_style || "";
+                  } catch { /* ignore */ }
+                  try {
+                    const res = await fetch(`/api/ai/generate-char-image`, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
+                      body: JSON.stringify({ book_id: bookId, char_id: char.char_id, size: "2K", style }),
+                    });
+                    if (res.ok) {
+                      const json = await res.json();
+                      if (json?.data?.url) {
+                        toast({ title: `${char.name} 立绘已生成` });
+                        queryClient.invalidateQueries({ queryKey: ["characters", bookId] });
+                      }
+                    } else {
+                      toast({ title: "生成失败", variant: "destructive" });
+                    }
+                  } catch { toast({ title: "生成失败", variant: "destructive" }); }
+                  finally { setGeneratingCharId(null); }
+                }}
+              >
+                {generatingCharId === char.char_id ? (
+                  <Loader2 className="size-3 animate-spin" />
+                ) : (
+                  <Sparkles className="size-3" />
+                )}
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-xs"
                 title="编辑"
                 onClick={() => setEditing(char)}
               >
@@ -233,11 +275,23 @@ export function CharacterList({ bookId }: Props) {
                 <Trash2 className="size-3" />
               </Button>
             </div>
-          </button>
+          </div>
 
           {/* 展开的详情 */}
           {expandedId === char.char_id && (
-            <div className="px-10 py-4 grid gap-3 sm:grid-cols-2">
+            <div className="px-10 py-4">
+              {/* 角色立绘大图 */}
+              {char.avatar_url && (
+                <div className="mb-4 flex justify-center">
+                  <img
+                    src={char.avatar_url}
+                    alt={char.name}
+                    className="w-48 h-64 object-cover rounded-lg border border-border cursor-pointer hover:ring-2 hover:ring-primary/50 transition-all"
+                    onClick={() => setLightboxUrl(char.avatar_url!)}
+                  />
+                </div>
+              )}
+              <div className="grid gap-3 sm:grid-cols-2">
               {char.gender && <Detail label="性别" value={char.gender} />}
               {char.age != null && <Detail label="年龄" value={String(char.age)} />}
               {char.aliases && <Detail label="别名" value={char.aliases} />}
@@ -249,6 +303,7 @@ export function CharacterList({ bookId }: Props) {
               {char.custom_fields?.map((cf) => (
                 <Detail key={cf.key} label={cf.key} value={cf.value} />
               ))}
+            </div>
             </div>
           )}
         </div>
@@ -319,8 +374,6 @@ export function CharacterList({ bookId }: Props) {
         </DialogContent>
       </Dialog>
 
-      </>}
-
       {/* 保存为模板弹窗 */}
       <SaveAsTemplateDialog
         open={!!saveTplChar}
@@ -346,6 +399,20 @@ export function CharacterList({ bookId }: Props) {
           {testChar && <CharacterTestDialog char={testChar} bookId={bookId} onClose={() => setTestChar(null)} />}
         </DialogContent>
       </Dialog>
+
+      {/* 图片全屏 lightbox */}
+      {lightboxUrl && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center cursor-pointer"
+          onClick={() => setLightboxUrl(null)}
+        >
+          <img
+            src={lightboxUrl}
+            alt="预览"
+            className="max-w-[90vw] max-h-[90vh] object-contain rounded-lg"
+          />
+        </div>
+      )}
     </div>
   );
 }

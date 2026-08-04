@@ -26,12 +26,13 @@ export class OutlineController {
   @Post('chapters')
   async addChapter(
     @Param('bookId') bookId: string,
-    @Body() body: { title: string; summary: string },
+    @Body() body: { title: string; summary: string; act_name?: string },
   ) {
     const data = await this.outline.addChapter(
       bookId,
       body.title,
       body.summary,
+      body.act_name,
     );
     return { code: 201, data };
   }

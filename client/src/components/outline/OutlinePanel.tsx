@@ -86,10 +86,30 @@ export function OutlinePanel({ bookId }: Props) {
     setSelectedIds((prev) => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   };
 
-  const doBulkDelete = useThrottle(() => {
+  const toggleSelectAll = () => {
+    if (selectedIds.size === chapters.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(chapters.map((c) => c.id)));
+    }
+  };
+
+  const doBulkDelete = useThrottle(async () => {
     if (selectedIds.size === 0) return;
     if (!confirm(`删除选中的 ${selectedIds.size} 个节点？`)) return;
-    for (const id of selectedIds) deleteChapterMutation.mutate(id);
+    const token = localStorage.getItem("token");
+    let deleted = 0;
+    for (const id of selectedIds) {
+      try {
+        await fetch(`/api/books/${bookId}/outline/chapters/${id}`, {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        deleted++;
+      } catch { /* ignore */ }
+    }
+    queryClient.invalidateQueries({ queryKey: ["outline", bookId] });
+    toast({ title: `已删除 ${deleted} 个节点` });
     setSelectedIds(new Set());
   });
 
@@ -103,15 +123,28 @@ export function OutlinePanel({ bookId }: Props) {
   });
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full min-h-0">
       {/* 顶部 */}
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-base font-semibold text-foreground">
-          大纲
-          <span className="ml-2 text-sm font-normal text-muted-foreground">
-            {chapters.length} 个节点
-          </span>
-        </h2>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={toggleSelectAll}
+            className="mt-0.5 shrink-0"
+            title={selectedIds.size === chapters.length ? "取消全选" : "全选"}
+          >
+            {selectedIds.size === chapters.length && chapters.length > 0 ? (
+              <CircleCheck className="size-4 text-primary" />
+            ) : (
+              <Circle className="size-4 text-muted-foreground/25" />
+            )}
+          </button>
+          <h2 className="text-base font-semibold text-foreground">
+            大纲
+            <span className="ml-2 text-sm font-normal text-muted-foreground">
+              {chapters.length} 个节点
+            </span>
+          </h2>
+        </div>
         <div className="flex gap-2">
           {selectedIds.size > 0 && (
             <Button size="sm" variant="destructive" onClick={doBulkDelete}>
@@ -146,7 +179,7 @@ export function OutlinePanel({ bookId }: Props) {
       )}
 
       {!isLoading && chapters.length > 0 && (
-        <ScrollArea className="flex-1">
+        <ScrollArea className="flex-1 min-h-0">
           {/* 分幕骨架 */}
           {acts.length > 0 && (
             <div className="mb-4 space-y-3">

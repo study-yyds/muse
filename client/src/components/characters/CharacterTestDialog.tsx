@@ -115,9 +115,17 @@ export function CharacterTestDialog({ char, bookId }: Props) {
     <div className="flex flex-col h-80">
       {/* 角色简介 */}
       <div className="mb-3 flex items-center justify-between">
-        <div className="text-xs text-muted-foreground">
-          <span className="font-medium text-foreground">{char.name}</span>
-          {char.personality && <span> · {char.personality.slice(0, 40)}</span>}
+        <div className="flex items-center gap-2">
+          <div className="size-8 rounded-full overflow-hidden bg-muted shrink-0">
+            {char.avatar_url ? (
+              <img src={char.avatar_url} alt={char.name} className="size-full object-cover" />
+            ) : (
+              <div className="size-full flex items-center justify-center text-xs font-medium text-muted-foreground">
+                {char.name.charAt(0)}
+              </div>
+            )}
+          </div>
+          {char.personality && <span className="text-xs text-muted-foreground"> · {char.personality.slice(0, 40)}</span>}
         </div>
         <select
           value={model}

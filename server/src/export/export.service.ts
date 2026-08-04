@@ -4,9 +4,7 @@ import { Response } from 'express';
 import { getDb, schema } from '../database/connection';
 import { marked } from 'marked';
 import crypto from 'crypto';
-
-// archiver v8 ESM — 用 require 兼容
-const archiver = require('archiver');
+import JSZip from 'jszip';
 
 @Injectable()
 export class ExportService {
@@ -247,21 +245,21 @@ export class ExportService {
 <head><title>角色设定</title><link rel="stylesheet" type="text/css" href="style.css"/></head>
 <body><h2>角色设定</h2>${charHtml}</body></html>`;
 
-    const archive = archiver('zip', { store: false });
-    archive.pipe(res);
-
-    // EPUB spec: 第一个文件必须是 mimetype，且不压缩
-    archive.append('application/epub+zip', { store: true, name: 'mimetype' });
-    archive.append(container, { name: 'META-INF/container.xml' });
-    archive.append(opf, { name: 'OEBPS/content.opf' });
-    archive.append(ncx, { name: 'OEBPS/toc.ncx' });
-    archive.append(css, { name: 'OEBPS/style.css' });
-    archive.append(charactersXhtml, { name: 'OEBPS/characters.xhtml' });
+    const zip = new JSZip();
+    // EPUB spec: 第一个文件必须是 mimetype，不压缩
+    zip.file('mimetype', 'application/epub+zip', { compression: 'STORE' });
+    zip.file('META-INF/container.xml', container);
+    zip.file('OEBPS/content.opf', opf);
+    zip.file('OEBPS/toc.ncx', ncx);
+    zip.file('OEBPS/style.css', css);
+    zip.file('OEBPS/characters.xhtml', charactersXhtml);
     for (const cf of chapterFiles) {
-      archive.append(cf.html, { name: `OEBPS/${cf.id}.xhtml` });
+      zip.file(`OEBPS/${cf.id}.xhtml`, cf.html);
     }
 
-    await archive.finalize();
+    const buffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+    res.write(Buffer.from(buffer));
+    res.end();
   }
 
   private buildHtml(
