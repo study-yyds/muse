@@ -45,6 +45,21 @@ function SidebarNav({
   onNavigate: () => void;
   coverUrl?: string | null;
 }) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState(book.title);
+
+  const saveTitle = async () => {
+    if (!titleDraft.trim() || titleDraft === book.title) { setEditingTitle(false); return; }
+    try {
+      await api.patch(`/books/${book.book_id}`, { title: titleDraft.trim() });
+      queryClient.invalidateQueries({ queryKey: ["book", book.book_id] });
+      toast({ title: "书名已更新" });
+    } catch { toast({ title: "更新失败", variant: "destructive" }); }
+    setEditingTitle(false);
+  };
+
   return (
     <div className="flex flex-col h-full">
       {/* 封面缩略图 */}
@@ -69,7 +84,24 @@ function SidebarNav({
         <Button variant="ghost" size="icon-xs" className="mb-2" onClick={onNavigate}>
           <ArrowLeft className="size-4" />
         </Button>
-        <h1 className="text-sm font-semibold text-foreground truncate">{book.title}</h1>
+        {editingTitle ? (
+          <input
+            autoFocus
+            value={titleDraft}
+            onChange={(e) => setTitleDraft(e.target.value)}
+            onBlur={saveTitle}
+            onKeyDown={(e) => { if (e.key === "Enter") saveTitle(); if (e.key === "Escape") setEditingTitle(false); }}
+            className="w-full text-sm font-semibold bg-transparent border-b border-primary outline-none text-foreground"
+          />
+        ) : (
+          <h1
+            className="text-sm font-semibold text-foreground truncate cursor-pointer hover:text-primary transition-colors"
+            onClick={() => { setTitleDraft(book.title); setEditingTitle(true); }}
+            title="点击编辑书名"
+          >
+            {book.title}
+          </h1>
+        )}
         <p className="text-xs text-muted-foreground">{book.word_count.toLocaleString()} 字</p>
       </div>
       <div className="flex-1 py-2">

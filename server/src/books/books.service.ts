@@ -96,6 +96,15 @@ export class BooksService {
     return book ?? null;
   }
 
+  // 更新标题
+  async updateTitle(bookId: string, title: string) {
+    const db = getDb();
+    await db
+      .update(schema.books)
+      .set({ title, updated_at: sql`NOW()` })
+      .where(eq(schema.books.book_id, bookId));
+  }
+
   // 软删除
   async softDelete(bookId: string) {
     const db = getDb();

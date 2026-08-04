@@ -62,6 +62,15 @@ export class BooksController {
     return { code: 200, message: '已恢复' };
   }
 
+  @Patch(':bookId')
+  async update(
+    @Param('bookId') bookId: string,
+    @Body() body: { title?: string },
+  ) {
+    if (body.title) await this.books.updateTitle(bookId, body.title);
+    return { code: 200, message: '已更新' };
+  }
+
   @Get(':bookId/settings')
   async getSettings(@Param('bookId') bookId: string) {
     const book = await this.books.get(bookId);

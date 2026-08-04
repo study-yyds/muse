@@ -1264,4 +1264,260 @@ ${sample.slice(0, 5000)}`,
       '要求：高质量角色立绘，精细刻画，符合角色设定，半身像，光影细腻，oc渲染风格。',
     ];
     return parts.filter(Boolean).join('，');
-  }}
+  }
+
+  // ============== 快捷创作 ==============
+
+  async quickCreate(res: Response, params: { user_id: string; premise: string; model?: string }) {
+    const db = getDb();
+    const apiKey = process.env.AI_PLATFORM_KEY;
+    const baseUrl = process.env.AI_PLATFORM_BASE_URL ?? 'https://api.deepseek.com/v1';
+    const model = params.model ?? 'deepseek-chat';
+    const premise = sanitizePrompt(params.premise);
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+
+    const send = (event: string, data: Record<string, any>) => {
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+
+    const aiCall = async (systemPrompt: string, userPrompt: string): Promise<string> => {
+      const r = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({ model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], max_tokens: 4096, temperature: 0.7 }),
+        signal: AbortSignal.timeout(120_000),
+      });
+      if (!r.ok) throw new Error(`AI API 错误 (${r.status})`);
+      const d = await r.json();
+      return d.choices?.[0]?.message?.content ?? '';
+    };
+
+    try {
+      // Step 1: 创建作品
+      send('step', { step: 'book', status: 'generating', label: '创建作品' });
+      const title = premise.length > 20 ? premise.slice(0, 20) + '...' : premise;
+      const [book] = await db.insert(schema.books).values({ user_id: params.user_id, title }).returning({ book_id: schema.books.book_id });
+      const bookId = book.book_id;
+      await db.insert(schema.book_settings).values({ book_id: bookId, preset_style: 'default' });
+      await db.insert(schema.outlines).values({ book_id: bookId });
+      await db.insert(schema.world_settings).values({ book_id: bookId, sections: [] } as any);
+      send('step', { step: 'book', status: 'done', label: '作品已创建', book_id: bookId });
+
+      // Step 2: 生成世界观
+      send('step', { step: 'world', status: 'generating', label: '生成世界观' });
+      const worldPrompt = `你是世界观构建专家。根据用户提供的题材和想法，创造一个自洽、引人入胜的虚构世界。
+
+按以下分区输出：
+- 时代与背景
+- 地理与场景
+- 规则与体系
+- 势力与阵营
+
+每个分区给出具体、独特的细节。规则要有代价，设定要推动故事。
+
+【输出格式——严格遵守】
+按分区名逐个输出正文内容，格式如下：
+
+分区名
+该分区的详细正文...
+
+（用空行分隔分区）
+回答的最后一行输出 JSON：
+{"action":"update_sections","sections":[{"name":"分区名","content":"完整内容"},...]}`;
+
+      const worldText = await aiCall(worldPrompt, `题材和想法：${premise}\n\n请构建这个世界观。`);
+      send('step', { step: 'world', status: 'parsing', label: '保存世界观', preview: worldText.slice(0, 200) });
+      await this.parseAndSaveWorld(bookId, worldText);
+      send('step', { step: 'world', status: 'done', label: '世界观已生成' });
+
+      // Step 3: 生成大纲
+      send('step', { step: 'outline', status: 'generating', label: '生成大纲' });
+      const outlinePrompt = `你是小说大纲规划助手。根据世界观，为这部小说设计情节大纲。
+
+每个节点是一个独立的情节事件，标题精炼有冲突感，摘要写清"谁做了什么，导致了什么变化"。
+故事弧线完整：铺垫 → 激励事件 → 上升冲突 → 转折 → 高潮 → 收束。
+节点之间必须有因果链。
+
+【输出格式】
+先按序号列出每个节点（标题 + 一句话摘要），最后一行输出纯 JSON 数组：
+[{"action":"add_chapter","title":"节点标题","summary":"谁做了什么事，导致了什么变化或后果"}]`;
+
+      const outlineText = await aiCall(outlinePrompt, `题材和想法：${premise}\n\n世界观：${worldText.slice(0, 2000)}\n\n请设计大纲。`);
+      send('step', { step: 'outline', status: 'parsing', label: '保存大纲', preview: outlineText.slice(0, 200) });
+      await this.parseAndSaveOutline(bookId, outlineText);
+      send('step', { step: 'outline', status: 'done', label: '大纲已生成' });
+
+      // Step 4: 生成角色
+      send('step', { step: 'characters', status: 'generating', label: '生成角色' });
+      const charsPrompt = `你是角色创作顾问。根据世界观和大纲，塑造生动、立体的角色。
+
+【创作指引】
+- 角色要服务于故事：为什么需要这个角色？TA推动什么情节？
+- 性格不能凭空而来：用背景故事解释性格成因
+- 每个角色都要具体丰富，不能只有一两句笼统的话
+- 至少包含主角、重要配角、反派
+
+【输出格式——严格遵守】
+先对每个角色进行自然语言描述。然后在最后一行输出 JSON 数组：
+[{"action":"create_character","name":"必填","gender":"男/女","age":0,"personality":"","identity":"","backstory":"","motivation":"","catchphrase":"","speech_style":"","appearance":"","is_main":false}]`;
+
+      const charsText = await aiCall(charsPrompt, `题材和想法：${premise}\n\n世界观：${worldText.slice(0, 1500)}\n\n请设计角色。`);
+      const charCount = await this.parseAndSaveCharacters(bookId, charsText);
+      send('step', { step: 'characters', status: 'done', label: `已创建 ${charCount} 个角色` });
+
+      // Step 5: 生成书名
+      send('step', { step: 'title', status: 'generating', label: '生成书名' });
+      const titlePrompt = `根据以下小说设定，生成一个吸引人的书名（10-20字以内）。只输出书名，不要其他文字。`;
+      const titleSummary = `题材：${premise.slice(0, 300)}\n\n世界观：${worldText.slice(0, 500)}`;
+      const generatedTitle = (await aiCall(titlePrompt, titleSummary)).trim().slice(0, 40);
+      let finalTitle = generatedTitle || premise.slice(0, 20);
+      // 更新书名
+      await db.update(schema.books).set({ title: finalTitle, updated_at: new Date() } as any).where(eq(schema.books.book_id, bookId));
+      send('step', { step: 'title', status: 'done', label: `书名：${finalTitle}` });
+
+      // 完成
+      send('done', { book_id: bookId, title: finalTitle });
+    } catch (err: any) {
+      send('error', { message: err?.message ?? '生成失败' });
+    } finally {
+      res.end();
+    }
+  }
+
+  // 解析并保存世界观
+  private async parseAndSaveWorld(bookId: string, aiText: string) {
+    const db = getDb();
+    let sections: { name: string; content: string }[] = [];
+
+    console.log('[quickCreate] world AI response (first 300):', aiText.slice(0, 300));
+
+    // 尝试从 JSON action 提取（s 标志支持多行）
+    const jsonMatch = aiText.match(/\{"action":"update_sections"[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        const parsed = JSON.parse(jsonMatch[0]);
+        sections = parsed.sections || [];
+        console.log('[quickCreate] parsed world sections from JSON:', sections.length);
+      } catch (e) { console.log('[quickCreate] world JSON parse failed:', e); }
+    }
+
+    // 如果没有 JSON，按分区名分割
+    if (sections.length === 0) {
+      const knownSections = ['时代与背景', '地理与场景', '规则与体系', '势力与阵营'];
+      const text = aiText.replace(/\{"action"[\s\S]*\}/, '');
+      for (const name of knownSections) {
+        const regex = new RegExp(`${name}\\s*\\n([\\s\\S]*?)(?=\\n(?:${knownSections.join('|')})\\n|$)`, 'i');
+        const m = text.match(regex);
+        if (m && m[1].trim()) {
+          sections.push({ name, content: m[1].trim() });
+        }
+      }
+      console.log('[quickCreate] parsed world sections from text:', sections.length);
+    }
+
+    if (sections.length > 0) {
+      console.log('[quickCreate] world saving', sections.length, 'sections:', sections.map(s => s.name).join(', '));
+      const result = await db.update(schema.world_settings)
+        .set({ sections: sections as any, updated_at: new Date() } as any)
+        .where(eq(schema.world_settings.book_id, bookId));
+      // 兜底：如果 update 没命中（可能行不存在），尝试 insert
+      if ((result as any)?.rowCount === 0) {
+        await db.insert(schema.world_settings).values({ book_id: bookId, sections: sections as any } as any);
+      }
+    }
+  }
+
+  // 解析并保存大纲
+  private async parseAndSaveOutline(bookId: string, aiText: string) {
+    const db = getDb();
+    let nodes: { title: string; summary: string }[] = [];
+
+    console.log('[quickCreate] outline AI response (first 300):', aiText.slice(0, 300));
+
+    const jsonMatch = aiText.match(/\[[\s\S]*"action":"add_chapter"[\s\S]*\]/);
+    if (jsonMatch) {
+      try {
+        const parsed = JSON.parse(jsonMatch[0]);
+        nodes = parsed
+          .filter((a: any) => a.action === 'add_chapter')
+          .map((a: any) => ({ title: a.title, summary: a.summary || '' }));
+        console.log('[quickCreate] parsed outline nodes from JSON:', nodes.length);
+      } catch (e) { console.log('[quickCreate] outline JSON parse failed:', e); }
+    }
+
+    if (nodes.length > 0) {
+      const [outline] = await db.select({ outline_id: schema.outlines.outline_id }).from(schema.outlines).where(eq(schema.outlines.book_id, bookId)).limit(1);
+      if (outline) {
+        for (let i = 0; i < nodes.length; i++) {
+          await db.insert(schema.outline_chapters).values({
+            outline_id: outline.outline_id,
+            title: nodes[i].title,
+            status: 'draft',
+            summary: nodes[i].summary,
+            sort_order: i + 1,
+          });
+        }
+      }
+    }
+  }
+
+  // 解析并保存角色
+  private async parseAndSaveCharacters(bookId: string, aiText: string) {
+    const db = getDb();
+    let chars: any[] = [];
+
+    console.log('[quickCreate] chars AI full response length:', aiText.length);
+    console.log('[quickCreate] chars AI response tail 500:', aiText.slice(-500));
+
+    // 多种方式尝试提取 JSON
+    const attempts: string[] = [];
+
+    // 1. 去掉 markdown 代码块
+    const codeBlock = aiText.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (codeBlock) attempts.push(codeBlock[1].trim());
+
+    // 2. 正则匹配完整的 JSON 数组
+    const jsonMatch = aiText.match(/\[[\s\S]*"action"\s*:\s*"create_character"[\s\S]*\]/);
+    if (jsonMatch) attempts.push(jsonMatch[0]);
+
+    // 3. 从最后一个 [ 开始到最后一个 ] 结束
+    const lastOpen = aiText.lastIndexOf('[');
+    const lastClose = aiText.lastIndexOf(']');
+    if (lastOpen >= 0 && lastClose > lastOpen) {
+      attempts.push(aiText.slice(lastOpen, lastClose + 1));
+    }
+
+    for (const tryStr of attempts) {
+      try {
+        const parsed = JSON.parse(tryStr);
+        const found = Array.isArray(parsed)
+          ? parsed.filter((a: any) => a.action === 'create_character')
+          : [];
+        if (found.length > 0) { chars = found; break; }
+      } catch { /* try next */ }
+    }
+
+    console.log('[quickCreate] parsed chars:', chars.length);
+    for (const c of chars) {
+      await db.insert(schema.characters).values({
+        book_id: bookId,
+        name: c.name || '未命名角色',
+        gender: c.gender || '',
+        age: c.age || null,
+        personality: c.personality || '',
+        identity: c.identity || '',
+        backstory: c.backstory || '',
+        motivation: c.motivation || '',
+        catchphrase: c.catchphrase || '',
+        speech_style: c.speech_style || '',
+        appearance: c.appearance || '',
+        is_main: c.is_main || false,
+        aliases: c.aliases || '',
+        custom_fields: c.custom_fields || [],
+      } as any);
+    }
+    return chars.length;
+  }
+}

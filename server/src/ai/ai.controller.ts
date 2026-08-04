@@ -166,6 +166,21 @@ export class AiController {
     return { code: 200, message: '已删除' };
   }
 
+  // ============== 快捷创作 ==============
+
+  @Post('quick-create')
+  async quickCreate(
+    @Body() body: { premise: string; model?: string },
+    @Res() res: Response,
+    @Req() req: Request,
+  ) {
+    await this.ai.quickCreate(res, {
+      user_id: (req as any).userId,
+      premise: body.premise,
+      model: body.model,
+    });
+  }
+
   // ============== AI 生图 ==============
 
   @Post('recommend-style')

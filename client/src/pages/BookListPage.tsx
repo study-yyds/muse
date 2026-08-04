@@ -20,7 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Plus, BookOpen, Loader2, Trash2, Undo2 } from "lucide-react";
+import { Plus, BookOpen, Loader2, Trash2, Undo2, Sparkles, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 
@@ -43,6 +43,10 @@ export function BookListPage() {
   const { toast } = useToast();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [showDeleted, setShowDeleted] = useState(false);
+  const [quickOpen, setQuickOpen] = useState(false);
+  const [quickPremise, setQuickPremise] = useState("");
+  const [quickGenerating, setQuickGenerating] = useState(false);
+  const [quickSteps, setQuickSteps] = useState<Array<{ step: string; label: string; status: string; preview?: string }>>([]);
 
   const { data, isLoading } = useQuery({
     queryKey: ["books", showDeleted ? "deleted" : "active"],
@@ -106,6 +110,71 @@ export function BookListPage() {
     reset();
   };
 
+  const quickCreate = async () => {
+    if (!quickPremise.trim()) return;
+    setQuickGenerating(true);
+    setQuickSteps([]);
+    const token = localStorage.getItem("token");
+    try {
+      const res = await fetch("/api/ai/quick-create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ premise: quickPremise }),
+      });
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error("No stream");
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let bookId = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (line.startsWith("event: ")) {
+            const eventType = line.slice(7).trim();
+            const dataLine = lines[lines.indexOf(line) + 1];
+            if (dataLine?.startsWith("data: ")) {
+              try {
+                const data = JSON.parse(dataLine.slice(6));
+                if (eventType === "step") {
+                  setQuickSteps((prev) => {
+                    const newStep = { step: data.step, label: data.label, status: data.status, preview: data.preview };
+                    const idx = prev.findIndex((s) => s.step === data.step);
+                    if (idx >= 0) {
+                      const next = [...prev];
+                      next[idx] = newStep;
+                      return next;
+                    }
+                    return [...prev, newStep];
+                  });
+                } else if (eventType === "done") {
+                  bookId = data.book_id;
+                } else if (eventType === "error") {
+                  toast({ title: data.message || "生成失败", variant: "destructive" });
+                }
+              } catch { /* parse error */ }
+            }
+          }
+        }
+      }
+      if (bookId) {
+        queryClient.invalidateQueries({ queryKey: ["books"] });
+        setQuickOpen(false);
+        setQuickPremise("");
+        toast({ title: "创作完成！" });
+        navigate(`/books/${bookId}`);
+      }
+    } catch (err: any) {
+      toast({ title: err?.message || "生成失败", variant: "destructive" });
+    } finally {
+      setQuickGenerating(false);
+      setQuickSteps([]);
+    }
+  };
+
   return (
     <div className="mx-auto max-w-4xl px-6 py-8">
       {/* 标题栏 */}
@@ -118,6 +187,10 @@ export function BookListPage() {
             onClick={() => setShowDeleted(!showDeleted)}
           >
             {showDeleted ? "查看作品" : "回收站"}
+          </Button>
+          <Button size="sm" variant="outline" onClick={() => setQuickOpen(true)}>
+            <Sparkles className="size-4" />
+            快捷创作
           </Button>
           <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
             <DialogTrigger
@@ -159,6 +232,80 @@ export function BookListPage() {
                   </Button>
                 </div>
               </form>
+            </DialogContent>
+          </Dialog>
+
+          {/* 快捷创作对话框 */}
+          <Dialog open={quickOpen} onOpenChange={(open) => { if (!open && !quickGenerating) { setQuickOpen(false); setQuickPremise(""); setQuickSteps([]); } }}>
+            <DialogContent
+              onPointerDownOutside={(e) => { if (quickGenerating) e.preventDefault(); }}
+              onEscapeKeyDown={(e) => { if (quickGenerating) e.preventDefault(); }}
+            >
+              <DialogHeader>
+                <DialogTitle>快捷创作</DialogTitle>
+                <DialogDescription>输入题材和想法，AI 自动生成世界观、大纲和角色</DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="premise">题材 / 想法</Label>
+                  <textarea
+                    id="premise"
+                    placeholder="例如：我想写一本末世公路求生小说，主角是一名退役赛车手，在废土上开着改装车寻找失踪的亲人..."
+                    value={quickPremise}
+                    onChange={(e) => setQuickPremise(e.target.value)}
+                    rows={4}
+                    disabled={quickGenerating}
+                    className="w-full rounded border border-border bg-background px-3 py-2 text-sm resize-none"
+                  />
+                </div>
+
+                {/* 进度 */}
+                {quickGenerating && (
+                  <div className="space-y-2">
+                    {quickSteps.map((s) => (
+                      <div key={s.step} className="flex items-center gap-2 text-xs">
+                        {s.status === "done" ? (
+                          <Check className="size-3 text-green-500" />
+                        ) : s.status === "generating" || s.status === "parsing" ? (
+                          <Loader2 className="size-3 animate-spin text-primary" />
+                        ) : (
+                          <div className="size-3 rounded-full border border-border" />
+                        )}
+                        <div>
+                          <span className={s.status === "done" ? "text-muted-foreground" : "text-foreground"}>
+                            {s.label}
+                          </span>
+                          {s.preview && (
+                            <p className="text-[10px] text-muted-foreground mt-0.5 truncate max-w-[300px]">
+                              {s.preview}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                    {quickSteps.length === 0 && (
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <Loader2 className="size-3 animate-spin" />
+                        正在准备...
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div className="flex justify-end gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={() => { setQuickOpen(false); setQuickPremise(""); }}
+                    disabled={quickGenerating}
+                  >
+                    取消
+                  </Button>
+                  <Button onClick={quickCreate} disabled={quickGenerating || !quickPremise.trim()}>
+                    {quickGenerating && <Loader2 className="size-4 animate-spin mr-1" />}
+                    {quickGenerating ? "生成中..." : "开始生成"}
+                  </Button>
+                </div>
+              </div>
             </DialogContent>
           </Dialog>
         </div>
