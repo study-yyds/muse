@@ -63,6 +63,12 @@ export class BooksController {
     return { code: 200, message: '已恢复' };
   }
 
+  @Delete(':bookId/permanent')
+  async permanentDelete(@Param('bookId') bookId: string) {
+    await this.books.permanentDelete(bookId);
+    return { code: 200, message: '已彻底删除' };
+  }
+
   @Patch(':bookId')
   async update(
     @Param('bookId') bookId: string,

@@ -133,6 +133,12 @@ export class BooksService {
       .where(eq(schema.books.book_id, bookId));
   }
 
+  // 永久删除
+  async permanentDelete(bookId: string) {
+    const db = getDb();
+    await db.delete(schema.books).where(eq(schema.books.book_id, bookId));
+  }
+
   // 恢复
   async restore(bookId: string) {
     const db = getDb();

@@ -114,6 +114,17 @@ export function BookListPage() {
     },
   });
 
+  const permanentDeleteBook = useMutation({
+    mutationFn: (bookId: string) => api.delete(`/books/${bookId}/permanent`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["books"] });
+      toast({ title: "作品已彻底删除" });
+    },
+    onError: () => {
+      toast({ title: "删除失败", variant: "destructive" });
+    },
+  });
+
   const {
     register,
     handleSubmit,
@@ -404,10 +415,10 @@ export function BookListPage() {
               key={book.book_id}
               className={cn(
                 "group cursor-pointer transition-shadow hover:shadow-md",
-                book.status === "deleted" && "opacity-60"
+                showDeleted && "opacity-60"
               )}
               onClick={() => {
-                if (book.status !== "deleted") {
+                if (!showDeleted) {
                   navigate(`/books/${book.book_id}`);
                 }
               }}
@@ -423,19 +434,35 @@ export function BookListPage() {
                   {book.word_count.toLocaleString()} 字 ·{" "}
                   {new Date(book.last_updated).toLocaleDateString("zh-CN")}
                 </p>
-                <div className="mt-3 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                  {book.status === "deleted" ? (
-                    <Button
-                      variant="ghost"
-                      size="xs"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        restoreBook.mutate(book.book_id);
-                      }}
-                    >
-                      <Undo2 className="size-3" />
-                      恢复
-                    </Button>
+                <div className={`mt-3 flex gap-1 transition-opacity ${showDeleted ? "" : "opacity-0 group-hover:opacity-100"}`}>
+                  {showDeleted ? (
+                    <>
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          restoreBook.mutate(book.book_id);
+                        }}
+                      >
+                        <Undo2 className="size-3" />
+                        恢复
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="xs"
+                        className="text-destructive hover:text-destructive"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (confirm("确定彻底删除？此操作不可撤销。")) {
+                            permanentDeleteBook.mutate(book.book_id);
+                          }
+                        }}
+                      >
+                        <Trash2 className="size-3" />
+                        彻底删除
+                      </Button>
+                    </>
                   ) : (
                     <Button
                       variant="ghost"
