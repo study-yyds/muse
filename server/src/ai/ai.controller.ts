@@ -68,7 +68,7 @@ export class AiController {
     if (body.book_id) {
       await this.ai.checkBookOwnership(body.book_id, (req as any).userId);
     }
-    const data = await this.ai.mimicStyle(body.book_id, body.model ?? 'deepseek-v4-flash', body.text);
+    const data = await this.ai.mimicStyle(body.book_id, body.model ?? 'deepseek-v4-flash', body.text, (req as any).userId);
     return { code: 200, data };
   }
 
@@ -170,18 +170,36 @@ export class AiController {
 
   @Post('quick-create')
   async quickCreate(
-    @Body() body: { premise: string; model?: string },
+    @Body() body: { premise: string; model?: string; type?: string },
     @Res() res: Response,
     @Req() req: Request,
   ) {
-    await this.ai.quickCreate(res, {
-      user_id: (req as any).userId,
-      premise: body.premise,
-      model: body.model,
-    });
+    if (body.type === 'short') {
+      await this.ai.quickCreateShort(res, {
+        user_id: (req as any).userId,
+        premise: body.premise,
+        model: body.model,
+      });
+    } else {
+      await this.ai.quickCreate(res, {
+        user_id: (req as any).userId,
+        premise: body.premise,
+        model: body.model,
+      });
+    }
   }
 
   // ============== AI 生图 ==============
+
+  @Post('generate-synopsis')
+  async generateSynopsis(
+    @Body() body: { book_id: string; model?: string },
+    @Req() req: Request,
+  ) {
+    await this.ai.checkBookOwnership(body.book_id, (req as any).userId);
+    const data = await this.ai.generateSynopsis(body.book_id, (req as any).userId, body.model);
+    return { code: 200, data };
+  }
 
   @Post('recommend-style')
   async recommendStyle(
@@ -196,40 +214,47 @@ export class AiController {
   @Post('generate-cover')
   async generateCover(
     @Body()
-    body: { book_id: string; prompt?: string; size?: string; style?: string },
+    body: { book_id: string; prompt?: string; size?: string; style?: string; model?: string },
     @Req() req: Request,
   ) {
     await this.ai.checkBookOwnership(body.book_id, (req as any).userId);
     const prompt =
       body.prompt || (await this.ai.buildCoverPrompt(body.book_id));
-    const url = await this.ai.generateImage(prompt, body.size, body.style);
+    const url = await this.ai.generateImage(prompt, body.size, body.style, (req as any).userId, body.model);
 
-    // 写入 cover_url
-    await getDb()
-      .update(schema.books)
-      .set({ cover_url: url })
-      .where(eq(schema.books.book_id, body.book_id));
+    // 写入 cover_url + 历史
+    const db = getDb();
+    await db.update(schema.books).set({ cover_url: url }).where(eq(schema.books.book_id, body.book_id));
 
-    return { code: 200, data: { url } };
+    const [settings] = await db.select({ extra: schema.book_settings.extra }).from(schema.book_settings).where(eq(schema.book_settings.book_id, body.book_id));
+    const extra = (settings?.extra ?? {}) as Record<string, any>;
+    const history: string[] = extra.cover_history ?? [];
+    if (!history.includes(url)) history.push(url);
+    await db.update(schema.book_settings).set({ extra: { ...extra, cover_history: history } } as any).where(eq(schema.book_settings.book_id, body.book_id));
+
+    return { code: 200, data: { url, history } };
   }
 
   @Post('generate-char-image')
   async generateCharImage(
     @Body()
-    body: { book_id: string; char_id: string; prompt?: string; size?: string; style?: string },
+    body: { book_id: string; char_id: string; prompt?: string; size?: string; style?: string; model?: string },
     @Req() req: Request,
   ) {
     await this.ai.checkBookOwnership(body.book_id, (req as any).userId);
     const prompt =
       body.prompt || (await this.ai.buildCharPrompt(body.char_id));
-    const url = await this.ai.generateImage(prompt, body.size, body.style);
+    const url = await this.ai.generateImage(prompt, body.size, body.style, (req as any).userId, body.model);
 
-    // 写入 avatar_url
-    await getDb()
-      .update(schema.characters)
-      .set({ avatar_url: url })
-      .where(eq(schema.characters.char_id, body.char_id));
+    // 写入 avatar_url + 历史
+    const db2 = getDb();
+    await db2.update(schema.characters).set({ avatar_url: url }).where(eq(schema.characters.char_id, body.char_id));
 
-    return { code: 200, data: { url } };
+    const [char] = await db2.select({ avatar_history: schema.characters.avatar_history }).from(schema.characters).where(eq(schema.characters.char_id, body.char_id));
+    const history: string[] = (char?.avatar_history as any[]) ?? [];
+    if (!history.includes(url)) history.push(url);
+    await db2.update(schema.characters).set({ avatar_history: history } as any).where(eq(schema.characters.char_id, body.char_id));
+
+    return { code: 200, data: { url, history } };
   }
 }

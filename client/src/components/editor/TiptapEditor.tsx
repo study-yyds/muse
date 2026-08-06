@@ -35,12 +35,19 @@ function getCursorTextOffset(editor: ReturnType<typeof useEditor>): number {
 export function TiptapEditor({ content, onChange, placeholder }: Props) {
   const isInternalChange = useRef(false);
 
+  // 将纯文本转为 HTML 段落（每个 \n 分隔的块 → <p>）
+  const textToHtml = (text: string) =>
+    text.split('\n').filter(p => p.trim()).map(p => `<p>${p.trim()}</p>`).join('');
+
+  const isPlainText = !content.startsWith('{') && !content.startsWith('<');
+  const initialContent = isPlainText ? textToHtml(content) : content;
+
   const editor = useEditor({
     extensions: [
       StarterKit,
       Placeholder.configure({ placeholder: placeholder ?? "开始写作..." }),
     ],
-    content,
+    content: initialContent,
     shouldRerenderOnTransaction: true,
     editorProps: {
       attributes: {
@@ -75,7 +82,8 @@ export function TiptapEditor({ content, onChange, placeholder }: Props) {
     }
     const currentText = getPlainText(editor);
     if (content !== currentText) {
-      editor.commands.setContent(content);
+      const isPlain = !content.startsWith('{') && !content.startsWith('<');
+      editor.commands.setContent(isPlain ? textToHtml(content) : content);
     }
   }, [content, editor]);
 

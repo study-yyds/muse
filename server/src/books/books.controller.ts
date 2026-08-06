@@ -32,11 +32,12 @@ export class BooksController {
   async create(
     @Body('title') title: string,
     @Body('preset_style') presetStyle: string,
+    @Body('type') type: string,
     @Req() req: Request,
   ) {
     const userId = (req as any).userId;
     try {
-      const data = await this.books.create(userId, title, presetStyle);
+      const data = await this.books.create(userId, title, presetStyle, type);
       return { code: 201, data };
     } catch (e: any) {
       return { code: 400, message: e.message ?? '创建失败' };
@@ -65,9 +66,10 @@ export class BooksController {
   @Patch(':bookId')
   async update(
     @Param('bookId') bookId: string,
-    @Body() body: { title?: string },
+    @Body() body: { title?: string; cover_url?: string },
   ) {
     if (body.title) await this.books.updateTitle(bookId, body.title);
+    if (body.cover_url) await this.books.updateCover(bookId, body.cover_url);
     return { code: 200, message: '已更新' };
   }
 

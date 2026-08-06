@@ -1,6 +1,6 @@
 import { Outlet, useNavigate, useLocation } from "react-router-dom";
 import { useAuthStore } from "@/stores/auth";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
@@ -9,12 +9,20 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { BookOpen, LogOut, User, Shield } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { BookOpen, LogOut, User, Shield, Settings } from "lucide-react";
+import { ApiKeyManager } from "@/components/settings/ApiKeyManager";
 
 export function AppLayout() {
   const { isAuthenticated, user, logout, fetchProfile } = useAuthStore();
   const navigate = useNavigate();
   const location = useLocation();
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -62,12 +70,26 @@ export function AppLayout() {
             }
           />
           <DropdownMenuContent align="end" className="w-40">
+            <DropdownMenuItem onClick={() => setSettingsOpen(true)}>
+              <Settings className="size-4" />
+              设置
+            </DropdownMenuItem>
             <DropdownMenuItem onClick={logout}>
               <LogOut className="size-4" />
               退出登录
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+
+        {/* 全局设置弹窗 */}
+        <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>用户设置</DialogTitle>
+            </DialogHeader>
+            <ApiKeyManager />
+          </DialogContent>
+        </Dialog>
       </header>
 
       {/* 内容区 */}

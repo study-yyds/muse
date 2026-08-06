@@ -16,6 +16,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
+import { ModelSelector } from "@/components/settings/ModelSelector";
 import {
   Plus,
   UserRound,
@@ -42,6 +43,10 @@ export function CharacterList({ bookId }: Props) {
   const [saveTplChar, setSaveTplChar] = useState<CharacterData | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [generatingCharId, setGeneratingCharId] = useState<string | null>(null);
+  const [imageModel, setImageModel] = useState("doubao-seedream-5-0-260128");
+  const [imageResolution, setImageResolution] = useState("2K");
+  const [imageRatio, setImageRatio] = useState("9:16");
+  const imageSize = imageRatio === "1:1" ? imageResolution : `${imageResolution}:${imageRatio}`;
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -131,6 +136,25 @@ export function CharacterList({ bookId }: Props) {
           </span>
         </h2>
         <div className="flex items-center gap-2">
+          <select value={imageResolution} onChange={(e) => setImageResolution(e.target.value)}
+            className="text-xs rounded border border-border bg-background px-1 py-1">
+            <option value="1K">1K</option>
+            <option value="2K">2K</option>
+            <option value="4K">4K</option>
+          </select>
+          <select value={imageRatio} onChange={(e) => setImageRatio(e.target.value)}
+            className="text-xs rounded border border-border bg-background px-1 py-1">
+            <option value="1:1">1:1</option>
+            <option value="16:9">16:9</option>
+            <option value="9:16">9:16</option>
+            <option value="3:4">3:4</option>
+          </select>
+          <ModelSelector
+            usage="image"
+            value={imageModel}
+            onChange={setImageModel}
+            className="text-xs rounded border border-border bg-background px-2 py-1"
+          />
           <Button size="sm" onClick={() => setCreateStep("picker")}>
             <Plus className="size-4" />
             添加角色
@@ -236,7 +260,7 @@ export function CharacterList({ bookId }: Props) {
                     const res = await fetch(`/api/ai/generate-char-image`, {
                       method: "POST",
                       headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
-                      body: JSON.stringify({ book_id: bookId, char_id: char.char_id, size: "2K", style }),
+                      body: JSON.stringify({ book_id: bookId, char_id: char.char_id, size: imageSize, style, model: imageModel }),
                     });
                     if (res.ok) {
                       const json = await res.json();
@@ -282,13 +306,26 @@ export function CharacterList({ bookId }: Props) {
             <div className="px-10 py-4">
               {/* 角色立绘大图 */}
               {char.avatar_url && (
-                <div className="mb-4 flex justify-center">
+                <div className="mb-4 flex flex-col items-center">
                   <img
                     src={char.avatar_url}
                     alt={char.name}
                     className="w-48 h-64 object-cover rounded-lg border border-border cursor-pointer hover:ring-2 hover:ring-primary/50 transition-all"
                     onClick={() => setLightboxUrl(char.avatar_url!)}
                   />
+                  {/* 历史版本缩略图 */}
+                  {(char as any).avatar_history?.length > 1 && (
+                    <div className="flex gap-1 mt-2 overflow-x-auto max-w-48">
+                      {((char as any).avatar_history as string[]).map((h: string, i: number) => (
+                        <img key={i} src={h} alt={`v${i + 1}`}
+                          className={`w-10 h-14 object-cover rounded cursor-pointer border flex-shrink-0 ${h === char.avatar_url ? 'border-primary' : 'border-transparent hover:border-border'}`}
+                          onClick={async () => {
+                            try { await api.patch(`/books/${bookId}/characters/${char.char_id}`, { avatar_url: h }); queryClient.invalidateQueries({ queryKey: ["characters", bookId] }); } catch {}
+                          }}
+                        />
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
               <div className="grid gap-3 sm:grid-cols-2">

@@ -105,7 +105,7 @@ function SidebarNav({
         <p className="text-xs text-muted-foreground">{book.word_count.toLocaleString()} 字</p>
       </div>
       <div className="flex-1 py-2">
-        {NAV_ITEMS.map((item) => (
+        {(book.type === 'short' ? NAV_ITEMS.filter(i => i.key === 'write' || i.key === 'settings') : NAV_ITEMS).map((item) => (
           <button
             key={item.key}
             onClick={() => onSectionChange(item.key)}

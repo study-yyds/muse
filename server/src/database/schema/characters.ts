@@ -75,6 +75,7 @@ export const characters = pgTable(
 
     // AI 生成的角色立绘图路径
     avatar_url: varchar('avatar_url', { length: 500 }),
+    avatar_history: jsonb('avatar_history').default([]),
 
     // 创建时间
     created_at: timestamp('created_at', { withTimezone: true })

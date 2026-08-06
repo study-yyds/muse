@@ -54,6 +54,7 @@ export interface BookListItem {
   cover_url: string | null;
   word_count: number;
   status: BookStatus;
+  type?: string;
   last_updated: string;
 }
 

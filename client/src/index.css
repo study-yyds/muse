@@ -133,3 +133,11 @@ body {
   scrollbar-width: thin;
   scrollbar-color: var(--border) transparent;
 }
+
+/* TipTap 编辑器段落间距 */
+.ProseMirror p {
+  margin-bottom: 0.75em;
+}
+.ProseMirror p:last-child {
+  margin-bottom: 0;
+}

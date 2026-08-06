@@ -43,6 +43,9 @@ export const books = pgTable(
     // 创作阶段：draft（草稿）→ writing（写作中）→ completed（已完成）
     status: varchar('status', { length: 20 }).notNull().default('draft'),
 
+    // 作品类型：novel（长篇）| short（短篇）
+    type: varchar('type', { length: 10 }).notNull().default('novel'),
+
     // 软删除时间戳：非空 = 已删除，7 天内可恢复，之后定时清理
     deleted_at: timestamp('deleted_at', { withTimezone: true }),
 

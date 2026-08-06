@@ -7,7 +7,10 @@ import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
-import { Settings, Loader2, Check } from "lucide-react";
+import { Settings, Loader2, Check, X } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { ModelSelector } from "@/components/settings/ModelSelector";
+import { SynopsisSection } from "@/components/settings/SynopsisSection";
 
 interface BookSettings {
   preset_style: string;
@@ -17,8 +20,10 @@ interface BookSettings {
 
 interface Props {
   bookId: string;
+  book?: { title: string };
   coverUrl?: string | null;
   onCoverChange?: (url: string) => void;
+  onCoverHistory?: (history: string[]) => void;
 }
 
 const WRITING_STYLES = [
@@ -39,7 +44,7 @@ const SAVE_INTERVALS = [
   { value: 1800, label: "30 分钟" },
 ];
 
-export function BookSettingsPanel({ bookId, coverUrl, onCoverChange }: Props) {
+export function BookSettingsPanel({ bookId, book, coverUrl, onCoverChange }: Props) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
@@ -58,6 +63,7 @@ export function BookSettingsPanel({ bookId, coverUrl, onCoverChange }: Props) {
   const [customStyleText, setCustomStyleText] = useState("");
   const [visualStyle, setVisualStyle] = useState("");
   const [coverLightbox, setCoverLightbox] = useState(false);
+  const [coverHistory, setCoverHistory] = useState<string[]>([]);
 
   const doMimic = async (body: Record<string, any>) => {
     setIsMimicking(true);
@@ -84,8 +90,9 @@ export function BookSettingsPanel({ bookId, coverUrl, onCoverChange }: Props) {
     }
   };
 
-  const doMimicBook = () => doMimic({ book_id: bookId, model: "deepseek-v4-flash" });
-  const doMimicCustom = () => doMimic({ text: customStyleText, model: "deepseek-v4-flash" });
+  const [mimicModel, setMimicModel] = useState("deepseek-v4-flash");
+  const doMimicBook = () => doMimic({ book_id: bookId, model: mimicModel });
+  const doMimicCustom = () => doMimic({ text: customStyleText, model: mimicModel });
 
   useEffect(() => {
     if (settings) {
@@ -93,6 +100,8 @@ export function BookSettingsPanel({ bookId, coverUrl, onCoverChange }: Props) {
       setSaveInterval(settings.auto_save_interval_sec ?? 300);
       setWordGoal(settings.daily_word_goal ?? 0);
       setMimicResult((settings as any).extra?.mimic_style_analysis ?? null);
+      const h = (settings as any).extra?.cover_history;
+      if (Array.isArray(h) && h.length > 0) setCoverHistory(h);
     }
   }, [settings]);
 
@@ -147,17 +156,44 @@ export function BookSettingsPanel({ bookId, coverUrl, onCoverChange }: Props) {
             </p>
             <CoverGenerateButton
               bookId={bookId}
-              onGenerated={(url) => onCoverChange?.(url)}
+              onGenerated={(url, history) => { onCoverChange?.(url); if (history) setCoverHistory(history); }}
               style={visualStyle}
             />
           </div>
         </div>
+        {/* 封面历史版本 */}
+        {coverHistory.length > 1 && (
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {coverHistory.map((h, i) => (
+              <img
+                key={i}
+                src={h}
+                alt={`封面版本 ${i + 1}`}
+                className={`w-12 h-18 object-cover rounded cursor-pointer border-2 flex-shrink-0 ${h === coverUrl ? 'border-primary' : 'border-transparent hover:border-border'}`}
+                onClick={async () => {
+                  onCoverChange?.(h);
+                  const t = localStorage.getItem("token");
+                  await fetch(`/api/books/${bookId}`, {
+                    method: "PATCH",
+                    headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
+                    body: JSON.stringify({ cover_url: h }),
+                  }).catch(() => {});
+                }}
+              />
+            ))}
+          </div>
+        )}
       </div>
 
       <Separator />
 
       {/* 视觉风格 */}
       <VisualStyleSetting bookId={bookId} style={visualStyle} onStyleChange={setVisualStyle} />
+
+      <Separator />
+
+      {/* 作品简介 */}
+      <SynopsisSection bookId={bookId} />
 
       <Separator />
 
@@ -206,9 +242,11 @@ export function BookSettingsPanel({ bookId, coverUrl, onCoverChange }: Props) {
       <div className="space-y-3">
         <Label className="text-sm font-medium">AI 模仿笔风</Label>
         <p className="text-xs text-muted-foreground">
-          分析已有正文或手动输入样本，提取写作风格特征。AI 后续续写将参考此风格。
+          分析已有正文或手动输入样本，提取写作风格特征。
         </p>
-        <Button
+        <div className="flex items-center gap-2">
+          <ModelSelector usage="chat" value={mimicModel} onChange={setMimicModel} className="text-xs rounded border border-border bg-background px-2 py-1" />
+          <Button
           variant="outline"
           size="sm"
           onClick={doMimicBook}
@@ -217,6 +255,7 @@ export function BookSettingsPanel({ bookId, coverUrl, onCoverChange }: Props) {
           {isMimicking && <Loader2 className="size-4 animate-spin" />}
           从我的作品分析
         </Button>
+        </div>
         <div className="space-y-1.5">
           <textarea
             placeholder="或粘贴网上的文字样本（≥200字），如金庸/余华/猫腻的段落..."
@@ -269,9 +308,8 @@ export function BookSettingsPanel({ bookId, coverUrl, onCoverChange }: Props) {
       <div className="space-y-3">
         <Label className="text-sm font-medium">自定义 AI API Key</Label>
         <p className="text-xs text-muted-foreground">
-          填写你自己的 API Key 和端点，使用私有额度而非平台免费额度
+          在顶部头像菜单 →「设置」中管理你的 API Key，所有作品共享
         </p>
-        <ApiKeyForm bookId={bookId} />
       </div>
 
       {/* 保存按钮 */}
@@ -386,13 +424,18 @@ function CoverGenerateButton({
   style,
 }: {
   bookId: string;
-  onGenerated: (url: string) => void;
+  onGenerated: (url: string, history?: string[]) => void;
   style?: string;
 }) {
   const [generating, setGenerating] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [showPrompt, setShowPrompt] = useState(false);
+  const [model, setModel] = useState("doubao-seedream-5-0-260128");
+  const [imageResolution, setImageResolution] = useState("2K");
+  const [imageRatio, setImageRatio] = useState("1:1");
   const { toast } = useToast();
+
+  const imageSize = imageRatio === "1:1" ? imageResolution : `${imageResolution}:${imageRatio}`;
 
   const doGenerate = async () => {
     setGenerating(true);
@@ -401,13 +444,13 @@ function CoverGenerateButton({
       const res = await fetch("/api/ai/generate-cover", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ book_id: bookId, prompt: prompt || undefined, size: "2K", style }),
+        body: JSON.stringify({ book_id: bookId, prompt: prompt || undefined, size: imageSize, style, model }),
       });
       if (!res.ok) throw new Error("生成失败");
       const json = await res.json();
       const url = json?.data?.url;
       if (url) {
-        onGenerated(url);
+        onGenerated(url, json?.data?.history);
         toast({ title: "封面已生成" });
         setShowPrompt(false);
       }
@@ -430,12 +473,12 @@ function CoverGenerateButton({
             const res = await fetch("/api/ai/generate-cover", {
               method: "POST",
               headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-              body: JSON.stringify({ book_id: bookId, size: "2K", style }),
+              body: JSON.stringify({ book_id: bookId, size: imageSize, style, model }),
             });
             if (res.ok) {
               const json = await res.json();
               if (json?.data?.url) {
-                onGenerated(json.data.url);
+                onGenerated(json.data.url, json.data.history);
                 toast({ title: "封面已生成" });
                 return;
               }
@@ -460,6 +503,25 @@ function CoverGenerateButton({
       >
         自定义 Prompt
       </Button>
+      <select value={imageResolution} onChange={(e) => setImageResolution(e.target.value)}
+        className="text-xs rounded border border-border bg-background px-1 py-1">
+        <option value="1K">1K</option>
+        <option value="2K">2K</option>
+        <option value="4K">4K</option>
+      </select>
+      <select value={imageRatio} onChange={(e) => setImageRatio(e.target.value)}
+        className="text-xs rounded border border-border bg-background px-1 py-1">
+        <option value="1:1">1:1</option>
+        <option value="16:9">16:9</option>
+        <option value="9:16">9:16</option>
+        <option value="3:4">3:4</option>
+      </select>
+      <ModelSelector
+        usage="image"
+        value={model}
+        onChange={setModel}
+        className="text-xs rounded border border-border bg-background px-2 py-1"
+      />
 
       {showPrompt && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
@@ -488,44 +550,101 @@ function CoverGenerateButton({
 }
 
 function ApiKeyForm({ bookId: _ }: { bookId: string }) {
+  const [name, setName] = useState("");
   const [key, setKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("https://api.deepseek.com/v1");
-  const [modelName, setModelName] = useState("deepseek-chat");
+  const [modelName, setModelName] = useState("deepseek-v4-flash");
+  const [usage, setUsage] = useState("chat");
+  const [keys, setKeys] = useState<any[]>([]);
   const { toast } = useToast();
 
+  // 加载已有 Key 列表
+  const loadKeys = async () => {
+    const token = localStorage.getItem("token");
+    try {
+      const res = await fetch("/api/user/api-keys", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const json = await res.json();
+        setKeys(json.data || []);
+      }
+    } catch { /* ignore */ }
+  };
+
+  useEffect(() => { loadKeys(); }, []);
+
   const saveKey = async () => {
+    if (!name.trim() || !key.trim()) return;
     const token = localStorage.getItem("token");
     try {
       const res = await fetch("/api/user/api-keys", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ api_key: key, base_url: baseUrl, model_name: modelName }),
+        body: JSON.stringify({ name, api_key: key, base_url: baseUrl, model_name: modelName, usage }),
       });
       if (res.ok) {
         toast({ title: "API Key 已保存" });
-        setKey("");
+        setName(""); setKey(""); loadKeys();
       } else {
         toast({ title: "保存失败", variant: "destructive" });
       }
     } catch {
-      toast({ title: "后端不可用，API Key 将在本地保存", variant: "destructive" });
-      localStorage.setItem("muse-custom-api-key", JSON.stringify({ api_key: key, base_url: baseUrl, model_name: modelName }));
-      setKey("");
+      toast({ title: "保存失败", variant: "destructive" });
     }
   };
 
+  const deleteKey = async (id: string) => {
+    const token = localStorage.getItem("token");
+    try {
+      await fetch(`/api/user/api-keys/${id}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      loadKeys();
+      toast({ title: "已删除" });
+    } catch { toast({ title: "删除失败", variant: "destructive" }); }
+  };
+
   return (
-    <div className="space-y-2">
-      <div className="flex gap-2">
-        <input placeholder="API Key" value={key} onChange={(e) => setKey(e.target.value)}
-          className="flex-1 rounded border border-border bg-background px-2 py-1 text-xs" />
-        <Button size="xs" onClick={saveKey}>保存</Button>
-      </div>
-      <div className="flex gap-2">
-        <input placeholder="Base URL" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)}
-          className="flex-1 rounded border border-border bg-background px-2 py-1 text-xs" />
-        <input placeholder="Model" value={modelName} onChange={(e) => setModelName(e.target.value)}
-          className="w-40 rounded border border-border bg-background px-2 py-1 text-xs" />
+    <div className="space-y-3">
+      {/* 已有 Key 列表 */}
+      {keys.length > 0 && (
+        <div className="space-y-1">
+          {keys.map((k: any) => (
+            <div key={k.id} className="flex items-center gap-2 text-xs py-1 px-2 rounded bg-muted/30">
+              <span className="font-medium">{k.name}</span>
+              <span className="text-muted-foreground">{k.model_name}</span>
+              <Badge variant="secondary" className="text-[10px]">{k.usage}</Badge>
+              <button onClick={() => deleteKey(k.id)} className="ml-auto text-muted-foreground hover:text-destructive">
+                <X className="size-3" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 新增表单 */}
+      <div className="space-y-2 pt-2 border-t border-border">
+        <div className="flex gap-2">
+          <input placeholder="名称" value={name} onChange={(e) => setName(e.target.value)}
+            className="w-28 rounded border border-border bg-background px-2 py-1 text-xs" />
+          <input placeholder="API Key" value={key} onChange={(e) => setKey(e.target.value)}
+            className="flex-1 rounded border border-border bg-background px-2 py-1 text-xs" />
+        </div>
+        <div className="flex gap-2">
+          <input placeholder="Base URL" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)}
+            className="flex-1 rounded border border-border bg-background px-2 py-1 text-xs" />
+          <input placeholder="Model" value={modelName} onChange={(e) => setModelName(e.target.value)}
+            className="w-36 rounded border border-border bg-background px-2 py-1 text-xs" />
+          <select value={usage} onChange={(e) => setUsage(e.target.value)}
+            className="w-18 rounded border border-border bg-background px-1 py-1 text-xs">
+            <option value="chat">文本</option>
+            <option value="image">生图</option>
+            <option value="both">通用</option>
+          </select>
+          <Button size="xs" onClick={saveKey}>保存</Button>
+        </div>
       </div>
     </div>
   );

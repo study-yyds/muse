@@ -1,4 +1,14 @@
-import { Controller, Get, Post, Body, Req, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Put,
+  Delete,
+  Body,
+  Req,
+  Param,
+  UseGuards,
+} from '@nestjs/common';
 import type { Request } from 'express';
 import { AuthService } from './auth.service';
 import { AuthGuard } from './auth.guard';
@@ -30,5 +40,42 @@ export class AuthController {
     return user
       ? { code: 200, data: user }
       : { code: 404, message: '用户不存在' };
+  }
+
+  // ============ API Key 管理 ============
+
+  @UseGuards(AuthGuard)
+  @Get('user/api-keys')
+  async listKeys(@Req() req: Request) {
+    const data = await this.auth.listApiKeys((req as any).userId);
+    return { code: 200, data };
+  }
+
+  @UseGuards(AuthGuard)
+  @Post('user/api-keys')
+  async createKey(
+    @Body() body: { name: string; api_key: string; base_url: string; model_name: string; usage: string },
+    @Req() req: Request,
+  ) {
+    const data = await this.auth.createApiKey((req as any).userId, body);
+    return { code: 201, data };
+  }
+
+  @UseGuards(AuthGuard)
+  @Put('user/api-keys/:id')
+  async updateKey(
+    @Param('id') id: string,
+    @Body() body: { name?: string; api_key?: string; base_url?: string; model_name?: string; usage?: string; is_active?: boolean },
+    @Req() req: Request,
+  ) {
+    await this.auth.updateApiKey(id, (req as any).userId, body);
+    return { code: 200, message: '已更新' };
+  }
+
+  @UseGuards(AuthGuard)
+  @Delete('user/api-keys/:id')
+  async deleteKey(@Param('id') id: string, @Req() req: Request) {
+    await this.auth.deleteApiKey(id, (req as any).userId);
+    return { code: 200, message: '已删除' };
   }
 }

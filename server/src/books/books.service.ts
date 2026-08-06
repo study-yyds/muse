@@ -16,6 +16,7 @@ export class BooksService {
         cover_url: schema.books.cover_url,
         word_count: schema.books.word_count,
         status: schema.books.status,
+        type: schema.books.type,
         last_updated: schema.books.updated_at,
       })
       .from(schema.books)
@@ -33,7 +34,7 @@ export class BooksService {
   }
 
   // 创建作品
-  async create(userId: string, title: string, presetStyle?: string) {
+  async create(userId: string, title: string, presetStyle?: string, type?: string) {
     const db = getDb();
 
     // 检查配额
@@ -55,7 +56,7 @@ export class BooksService {
 
     const [book] = await db
       .insert(schema.books)
-      .values({ user_id: userId, title })
+      .values({ user_id: userId, title, type: type || 'novel' } as any)
       .returning({ book_id: schema.books.book_id });
 
     // 创建关联的 settings 和 outline
@@ -66,6 +67,15 @@ export class BooksService {
         preset_style: presetStyle ?? 'default',
       });
     await db.insert(schema.outlines).values({ book_id: book.book_id });
+
+    // 短篇自动创建唯一章节
+    if (type === 'short') {
+      await db.insert(schema.chapters).values({
+        book_id: book.book_id,
+        title: '正文',
+        sort_order: 1,
+      });
+    }
 
     return book;
   }
@@ -102,6 +112,15 @@ export class BooksService {
     await db
       .update(schema.books)
       .set({ title, updated_at: sql`NOW()` })
+      .where(eq(schema.books.book_id, bookId));
+  }
+
+  // 更新封面
+  async updateCover(bookId: string, coverUrl: string) {
+    const db = getDb();
+    await db
+      .update(schema.books)
+      .set({ cover_url: coverUrl, updated_at: sql`NOW()` })
       .where(eq(schema.books.book_id, bookId));
   }
 
