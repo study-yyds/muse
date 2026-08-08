@@ -1,5 +1,5 @@
 const BASE_URL = "/api";
-const TIMEOUT_MS = 3000;
+const TIMEOUT_MS = 15000;
 
 async function request<T>(
   path: string,
@@ -21,9 +21,8 @@ async function request<T>(
     });
 
     // 登录态过期 → 清除 token 并跳转登录页
-    if (res.status === 401 || res.status === 403) {
+    if (res.status === 401) {
       localStorage.removeItem("token");
-      // 避免在登录页本身触发无限跳转
       if (!window.location.pathname.startsWith("/login")) {
         window.location.href = "/login";
       }

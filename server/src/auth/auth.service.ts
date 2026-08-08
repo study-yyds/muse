@@ -133,7 +133,7 @@ export class AuthService {
     const { createCipheriv, randomBytes } = require('crypto');
     const key = require('crypto')
       .createHash('sha256')
-      .update(process.env.ENCRYPTION_KEY || 'muse-dev-key')
+      .update(process.env.ENCRYPTION_KEY)
       .digest();
     const iv = randomBytes(12);
     const cipher = createCipheriv('aes-256-gcm', key, iv);
@@ -151,7 +151,7 @@ export class AuthService {
     const { createDecipheriv } = require('crypto');
     const key = require('crypto')
       .createHash('sha256')
-      .update(process.env.ENCRYPTION_KEY || 'muse-dev-key')
+      .update(process.env.ENCRYPTION_KEY)
       .digest();
     const buf = Buffer.from(encrypted, 'base64');
     const tag = buf.subarray(0, 16);

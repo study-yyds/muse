@@ -150,6 +150,7 @@ export function BookListPage() {
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ premise, type, model: quickModel }),
       });
+      if (!res.ok) throw new Error(`请求失败 (${res.status})`);
       const reader = res.body?.getReader();
       if (!reader) throw new Error("No stream");
       const decoder = new TextDecoder();
@@ -157,14 +158,28 @@ export function BookListPage() {
       let bookId = "";
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) {
+          // flush decoder
+          buffer += decoder.decode();
+          const finalLines = buffer.split("\n").filter(Boolean);
+          for (let i = 0; i < finalLines.length; i++) {
+            if (finalLines[i].startsWith("event: ") && finalLines[i + 1]?.startsWith("data: ")) {
+              try {
+                const data = JSON.parse(finalLines[i + 1].slice(6));
+                if (finalLines[i].slice(7).trim() === "done") bookId = data.book_id;
+              } catch {}
+            }
+          }
+          break;
+        }
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
-        for (const line of lines) {
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i];
           if (line.startsWith("event: ")) {
             const eventType = line.slice(7).trim();
-            const dataLine = lines[lines.indexOf(line) + 1];
+            const dataLine = lines[i + 1];
             if (dataLine?.startsWith("data: ")) {
               try {
                 const data = JSON.parse(dataLine.slice(6));

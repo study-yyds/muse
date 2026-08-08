@@ -56,30 +56,4 @@ export class ChaptersController {
     return { code: 200, message: '已删除' };
   }
 
-  @Post('merge')
-  async merge(
-    @Param('bookId') bookId: string,
-    @Body() body: { ids: string[]; title: string },
-  ) {
-    try {
-      const data = await this.ch.merge(bookId, body.ids, body.title);
-      return { code: 200, data };
-    } catch (e: any) {
-      return { code: 400, message: e.message };
-    }
-  }
-
-  @Post(':chapterId/split')
-  async split(
-    @Param('bookId') bookId: string,
-    @Param('chapterId') chapterId: string,
-    @Body('split_at') splitAt: number,
-  ) {
-    try {
-      const data = await this.ch.split(bookId, chapterId, splitAt);
-      return { code: 200, data };
-    } catch (e: any) {
-      return { code: 400, message: e.message };
-    }
-  }
 }

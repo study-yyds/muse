@@ -36,11 +36,11 @@ export function TiptapEditor({ content, onChange, placeholder }: Props) {
   const isInternalChange = useRef(false);
 
   // 将纯文本转为 HTML 段落（每个 \n 分隔的块 → <p>）
-  const textToHtml = (text: string) =>
-    text.split('\n').filter(p => p.trim()).map(p => `<p>${p.trim()}</p>`).join('');
+  const escapeHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const textToHtml = (text: string) => text.split('\n').map(p => `<p>${escapeHtml(p)}</p>`).join('');
 
-  const isPlainText = !content.startsWith('{') && !content.startsWith('<');
-  const initialContent = isPlainText ? textToHtml(content) : content;
+  const isStructured = (content || '').trimStart().startsWith('{"type"') || (content || '').trimStart().startsWith('<p');
+  const initialContent = isStructured ? content : textToHtml(content);
 
   const editor = useEditor({
     extensions: [
@@ -52,7 +52,7 @@ export function TiptapEditor({ content, onChange, placeholder }: Props) {
     editorProps: {
       attributes: {
         class:
-          "outline-none min-h-[300px] px-4 py-3 text-base leading-relaxed text-foreground",
+          "outline-none min-h-[300px] px-4 py-3 text-base leading-relaxed text-foreground max-w-full overflow-x-auto break-words",
       },
     },
     onUpdate: ({ editor }) => {
@@ -82,8 +82,8 @@ export function TiptapEditor({ content, onChange, placeholder }: Props) {
     }
     const currentText = getPlainText(editor);
     if (content !== currentText) {
-      const isPlain = !content.startsWith('{') && !content.startsWith('<');
-      editor.commands.setContent(isPlain ? textToHtml(content) : content);
+      const isStructured = (content || '').trimStart().startsWith('{"type"') || (content || '').trimStart().startsWith('<p');
+      editor.commands.setContent(isStructured ? content : textToHtml(content));
     }
   }, [content, editor]);
 

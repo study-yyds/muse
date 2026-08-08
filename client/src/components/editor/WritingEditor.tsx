@@ -7,7 +7,6 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { TiptapEditor } from "./TiptapEditor";
-import { ExtractSettingDialog } from "./ExtractSettingDialog";
 import { useToast } from "@/hooks/use-toast";
 import { useThrottle } from "@/hooks/use-throttle";
 import { useEditorStore } from "@/stores/editor";
@@ -15,8 +14,8 @@ import {
   Plus,
   FileText,
   Loader2,
-  ChevronDown,
-  ChevronRight,
+  PanelLeftOpen,
+  PanelLeftClose,
   Target,
   Sparkles,
 } from "lucide-react";
@@ -53,7 +52,6 @@ export function WritingEditor({ bookId }: Props) {
   const [editorContent, setEditorContent] = useState("");
   const [isDirty, setIsDirty] = useState(false);
   const [boundNodeId, setBoundNodeId] = useState<string | null>(null);
-  const [extractOpen, setExtractOpen] = useState(false);
 
   // 今日码字进度
   const { data: statsData } = useQuery({
@@ -105,6 +103,9 @@ export function WritingEditor({ bookId }: Props) {
       queryClient.invalidateQueries({ queryKey: ["chapters", bookId] });
       toast({ title: "已保存" });
     },
+    onError: () => {
+      toast({ title: "保存失败", variant: "destructive" });
+    },
   });
 
   const createChapterMutation = useMutation({
@@ -117,75 +118,53 @@ export function WritingEditor({ bookId }: Props) {
     },
   });
 
-  // 多选（合并用）
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-
-  const mergeMutation = useMutation({
-    mutationFn: (body: { ids: string[]; title: string }) =>
-      api.post(`/books/${bookId}/chapters/merge`, body),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["chapters", bookId] });
-      setSelectedIds(new Set());
-      toast({ title: "已合并" });
-    },
-  });
-
-  const splitMutation = useMutation({
-    mutationFn: (chapterId: string) =>
-      api.post(`/books/${bookId}/chapters/${chapterId}/split`, { split_at: Math.floor(editorContent.length / 2) }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["chapters", bookId] });
-      queryClient.invalidateQueries({ queryKey: ["chapter", bookId, activeChapterId] });
-      toast({ title: "已拆分" });
-    },
-  });
-
-  const toggleSelect = (id: string) => {
-    setSelectedIds((prev) => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
-  };
-
-  const doMerge = useThrottle(() => {
-    if (mergeMutation.isPending) return;
-    const ids = Array.from(selectedIds);
-    if (ids.length < 2) return;
-    const names = chapters.filter((c) => ids.includes(c.chapter_id)).map((c) => c.title);
-    const newTitle = prompt("合并后的章节名", names.join(" + "));
-    if (newTitle) mergeMutation.mutate({ ids, title: newTitle });
-  });
-
-  const doSplit = useThrottle(() => {
-    if (splitMutation.isPending) return;
-    if (confirm("在中间拆分？")) splitMutation.mutate(activeChapterId);
-  });
-
   const newChapter = useThrottle(() => {
     if (createChapterMutation.isPending) return;
+    if (isDirty && activeChapterId) {
+      if (!confirm("有未保存的内容，是否保存？")) return;
+      saveMutation.mutate();
+    }
     createChapterMutation.mutate(`第${chapters.length + 1}章`);
   });
 
   const selectChapter = (id: string) => {
+    if (id === activeChapterId) return;
     if (isDirty && activeChapterId) {
-      if (confirm("有未保存的内容，是否保存？")) {
-        saveMutation.mutate();
-      }
+      const ok = confirm("有未保存的内容，是否保存？");
+      if (ok) saveMutation.mutate();
+      else return;
     }
     setEditorContent("");
     setActiveChapterId(id);
   };
 
   return (
-    <div className="flex h-full min-h-0 gap-0">
+    <div className="flex h-full min-h-0 gap-0 min-w-0 overflow-hidden">
       {/* 左侧章节列表 */}
       <div
         className={cn(
-          "border-r border-border bg-card flex flex-col transition-all",
-          sidebarCollapsed ? "w-12" : "w-56"
+          "border-r border-border bg-card flex flex-col transition-all z-10",
+          "max-md:fixed max-md:left-0 max-md:top-0 max-md:h-full max-md:shadow-xl",
+          sidebarCollapsed ? "w-0 overflow-hidden border-0" : "w-44"
         )}
       >
         <div className="flex items-center justify-between p-3 border-b border-border">
-          {!sidebarCollapsed && (
-            <p className="text-sm font-medium text-foreground">章节</p>
-          )}
+          <div className="flex items-center gap-1">
+            {!sidebarCollapsed && (
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                className="md:hidden"
+                onClick={() => setSidebarCollapsed(true)}
+                title="收起章节列表"
+              >
+                <PanelLeftClose className="size-4" />
+              </Button>
+            )}
+            {!sidebarCollapsed && (
+              <p className="text-sm font-medium text-foreground">章节</p>
+            )}
+          </div>
           <div className="flex items-center gap-0.5">
             {!sidebarCollapsed && (
               <Button
@@ -198,17 +177,6 @@ export function WritingEditor({ bookId }: Props) {
                 <Plus className="size-4" />
               </Button>
             )}
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-            >
-              {sidebarCollapsed ? (
-                <ChevronRight className="size-4" />
-              ) : (
-                <ChevronDown className="size-4" />
-              )}
-            </Button>
           </div>
         </div>
         {!sidebarCollapsed && (
@@ -230,13 +198,6 @@ export function WritingEditor({ bookId }: Props) {
                     activeChapterId !== ch.chapter_id && "text-muted-foreground",
                   )}
                 >
-                  <input
-                    type="checkbox"
-                    checked={selectedIds.has(ch.chapter_id)}
-                    onChange={() => toggleSelect(ch.chapter_id)}
-                    className="size-3 shrink-0"
-                    onClick={(e) => e.stopPropagation()}
-                  />
                   <button onClick={() => selectChapter(ch.chapter_id)} className="flex-1 text-left min-w-0">
                     <div className="truncate">{ch.title}</div>
                     <div className="text-xs text-muted-foreground">{ch.word_count.toLocaleString()} 字</div>
@@ -249,39 +210,33 @@ export function WritingEditor({ bookId }: Props) {
                 </p>
               )}
             </ScrollArea>
-            {selectedIds.size >= 2 && (
-              <div className="px-2 py-1">
-                <Button size="xs" variant="outline" className="w-full" onClick={doMerge} disabled={mergeMutation.isPending}>
-                  合并选中 ({selectedIds.size} 章)
-                </Button>
-              </div>
-            )}
-            {activeChapterId && (
-              <div className="px-2 py-1">
-                <Button size="xs" variant="outline" className="w-full" onClick={doSplit} disabled={splitMutation.isPending}>
-                  拆分当前章
-                </Button>
-              </div>
-            )}
           </>
         )}
       </div>
 
       {/* 中间编辑器 + AI 面板 */}
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col min-w-0">
         {/* 工具栏 */}
         <div className="flex items-center justify-between px-4 py-2 border-b border-border bg-card">
           <div className="flex items-center gap-3">
             {chapter ? (
               <div className="flex items-center gap-2">
-                <FileText className="size-4 text-muted-foreground" />
+                <button className="p-0.5 -ml-1" onClick={() => setSidebarCollapsed(!sidebarCollapsed)} title="章节列表">
+                  {sidebarCollapsed ? <PanelLeftOpen className="size-4" /> : <PanelLeftClose className="size-4" />}
+                </button>
+                <FileText className="size-4 text-muted-foreground hidden sm:block" />
                 <span className="text-sm font-medium text-foreground">{chapter.title}</span>
                 <Badge variant="secondary" className="text-xs">
                   {chapter.word_count.toLocaleString()} 字
                 </Badge>
               </div>
             ) : (
-              <p className="text-sm text-muted-foreground">选择一个章节开始写作</p>
+              <div className="flex items-center gap-2">
+                <button className="p-0.5 -ml-1" onClick={() => setSidebarCollapsed(!sidebarCollapsed)} title="章节列表">
+                  {sidebarCollapsed ? <PanelLeftOpen className="size-4" /> : <PanelLeftClose className="size-4" />}
+                </button>
+                <p className="text-sm text-muted-foreground">选择一个章节开始写作</p>
+              </div>
             )}
           </div>
           <div className="flex items-center gap-2">
@@ -311,17 +266,6 @@ export function WritingEditor({ bookId }: Props) {
               </select>
             )}
             {isDirty && <span className="text-xs text-muted-foreground">未保存</span>}
-            {activeChapterId && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setExtractOpen(true)}
-                title="AI 提取角色/世界观设定"
-              >
-                <Sparkles className="size-4 mr-1" />
-                提取设定
-              </Button>
-            )}
             <Button size="sm" onClick={() => saveMutation.mutate()} disabled={!isDirty || saveMutation.isPending}>
               {saveMutation.isPending && <Loader2 className="size-4 animate-spin" />}保存
             </Button>
@@ -353,12 +297,6 @@ export function WritingEditor({ bookId }: Props) {
         )}
       </div>
 
-      <ExtractSettingDialog
-        open={extractOpen}
-        onOpenChange={setExtractOpen}
-        bookId={bookId}
-        chapterId={activeChapterId ?? ""}
-      />
     </div>
   );
 }

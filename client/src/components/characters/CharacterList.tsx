@@ -8,7 +8,6 @@ import { TemplatePicker, type CharacterTemplate } from "./TemplatePicker";
 import { SaveAsTemplateDialog } from "@/components/templates/SaveAsTemplateDialog";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
   DialogContent,
@@ -391,7 +390,7 @@ export function CharacterList({ bookId }: Props) {
               defaultValues={{
                 name: editing.name,
                 gender: editing.gender ?? "",
-                age: editing.age,
+                age: editing.age ?? undefined,
                 appearance: editing.appearance ?? "",
                 personality: editing.personality ?? "",
                 catchphrase: editing.catchphrase ?? "",

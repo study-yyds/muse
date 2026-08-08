@@ -31,16 +31,6 @@ export class AiController {
     await this.ai.generate(res, body);
   }
 
-  @Post('extract-settings')
-  async extractSettings(
-    @Body() body: { book_id: string; chapter_id: string; model: string },
-    @Req() req: Request,
-  ) {
-    await this.ai.checkBookOwnership(body.book_id, (req as any).userId);
-    const data = await this.ai.extractSettings(body.book_id, body.chapter_id, body.model);
-    return { code: 200, data };
-  }
-
   @Post('chat')
   async chat(
     @Body()
@@ -242,12 +232,16 @@ export class AiController {
     @Req() req: Request,
   ) {
     await this.ai.checkBookOwnership(body.book_id, (req as any).userId);
+    // 校验角色属于该书
+    const db2 = getDb();
+    const [charCheck] = await db2.select({ book_id: schema.characters.book_id }).from(schema.characters).where(eq(schema.characters.char_id, body.char_id)).limit(1);
+    if (!charCheck || charCheck.book_id !== body.book_id) return { code: 403, message: '角色不属于该作品' };
+
     const prompt =
       body.prompt || (await this.ai.buildCharPrompt(body.char_id));
     const url = await this.ai.generateImage(prompt, body.size, body.style, (req as any).userId, body.model);
 
     // 写入 avatar_url + 历史
-    const db2 = getDb();
     await db2.update(schema.characters).set({ avatar_url: url }).where(eq(schema.characters.char_id, body.char_id));
 
     const [char] = await db2.select({ avatar_history: schema.characters.avatar_history }).from(schema.characters).where(eq(schema.characters.char_id, body.char_id));

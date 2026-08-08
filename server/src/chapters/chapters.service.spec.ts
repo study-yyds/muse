@@ -96,11 +96,4 @@ describe('ChaptersService', () => {
     });
   });
 
-  describe('merge', () => {
-    it('少于 2 个 id 时抛错', async () => {
-      await expect(
-        service.merge('book-123', ['single-id'], 'title')
-      ).rejects.toThrow(); // 先检查抛错，具体信息取决于 mock
-    });
-  });
 });

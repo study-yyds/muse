@@ -61,6 +61,7 @@ export interface BookListItem {
 export interface BookDetail extends BookListItem {
   preset_style: string;
   auto_save_interval_sec: number;
+  type?: string;
   extra?: Record<string, any>;
 }
 
@@ -100,6 +101,8 @@ export interface CharacterData {
   aliases: string | null;
   custom_fields: CustomField[];
   relations: CharacterRelation[];
+  avatar_url?: string | null;
+  avatar_history?: string[];
   created_at: string;
   updated_at: string;
 }
@@ -208,23 +211,6 @@ export interface AIGenerateRequest {
   style?: string;
   model: string;
   use_platform_key: boolean;
-}
-
-export interface AIExtractSettingsRequest {
-  book_id: string;
-  chapter_id: string;
-  model: string;
-}
-
-export interface SettingSuggestion {
-  type: "character" | "world";
-  target_char_id: string | null;
-  field?: string;
-  value?: string;
-  section_name?: string;
-  content?: string;
-  existing_value: string | null;
-  conflict: boolean;
 }
 
 export interface AIOutlineDialogRequest {

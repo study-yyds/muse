@@ -135,6 +135,10 @@ body {
 }
 
 /* TipTap 编辑器段落间距 */
+.ProseMirror {
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
 .ProseMirror p {
   margin-bottom: 0.75em;
 }

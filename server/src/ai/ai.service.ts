@@ -31,7 +31,7 @@ export function sanitizePrompt(text: string): string {
 function sanitizeMessages(msgs: any[]): any[] {
   if (!Array.isArray(msgs)) return [];
   return msgs.slice(-MAX_HISTORY_MSG).map((m) => ({
-    role: m.role,
+    role: m.role === 'assistant' ? 'assistant' : 'user',
     content: sanitizePrompt(m.content),
   }));
 }
@@ -64,7 +64,7 @@ export class AiService {
           const { createDecipheriv } = require('crypto');
           const key = require('crypto')
             .createHash('sha256')
-            .update(process.env.ENCRYPTION_KEY || 'muse-dev-key')
+            .update(process.env.ENCRYPTION_KEY)
             .digest();
           const buf = Buffer.from(k.api_key_encrypted, 'base64');
           const tag = buf.subarray(0, 16);
@@ -146,7 +146,7 @@ export class AiService {
         title: schema.chapters.title,
       })
       .from(schema.chapters)
-      .where(eq(schema.chapters.chapter_id, params.chapterId))
+      .where(and(eq(schema.chapters.chapter_id, params.chapterId), eq(schema.chapters.book_id, params.bookId)))
       .limit(1);
 
     // 构建 AI 上下文
@@ -191,15 +191,17 @@ ${charContext || '暂无'}
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
-    const apiKey = usePlatformKey ? process.env.AI_PLATFORM_KEY : null; // 用户自定义 Key 由前端直连
+    let apiKey = process.env.AI_PLATFORM_KEY;
+    let baseUrl = process.env.AI_PLATFORM_BASE_URL ?? 'https://api.deepseek.com/v1';
 
-    const baseUrl =
-      process.env.AI_PLATFORM_BASE_URL ?? 'https://api.deepseek.com/v1';
+    if (!usePlatformKey) {
+      res.write(`event: error\ndata: ${JSON.stringify({ message: '自定义 Key 请通过前端直连' })}\n\n`);
+      res.end();
+      return;
+    }
 
-    if (!apiKey && usePlatformKey) {
-      res.write(
-        `event: error\ndata: ${JSON.stringify({ message: 'AI 服务未配置' })}\n\n`,
-      );
+    if (!apiKey) {
+      res.write(`event: error\ndata: ${JSON.stringify({ message: 'AI 服务未配置' })}\n\n`);
       res.end();
       return;
     }
@@ -226,7 +228,7 @@ ${charContext || '暂无'}
       if (!response.ok) {
         const err = await response.text();
         res.write(
-          `event: error\ndata: ${JSON.stringify({ message: err })}\n\n`,
+          `event: error\ndata: ${JSON.stringify({ message: 'AI 请求失败' })}\n\n`,
         );
         res.end();
         return;
@@ -278,86 +280,10 @@ ${charContext || '暂无'}
       }
     } catch (e: any) {
       res.write(
-        `event: error\ndata: ${JSON.stringify({ message: e.message })}\n\n`,
+        `event: error\ndata: ${JSON.stringify({ message: 'AI 服务异常' })}\n\n`,
       );
     }
     res.end();
-  }
-
-  // 设定提取（非流式）
-  async extractSettings(bookId: string, chapterId: string, model: string) {
-    const db = getDb();
-
-    const [chapter] = await db
-      .select({ content: schema.chapters.content })
-      .from(schema.chapters)
-      .where(eq(schema.chapters.chapter_id, chapterId));
-
-    const characters = await db
-      .select()
-      .from(schema.characters)
-      .where(eq(schema.characters.book_id, bookId));
-
-    // 已有世界观分区
-    const [world] = await db
-      .select({ sections: schema.world_settings.sections })
-      .from(schema.world_settings)
-      .where(eq(schema.world_settings.book_id, bookId));
-
-    const baseUrl =
-      process.env.AI_PLATFORM_BASE_URL ?? 'https://api.deepseek.com/v1';
-    const apiKey = process.env.AI_PLATFORM_KEY;
-
-    if (!apiKey) return { suggestions: [] };
-
-    const prompt = `从以下小说章节中提取角色和世界观设定。
-
-【已有角色，带 char_id——修改已有角色时必须用这个 ID】
-${characters.map((c) => `- id=${c.char_id} | ${c.name} | 性格=${c.personality ?? '无'} | 身份=${c.identity ?? '无'} | 背景=${(c.backstory ?? '').slice(0, 50)}`).join('\n') || '暂无角色'}
-
-【已有世界观分区——新增或修改世界观时参考分区名】
-${world?.sections ? (world.sections as any[]).map((s: any) => `${s.name}`).join(', ') : '无分区'}
-
-【章节内容】
-${(chapter?.content ?? '').slice(0, 4000)}
-
-请按以下 JSON 格式返回（只返回 JSON，不要其他文字）：
-{
-  "suggestions": [
-    {"type": "character", "target_char_id": "已有角色的char_id或null(新建)", "field": "personality|identity|backstory|motivation|appearance|gender|catchphrase|speech_style", "value": "提取到的值", "existing_value": "已有值或null", "conflict": true或false},
-    {"type": "world", "section_name": "分区名", "content": "该分区的设定内容", "existing_value": null, "conflict": false}
-  ]
-}
-规则：
-- character: 如果角色已存在（名字匹配），target_char_id 填已有 ID
-- character: 如果角色不存在，target_char_id=null，用 field="name" 给出新角色名
-- world: 设定归属到已有分区名，或建议新分区
-- conflict: 已有值与提取值不一致时为 true`;
-
-    try {
-      const res = await fetch(`${baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model,
-          messages: [{ role: 'user', content: prompt }],
-          max_tokens: 2048,
-        }),
-        signal: AbortSignal.timeout(30000),
-      });
-      const data = await res.json();
-      const text = data.choices?.[0]?.message?.content ?? '{}';
-      // JSON 提取容错：去除 markdown 代码块包裹
-      let jsonStr = text.trim();
-      const match = jsonStr.match(/\{[\s\S]*"suggestions"[\s\S]*\}/);
-      if (match) jsonStr = match[0];
-      return JSON.parse(jsonStr);
-    } catch {
-      return { suggestions: [] };
-    }
   }
 
   // 应用提取的设定：写入 characters 或 world_settings
@@ -394,6 +320,9 @@ ${(chapter?.content ?? '').slice(0, 4000)}
         if (!s.field || !charFields.includes(s.field)) continue;
 
         if (s.target_char_id) {
+          // 校验角色属于该书
+          const [charCheck] = await db.select({ book_id: schema.characters.book_id }).from(schema.characters).where(eq(schema.characters.char_id, s.target_char_id)).limit(1);
+          if (!charCheck || charCheck.book_id !== bookId) continue;
           // 更新已有角色
           await db
             .update(schema.characters)
@@ -569,7 +498,7 @@ ${(chapter?.content ?? '').slice(0, 4000)}
           bound_outline_node_id: schema.chapters.bound_outline_node_id,
         })
         .from(schema.chapters)
-        .where(eq(schema.chapters.chapter_id, params.chapter_id));
+        .where(and(eq(schema.chapters.chapter_id, params.chapter_id), eq(schema.chapters.book_id, params.book_id)));
 
       if (ch) {
         // 章节文本上下文
@@ -1003,7 +932,7 @@ ${worldText.slice(0, 1000)}
       res.write('event: done\ndata: {}\n\n');
     } catch (e: any) {
       res.write(
-        `event: error\ndata: ${JSON.stringify({ message: e.message })}\n\n`,
+        `event: error\ndata: ${JSON.stringify({ message: 'AI 服务异常' })}\n\n`,
       );
     }
     res.end();
@@ -1591,6 +1520,7 @@ Markdown / 环境描写超三行 / 大段独白 / 平淡收尾 / 女主吃亏 / 
         }),
         signal: AbortSignal.timeout(300_000),
       });
+      if (!r1.ok) { send('error', { message: `AI 请求失败 (${r1.status})` }); res.end(); return; }
       const data1 = await r1.json();
       const part1 = (data1.choices?.[0]?.message?.content ?? '').replace(
         /【待续】.*$/s,
@@ -1625,6 +1555,7 @@ Markdown / 环境描写超三行 / 大段独白 / 平淡收尾 / 女主吃亏 / 
         }),
         signal: AbortSignal.timeout(300_000),
       });
+      if (!r2.ok) { send('error', { message: `AI 续写失败 (${r2.status})` }); res.end(); return; }
       const data2 = await r2.json();
       const part2 = data2.choices?.[0]?.message?.content ?? '';
       const storyText = part1 + '\n\n' + part2;

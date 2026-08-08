@@ -18,7 +18,7 @@ import { useEditorStore } from "@/stores/editor";
 import { useToast } from "@/hooks/use-toast";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { ArrowLeft, UserRound, Globe, ListTree, FileText, Download, Send, Loader2, Sparkles, Settings, BarChart3, Menu, MessageCircle, Square, ChevronRight } from "lucide-react";
+import { ArrowLeft, UserRound, Globe, ListTree, FileText, Download, Send, Loader2, Sparkles, Settings, BarChart3, Menu, Square, ChevronRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type Section = "write" | "outline" | "characters" | "world" | "settings" | "stats";
@@ -173,7 +173,15 @@ export function BookDetailPage() {
   const setSection = (s: Section) => setSearchParams({ tab: s }, { replace: true });
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [mobileAiExpanded, setMobileAiExpanded] = useState(false);
+  const [aiPanelHeight, setAiPanelHeight] = useState(45); // vh
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 1024);
   const [coverUrl, setCoverUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 1024);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
 
   const { data, isLoading } = useQuery({
     queryKey: ["book", bookId],
@@ -272,18 +280,43 @@ export function BookDetailPage() {
           )}
         </div>
 
-        {/* ===== 移动端 AI 面板：底部嵌入式 ===== */}
-        {mobileAiExpanded && (
-          <div className="lg:hidden border-t border-border bg-card shrink-0" style={{ maxHeight: "45vh" }}>
+        {/* ===== 移动端 AI 面板：可拖拽调整高度 ===== */}
+        {isMobile && mobileAiExpanded && (
+          <div className="border-t border-border bg-card shrink-0 relative" style={{ height: `${aiPanelHeight}vh` }}>
+            {/* 拖动把手 */}
+            <div
+              className="absolute top-0 left-0 right-0 h-4 flex items-center justify-center cursor-ns-resize active:cursor-ns-resize z-10"
+              onPointerDown={(e) => {
+                (e.target as HTMLElement).setPointerCapture(e.pointerId);
+                const startY = e.clientY;
+                const startH = aiPanelHeight;
+                const onMove = (ev: PointerEvent) => {
+                  const deltaY = startY - ev.clientY;
+                  const vhDelta = (deltaY / window.innerHeight) * 100;
+                  setAiPanelHeight(Math.max(20, Math.min(80, startH + vhDelta)));
+                };
+                const onUp = () => {
+                  try { (e.target as HTMLElement).releasePointerCapture(e.pointerId); } catch {}
+                  document.removeEventListener("pointermove", onMove);
+                  document.removeEventListener("pointerup", onUp);
+                };
+                document.addEventListener("pointermove", onMove);
+                document.addEventListener("pointerup", onUp);
+              }}
+            >
+              <div className="w-10 h-1 rounded-full bg-border" />
+            </div>
             <AIChatPanel section={section} bookId={bookId ?? ""} />
           </div>
         )}
       </div>
 
       {/* ===== 桌面端 AI 面板 ===== */}
-      <div className="hidden lg:flex w-72 shrink-0 border-l border-border bg-card flex-col h-full">
-        <AIChatPanel section={section} bookId={bookId ?? ""} />
-      </div>
+      {!isMobile && (
+        <div className="flex w-72 shrink-0 border-l border-border bg-card flex-col h-full">
+          <AIChatPanel section={section} bookId={bookId ?? ""} />
+        </div>
+      )}
     </div>
   );
 }
@@ -353,7 +386,11 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
         setTimeout(() => regenerate(), 500);
       }
     });
-    return () => clearTimeout(saveTimer.current);
+    return () => {
+      clearTimeout(saveTimer.current);
+      if (autoSaveIntervalRef.current) clearInterval(autoSaveIntervalRef.current);
+      if (abortRef.current) { abortRef.current.abort(); abortRef.current = null; }
+    };
   }, [bookId, section]);
 
   // 消息变化时自动滚到底部
@@ -570,7 +607,7 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
           }
           if (ev === "action") { try { action = JSON.parse(payload); } catch { /* ignore */ } }
           if (ev === "error") {
-            try { const err = JSON.parse(payload); throw new Error(err.message ?? "AI 错误"); } catch (e) { if (e instanceof Error && e.message !== "AI 错误") throw e; throw new Error("AI 请求失败"); }
+            try { const err = JSON.parse(payload); toast({ title: err.message || "AI 错误", variant: "destructive" }); } catch { toast({ title: "AI 请求失败", variant: "destructive" }); }
           }
           ev = "";
         }
@@ -919,7 +956,7 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
   const archived = sessions.filter((s: any) => s.id !== sessionId);
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full overflow-hidden">
       {/* 标题栏 + 新对话/历史 */}
       <div className="px-4 py-3 border-b border-border shrink-0">
         <div className="flex items-center justify-between gap-2">
@@ -984,7 +1021,8 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
         )}
       </div>
 
-      <ScrollArea className="flex-1 min-h-0">
+      <div className="flex-1 min-h-0 overflow-hidden">
+        <ScrollArea className="h-full">
         <div className="p-4 space-y-3">
           {msgs.map((m: Msg, i: number) => {
             const reasonExpanded = expandedReasoning.has(i);
@@ -1130,92 +1168,72 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
           )}
           <div ref={scrollBottomRef} />
         </div>
-      </ScrollArea>
+        </ScrollArea>
+      </div>
 
-      <div className="p-3 border-t border-border space-y-2 shrink-0">
-        {section === "write" && (
-          <div className="flex items-center gap-2">
-            {rewriteCtx ? (
-              <div className="flex-1 flex items-center gap-2 rounded border border-primary/30 bg-primary/5 px-2 py-1 text-xs text-foreground">
-                <span className="text-muted-foreground shrink-0">改写：</span>
-                <span className="truncate">{rewriteCtx.text.slice(0, 80)}</span>
-                <button onClick={() => clearRewrite()} className="shrink-0 text-muted-foreground hover:text-foreground">
-                  ×
-                </button>
-              </div>
-            ) : (
-              <Button
-                variant="ghost"
-                size="xs"
-                className="text-xs"
-                onClick={() => {
-                  const s = useEditorStore.getState();
-                  if (s.selectedText) {
-                    const c = s.aiRewriteContext;
-                    s.setAiRewrite(
-                      s.selectedText,
-                      s.cursorPosition,
-                      s.cursorPosition + s.selectedText.length,
-                      c?.tiptapFrom,
-                      c?.tiptapTo,
-                    );
-                  }
-                }}
-              >
-                <MessageCircle className="size-3 mr-1" />
-                附加编辑器选中
-              </Button>
-            )}
-          </div>
-        )}
-        <div className="flex gap-2">
+      {/* 输入区 */}
+      <div className="px-2 py-1.5 border-t border-border shrink-0">
+        <div className="rounded-xl border border-border bg-muted/20 px-2.5 py-1">
+          {/* 改写上下文 */}
+          {section === "write" && rewriteCtx && (
+            <div className="flex items-center gap-1 rounded bg-primary/5 px-2 py-0.5 text-xs text-foreground mb-1">
+              <span className="text-muted-foreground shrink-0">改写：</span>
+              <span className="truncate flex-1">{rewriteCtx.text.slice(0, 60)}</span>
+              <button onClick={() => clearRewrite()} className="shrink-0 text-muted-foreground hover:text-foreground">×</button>
+            </div>
+          )}
+          {/* 主体输入框 */}
           <Textarea
-            rows={2}
-            placeholder="输入修改指令..."
+            rows={1}
+            placeholder="输入消息..."
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => {
+              setInput(e.target.value);
+              const el = e.target;
+              el.style.height = "auto";
+              el.style.height = Math.min(el.scrollHeight, 120) + "px";
+            }}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
             }}
-            className="text-xs"
+            className="text-sm border-0 bg-transparent resize-none !p-0 min-h-6 shadow-none focus-visible:ring-0 leading-normal"
           />
-          {loading ? (
-            <Button size="icon" onClick={stop} variant="destructive" title="停止生成">
-              <Square className="size-4" />
-            </Button>
-          ) : (
-            <Button size="icon" onClick={send} disabled={!input.trim()}>
-              <Send className="size-4" />
-            </Button>
-          )}
-        </div>
-        {section === "write" && (
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground">风格</span>
-            <select
-              value={chatStyle}
-              onChange={(e) => setChatStyle(e.target.value)}
-              className="flex-1 rounded border border-border bg-background px-2 py-1 text-xs text-foreground"
-            >
-              <option value="default">默认</option>
-              <option value="light-novel">轻小说</option>
-              <option value="serious">严肃文学</option>
-              <option value="ancient">古风</option>
-              <option value="plain">小白文</option>
-              <option value="colloquial">口语化</option>
-            </select>
+          {/* 底部工具栏 */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1.5">
+              {section === "write" && (
+                <select
+                  value={chatStyle}
+                  onChange={(e) => setChatStyle(e.target.value)}
+                  className="text-[11px] text-muted-foreground bg-muted/50 rounded-full px-2.5 py-1 border-0 outline-none cursor-pointer"
+                >
+                  <option value="default">风格</option>
+                  <option value="light-novel">轻小说</option>
+                  <option value="serious">严肃文学</option>
+                  <option value="ancient">古风</option>
+                  <option value="plain">小白文</option>
+                  <option value="colloquial">口语化</option>
+                </select>
+              )}
+              <select
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                className="text-[11px] text-muted-foreground bg-muted/50 rounded-full px-2.5 py-1 border-0 outline-none cursor-pointer"
+              >
+                <option value="deepseek-v4-flash">V4 Flash</option>
+                <option value="deepseek-v4-pro">V4 Pro</option>
+              </select>
+            </div>
+            {loading ? (
+              <button onClick={stop} className="size-8 flex items-center justify-center rounded-full bg-destructive text-white">
+                <Square className="size-4" />
+              </button>
+            ) : (
+              <button onClick={send} disabled={!input.trim()} className="size-8 flex items-center justify-center rounded-full bg-primary text-primary-foreground disabled:opacity-30">
+                <Send className="size-4" />
+              </button>
+            )}
           </div>
-        )}
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-muted-foreground">模型</span>
-          <select
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            className="flex-1 rounded border border-border bg-background px-2 py-1 text-xs text-foreground"
-          >
-            <option value="deepseek-v4-flash">deepseek-v4-flash</option>
-            <option value="deepseek-v4-pro">deepseek-v4-pro</option>
-          </select>
         </div>
       </div>
     </div>
