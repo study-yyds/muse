@@ -79,8 +79,14 @@ export class AiService {
             decipher.update(data),
             decipher.final(),
           ]).toString('utf8');
-          return { apiKey: decrypted, baseUrl: k.base_url, model: k.model_name };
-        } catch { /* fall through */ }
+          return {
+            apiKey: decrypted,
+            baseUrl: k.base_url,
+            model: k.model_name,
+          };
+        } catch {
+          /* fall through */
+        }
       }
     }
 
@@ -146,7 +152,12 @@ export class AiService {
         title: schema.chapters.title,
       })
       .from(schema.chapters)
-      .where(and(eq(schema.chapters.chapter_id, params.chapterId), eq(schema.chapters.book_id, params.bookId)))
+      .where(
+        and(
+          eq(schema.chapters.chapter_id, params.chapterId),
+          eq(schema.chapters.book_id, params.bookId),
+        ),
+      )
       .limit(1);
 
     // 构建 AI 上下文
@@ -191,17 +202,22 @@ ${charContext || '暂无'}
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
-    let apiKey = process.env.AI_PLATFORM_KEY;
-    let baseUrl = process.env.AI_PLATFORM_BASE_URL ?? 'https://api.deepseek.com/v1';
+    const apiKey = process.env.AI_PLATFORM_KEY;
+    const baseUrl =
+      process.env.AI_PLATFORM_BASE_URL ?? 'https://api.deepseek.com/v1';
 
     if (!usePlatformKey) {
-      res.write(`event: error\ndata: ${JSON.stringify({ message: '自定义 Key 请通过前端直连' })}\n\n`);
+      res.write(
+        `event: error\ndata: ${JSON.stringify({ message: '自定义 Key 请通过前端直连' })}\n\n`,
+      );
       res.end();
       return;
     }
 
     if (!apiKey) {
-      res.write(`event: error\ndata: ${JSON.stringify({ message: 'AI 服务未配置' })}\n\n`);
+      res.write(
+        `event: error\ndata: ${JSON.stringify({ message: 'AI 服务未配置' })}\n\n`,
+      );
       res.end();
       return;
     }
@@ -321,7 +337,11 @@ ${charContext || '暂无'}
 
         if (s.target_char_id) {
           // 校验角色属于该书
-          const [charCheck] = await db.select({ book_id: schema.characters.book_id }).from(schema.characters).where(eq(schema.characters.char_id, s.target_char_id)).limit(1);
+          const [charCheck] = await db
+            .select({ book_id: schema.characters.book_id })
+            .from(schema.characters)
+            .where(eq(schema.characters.char_id, s.target_char_id))
+            .limit(1);
           if (!charCheck || charCheck.book_id !== bookId) continue;
           // 更新已有角色
           await db
@@ -405,6 +425,48 @@ ${charContext || '暂无'}
     }
   }
 
+  // 构建引导模式 system prompt
+  static buildGuideSystemPrompt(context?: string, type?: string): string {
+    const isShort = type === 'short';
+    const typeGuide = isShort
+      ? `\n【篇幅注意——短篇】
+- 作者要写的是短篇（8000-20000字），故事结构应紧凑聚焦
+- 引导时侧重：单一核心冲突、1-3个关键角色、一个强有力的结尾反转`
+      : `\n【篇幅注意——长篇网文】
+- 作者要写的是长篇网络小说。从作者的脑洞中识别这个故事的驱动力，围绕它来提问，不预设模板`;
+
+    return `你是一位创作导师，帮作者把模糊的想法打磨成精彩的故事。${typeGuide}
+
+【怎么做——看例子】
+
+作者："雇主因为女主和他亡妻长得一模一样，找上她做替身"
+❌ 错误："那她是主动去扮演还是被人雇的？" ← 作者已经说了雇主找上她
+✅ 正确："雇主主动找上门的——是私下交易，还是有人牵线？"
+
+作者："女主绑定了平行时空系统，可以学习未来的知识"
+❌ 错误："在信息闭塞的年代，她怎么获取知识？" ← 系统已经解决了
+✅ 正确："系统提供的学习资料是什么样的？她能带进现实世界使用吗？"
+
+作者："我想写一个重生经商的故事"
+❌ 错误："重生文应该有金手指，你的女主金手指是什么？" ← 不要预设
+✅ 正确："她重生回去做什么生意？为什么选这个行业？"
+
+【你的工作方式】
+1. 从作者上一轮的回答里找到没说清楚的点，追问
+2. 不确定作者的意思就问"是A还是B？"，不要猜
+3. 反馈 = 一句肯定 + 一句话提炼 + 一个问题，控制在 100 字内
+4. 作者说"开始生成""差不多了"时，立即停止提问，输出摘要。摘要基于对话中已讨论的内容进行总结，可以合理扩展细节，但不要修改或替换作者已明确的设定：
+
+\`\`\`
+【故事主题】基于对话的一句话
+【主角画像】仅对话中已提到的信息
+【核心驱动力】推着故事往前走的是什么
+【关键节点】仅对话中已讨论的情节
+【叙事风格】视角 + 节奏
+\`\`\`
+${context ? `\n【用户的初始想法】\n${context}` : ''}`;
+  }
+
   // 全局 AI 对话（根据菜单切换上下文和动作）
   async chat(
     res: Response,
@@ -418,10 +480,41 @@ ${charContext || '暂无'}
       cursor_position?: number;
       style?: string;
       user_id?: string;
+      guide_mode?: boolean;
+      guide_context?: string;
+      guide_type?: string;
     },
   ) {
     const db = getDb();
     const ct = params.context_type;
+
+    // 引导模式：使用引导 prompt，无需加载作品上下文
+    if (params.guide_mode) {
+      try {
+        const guidePrompt = AiService.buildGuideSystemPrompt(
+          params.guide_context,
+          params.guide_type,
+        );
+        const cleanMessages = Array.isArray(params.messages)
+          ? sanitizeMessages(params.messages)
+          : [];
+        await this.streamChatToClient(
+          res,
+          guidePrompt,
+          cleanMessages,
+          params.model ?? 'deepseek-chat',
+          8192,
+        );
+      } catch (e: any) {
+        console.error('[guide_mode] stream error:', e.message ?? e);
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+        res.write(
+          `event: error\ndata: ${JSON.stringify({ message: e.message ?? 'AI 服务异常' })}\n\n`,
+        );
+        res.end();
+      }
+      return;
+    }
 
     // 校验所有权
     if (params.user_id) {
@@ -498,7 +591,12 @@ ${charContext || '暂无'}
           bound_outline_node_id: schema.chapters.bound_outline_node_id,
         })
         .from(schema.chapters)
-        .where(and(eq(schema.chapters.chapter_id, params.chapter_id), eq(schema.chapters.book_id, params.book_id)));
+        .where(
+          and(
+            eq(schema.chapters.chapter_id, params.chapter_id),
+            eq(schema.chapters.book_id, params.book_id),
+          ),
+        );
 
       if (ch) {
         // 章节文本上下文
@@ -646,18 +744,17 @@ ${styleBlock}
 
 如果只是闲聊讨论，则只输出自然语言，不需要 JSON。`,
 
-      short: `你是知乎盐选爆款短篇作家。参照以下风格：
+      short: `你是知乎盐选爆款短篇作家。
 
 ${chapterContext}
 
-【核心规则】
-1. 第一人称「我」，开篇第一句就是冲突——不铺垫不写景
-2. 每段 1-3 句，段间空行，手机一屏 2-3 段
-3. 40% 用对话推进，让人物自己说话
-4. 每 800 字有新信息：反转/爆点/真相碎片
-5. 前 1/3 冲突堆到最高点，后 2/3 高潮+反击+结局，女主必须赢
+【通用结构】
+1. 开篇第一句就是冲突/悬念，不铺垫不写景
+2. 每段1-3句，段间空行，对话占比40%+
+3. 段末钩子：每段最后一句让读者想问"然后呢？"
+4. 反差制造爽感：预期→意外→奖励
 
-【禁止】Markdown / 环境描写超三行 / 大段独白 / 平淡收尾 / 女主吃亏
+【技术规则】纯文本，不用Markdown。环境≤3行。不写大段独白。
 
 正文直接输出，最后一行操作指令 JSON。闲聊只输出自然语言。`,
 
@@ -939,7 +1036,12 @@ ${worldText.slice(0, 1000)}
   }
 
   // AI 模仿笔风：分析已完成章节，提取写作风格特征
-  async mimicStyle(bookId?: string, model?: string, customText?: string, userId?: string) {
+  async mimicStyle(
+    bookId?: string,
+    model?: string,
+    customText?: string,
+    userId?: string,
+  ) {
     const resolved = await this.resolveApiKey(userId, 'chat', model);
     if (!resolved.apiKey) return { analysis: '' };
 
@@ -950,7 +1052,10 @@ ${worldText.slice(0, 1000)}
     } else if (bookId) {
       const db = getDb();
       const chapters = await db
-        .select({ content: schema.chapters.content, title: schema.chapters.title })
+        .select({
+          content: schema.chapters.content,
+          title: schema.chapters.title,
+        })
         .from(schema.chapters)
         .where(eq(schema.chapters.book_id, bookId));
       for (const ch of chapters) {
@@ -959,12 +1064,16 @@ ${worldText.slice(0, 1000)}
       }
     }
 
-    if (sample.trim().length < 200) return { analysis: '内容不足，需至少 200 字' };
+    if (sample.trim().length < 200)
+      return { analysis: '内容不足，需至少 200 字' };
 
     try {
       const res = await fetch(`${resolved.baseUrl}/chat/completions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${resolved.apiKey}` },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${resolved.apiKey}`,
+        },
         body: JSON.stringify({
           model: resolved.model,
           messages: [
@@ -1200,8 +1309,7 @@ ${sample.slice(0, 5000)}`,
       });
       if (!res.ok) throw new Error(`千问生图失败 (${res.status})`);
       const data = await res.json();
-      imageUrl =
-        data?.output?.choices?.[0]?.message?.content?.[0]?.image || '';
+      imageUrl = data?.output?.choices?.[0]?.message?.content?.[0]?.image || '';
     } else {
       res = await fetch(`${resolved.baseUrl}/images/generations`, {
         method: 'POST',
@@ -1257,7 +1365,7 @@ ${sample.slice(0, 5000)}`,
 
     const worldBrief =
       world?.sections && Array.isArray(world.sections)
-        ? (world.sections as any[])
+        ? world.sections
             .map((s: any) => s.content?.slice(0, 100))
             .filter(Boolean)
             .join('；')
@@ -1301,7 +1409,7 @@ ${sample.slice(0, 5000)}`,
 
     const worldText =
       world?.sections && Array.isArray(world.sections)
-        ? (world.sections as any[])
+        ? world.sections
             .map((s: any) => s.content)
             .join('\n')
             .slice(0, 2000)
@@ -1384,40 +1492,79 @@ ${sample.slice(0, 5000)}`,
       .where(eq(schema.chapters.book_id, bookId))
       .orderBy(schema.chapters.sort_order)
       .limit(5);
-    const chapterSamples = chapters.map((c) => c.content?.slice(0, 1000)).join('\n');
+    const chapterSamples = chapters
+      .map((c) => c.content?.slice(0, 1000))
+      .join('\n');
     const chars = await db
-      .select({ name: schema.characters.name, identity: schema.characters.identity })
+      .select({
+        name: schema.characters.name,
+        identity: schema.characters.identity,
+      })
       .from(schema.characters)
       .where(eq(schema.characters.book_id, bookId))
       .limit(5);
-    const charBrief = chars.map((c) => `${c.name}：${c.identity || ''}`).join('；');
-    const [outline] = await db.select().from(schema.outlines).where(eq(schema.outlines.book_id, bookId));
+    const charBrief = chars
+      .map((c) => `${c.name}：${c.identity || ''}`)
+      .join('；');
+    const [outline] = await db
+      .select()
+      .from(schema.outlines)
+      .where(eq(schema.outlines.book_id, bookId));
     const nodes = outline
-      ? await db.select().from(schema.outline_chapters).where(eq(schema.outline_chapters.outline_id, outline.outline_id)).orderBy(schema.outline_chapters.sort_order).limit(5)
+      ? await db
+          .select()
+          .from(schema.outline_chapters)
+          .where(eq(schema.outline_chapters.outline_id, outline.outline_id))
+          .orderBy(schema.outline_chapters.sort_order)
+          .limit(5)
       : [];
     const nodeBrief = nodes.map((n) => n.title).join(' → ');
 
     const prompt = `根据以下信息，为小说《${book.title}》写一段简介（200-400字），吸引读者。概况主线、主要冲突和看点。只输出简介文本。`;
 
-    const summary = [chapterSamples ? `内容节选：${chapterSamples.slice(0, 2000)}` : '', charBrief ? `主要角色：${charBrief}` : '', nodeBrief ? `情节主线：${nodeBrief}` : ''].filter(Boolean).join('\n\n');
+    const summary = [
+      chapterSamples ? `内容节选：${chapterSamples.slice(0, 2000)}` : '',
+      charBrief ? `主要角色：${charBrief}` : '',
+      nodeBrief ? `情节主线：${nodeBrief}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n');
 
     try {
       const res = await fetch(`${resolved.baseUrl}/chat/completions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${resolved.apiKey}` },
-        body: JSON.stringify({ model: resolved.model, messages: [{ role: 'system', content: prompt }, { role: 'user', content: summary }], max_tokens: 1024 }),
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${resolved.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: resolved.model,
+          messages: [
+            { role: 'system', content: prompt },
+            { role: 'user', content: summary },
+          ],
+          max_tokens: 1024,
+        }),
         signal: AbortSignal.timeout(30000),
       });
       const data = await res.json();
       const synopsis = (data.choices?.[0]?.message?.content || '').trim();
       if (synopsis) {
-        const [settings] = await db.select({ extra: schema.book_settings.extra }).from(schema.book_settings).where(eq(schema.book_settings.book_id, bookId));
+        const [settings] = await db
+          .select({ extra: schema.book_settings.extra })
+          .from(schema.book_settings)
+          .where(eq(schema.book_settings.book_id, bookId));
         const extra = (settings?.extra ?? {}) as Record<string, any>;
         extra.synopsis = synopsis;
-        await db.update(schema.book_settings).set({ extra: extra as any }).where(eq(schema.book_settings.book_id, bookId));
+        await db
+          .update(schema.book_settings)
+          .set({ extra: extra as any })
+          .where(eq(schema.book_settings.book_id, bookId));
       }
       return { synopsis };
-    } catch { return { synopsis: '' }; }
+    } catch {
+      return { synopsis: '' };
+    }
   }
 
   // ============== 快捷创作 ==============
@@ -1425,7 +1572,13 @@ ${sample.slice(0, 5000)}`,
   // 短篇快捷创作：输入脑洞 → AI 直接写完完整故事
   async quickCreateShort(
     res: Response,
-    params: { user_id: string; premise: string; model?: string },
+    params: {
+      user_id: string;
+      premise: string;
+      model?: string;
+      guide_summary?: string;
+      guide_full_log?: string;
+    },
   ) {
     const db = getDb();
     const model = params.model || 'deepseek-v4-flash';
@@ -1469,9 +1622,12 @@ ${sample.slice(0, 5000)}`,
         status: 'generating',
         label: '正在写故事...',
       });
-      const storyPrompt = `你是知乎盐选爆款短篇作家。参照以下风格：
+      const guideBlock = params.guide_summary
+        ? `\n【创作方向——请严格遵循以下设定】\n${params.guide_summary}\n${params.guide_full_log ? `\n【引导讨论记录——参考细节】\n${params.guide_full_log}\n` : ''}`
+        : '';
+      const storyPrompt = `${guideBlock}你是知乎盐选爆款短篇作家。参照以下风格：
 
-【风格示范——这就是我要的节奏和质感】
+【节奏示范】
 结婚三年，顾景琛从没碰过我。直到我递上离婚协议那天，他却疯了。
 
 他站在暴雨里，浑身湿透，手里攥着被我改过的那份协议。我坐在暖烘烘的咖啡厅里，隔着落地窗看他。林薇戳了戳我胳膊："你就让他那么淋着？" "淋着吧。"我搅了搅咖啡，"淋不坏。"
@@ -1486,18 +1642,16 @@ ${sample.slice(0, 5000)}`,
 
 原来甩掉一个错的人，比遇见一个对的人，更让人快乐。
 
-【核心规则】
-1. 第一人称「我」，开篇第一句就是冲突——不铺垫不写景不交代背景
-2. 每段 1-3 句话，段间空一行（手机一屏只看 2-3 段）
-3. 40% 用对话推进——让人物自己说话，不要旁白替他们解释
-4. 每 800 字必须有新信息：反转/爆点/真相碎片/人物新面目，不给读者喘气
-5. 前 1/3 篇幅冲突堆到最高点卡住，后 2/3 展开高潮+反击+结局，女主必须赢且赢得漂亮
-6. 主要角色 3-5 个，名字从开头到结尾不变。配角（同事/路人/服务员）可以出现但不给名字，避免混淆
+【通用结构——所有短篇类型适用】
+1. 开篇第一句就是冲突/悬念——不铺垫、不写景、不交代背景
+2. 每段 1-3 句，段间空一行。对话占比 40%+，让人物自己推进剧情
+3. 段末钩子：每段最后一句让读者想问"然后呢？"
+4. 反差制造爽感：预期→意外→奖励，每 300-500 字循环一次
+5. 8000-12000 字，前 1/3 冲突堆到高点，后 2/3 展开+收束
+6. 主要角色 ≤5 个，配角不给名字避免混淆
 
-【禁止】
-Markdown / 环境描写超三行 / 大段独白 / 平淡收尾 / 女主吃亏 / 角色名中途变化 / 配角喧宾夺主
-
-纯文本输出，写 4000-5000 字作为故事前半部分，在剧情关键时刻停住，最后一行标注：【待续】。`;
+【技术规则】
+纯文本输出，不用 Markdown。环境描写≤3 行。不写大段独白。角色名从头到尾不变。`;
 
       // 第一轮：生成前半部分
       const r1 = await fetch(`${baseUrl}/chat/completions`, {
@@ -1520,7 +1674,11 @@ Markdown / 环境描写超三行 / 大段独白 / 平淡收尾 / 女主吃亏 / 
         }),
         signal: AbortSignal.timeout(300_000),
       });
-      if (!r1.ok) { send('error', { message: `AI 请求失败 (${r1.status})` }); res.end(); return; }
+      if (!r1.ok) {
+        send('error', { message: `AI 请求失败 (${r1.status})` });
+        res.end();
+        return;
+      }
       const data1 = await r1.json();
       const part1 = (data1.choices?.[0]?.message?.content ?? '').replace(
         /【待续】.*$/s,
@@ -1555,7 +1713,11 @@ Markdown / 环境描写超三行 / 大段独白 / 平淡收尾 / 女主吃亏 / 
         }),
         signal: AbortSignal.timeout(300_000),
       });
-      if (!r2.ok) { send('error', { message: `AI 续写失败 (${r2.status})` }); res.end(); return; }
+      if (!r2.ok) {
+        send('error', { message: `AI 续写失败 (${r2.status})` });
+        res.end();
+        return;
+      }
       const data2 = await r2.json();
       const part2 = data2.choices?.[0]?.message?.content ?? '';
       const storyText = part1 + '\n\n' + part2;
@@ -1567,11 +1729,11 @@ Markdown / 环境描写超三行 / 大段独白 / 平淡收尾 / 女主吃亏 / 
             content: storyText,
             word_count: storyText.length,
             updated_at: new Date(),
-          } as any)
+          })
           .where(eq(schema.chapters.chapter_id, chapter.chapter_id));
         await db
           .update(schema.books)
-          .set({ word_count: storyText.length, updated_at: new Date() } as any)
+          .set({ word_count: storyText.length, updated_at: new Date() })
           .where(eq(schema.books.book_id, bookId));
         send('step', {
           step: 'story',
@@ -1609,7 +1771,7 @@ Markdown / 环境描写超三行 / 大段独白 / 平淡收尾 / 女主吃亏 / 
           .slice(0, 30) || '短篇故事';
       await db
         .update(schema.books)
-        .set({ title: finalTitle, updated_at: new Date() } as any)
+        .set({ title: finalTitle, updated_at: new Date() })
         .where(eq(schema.books.book_id, bookId));
       send('step', {
         step: 'title',
@@ -1627,7 +1789,13 @@ Markdown / 环境描写超三行 / 大段独白 / 平淡收尾 / 女主吃亏 / 
 
   async quickCreate(
     res: Response,
-    params: { user_id: string; premise: string; model?: string },
+    params: {
+      user_id: string;
+      premise: string;
+      model?: string;
+      guide_summary?: string;
+      guide_full_log?: string;
+    },
   ) {
     const db = getDb();
     const model = params.model || 'deepseek-v4-flash';
@@ -1635,6 +1803,14 @@ Markdown / 环境描写超三行 / 大段独白 / 平淡收尾 / 女主吃亏 / 
     const apiKey = resolved.apiKey;
     const baseUrl = resolved.baseUrl;
     const premise = sanitizePrompt(params.premise);
+    // 完整创作上下文（用于书名等需要全貌的场景）
+    const fullPremise = params.guide_summary
+      ? `【创作方向】\n${params.guide_summary}\n${params.guide_full_log ? `\n【引导讨论记录——参考细节】\n${params.guide_full_log}\n` : ''}\n【用户初始想法】\n${premise}`
+      : premise;
+    // 精简版（用于需要结构化输出的 world/outline/chars 步骤，避免 prompt 过长导致格式异常）
+    const shortPremise = params.guide_summary
+      ? `【创作方向】\n${params.guide_summary.slice(0, 800)}\n${params.guide_full_log ? `【引导讨论记录——请严格参考，其中的人物身份和设定不可修改】\n${params.guide_full_log}\n` : ''}\n【用户初始想法】\n${premise.slice(0, 500)}`
+      : premise;
 
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
@@ -1646,27 +1822,50 @@ Markdown / 环境描写超三行 / 大段独白 / 平淡收尾 / 女主吃亏 / 
     const aiCall = async (
       systemPrompt: string,
       userPrompt: string,
+      maxTokens = 4096,
+      retries = 2,
     ): Promise<string> => {
-      const r = await fetch(`${baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt },
-          ],
-          max_tokens: 4096,
-          temperature: 0.7,
-        }),
-        signal: AbortSignal.timeout(120_000),
-      });
-      if (!r.ok) throw new Error(`AI API 错误 (${r.status})`);
-      const d = await r.json();
-      return d.choices?.[0]?.message?.content ?? '';
+      for (let attempt = 0; attempt <= retries; attempt++) {
+        if (attempt > 0) {
+          // 等 3 秒再重试，避开限流
+          await new Promise((r) => setTimeout(r, 3000));
+        }
+        try {
+          const r = await fetch(`${baseUrl}/chat/completions`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${apiKey}`,
+            },
+            body: JSON.stringify({
+              model,
+              messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt },
+              ],
+              max_tokens: maxTokens,
+              temperature: 0.7,
+            }),
+            signal: AbortSignal.timeout(120_000),
+          });
+          if (!r.ok) {
+            if (r.status === 429 && attempt < retries) continue;
+            throw new Error(`AI API 错误 (${r.status})`);
+          }
+          const d = await r.json();
+          const content = d.choices?.[0]?.message?.content;
+          if (content) return content;
+          console.log(
+            `[quickCreate] aiCall attempt ${attempt + 1}: empty response, retrying...`,
+          );
+          if (attempt < retries) continue;
+          return '';
+        } catch (e: any) {
+          if (attempt < retries) continue;
+          throw e;
+        }
+      }
+      return '';
     };
 
     try {
@@ -1685,7 +1884,7 @@ Markdown / 环境描写超三行 / 大段独白 / 平淡收尾 / 女主吃亏 / 
       await db.insert(schema.outlines).values({ book_id: bookId });
       await db
         .insert(schema.world_settings)
-        .values({ book_id: bookId, sections: [] } as any);
+        .values({ book_id: bookId, sections: [] });
       send('step', {
         step: 'book',
         status: 'done',
@@ -1699,15 +1898,10 @@ Markdown / 环境描写超三行 / 大段独白 / 平淡收尾 / 女主吃亏 / 
         status: 'generating',
         label: '生成世界观',
       });
-      const worldPrompt = `你是世界观构建专家。根据用户提供的题材和想法，创造一个自洽、引人入胜的虚构世界。
+      const worldPrompt = `你是网文世界观构建专家。根据用户提供的题材，创造一个自洽、可扩展的世界。
+**重要：世界观只写环境、规则、群体。❌ 不要写"刘婶是卖煎饼的，她每天早上..."——这是角色信息，不属于世界观。✅ 写"巷子里有固定摊贩，形成了一套默契的营业时间和规矩"。具体人物留给后续步骤生成。在用户提供的信息基础上合理扩展，但不要修改或替换用户已明确的设定。**
 
-按以下分区输出：
-- 时代与背景
-- 地理与场景
-- 规则与体系
-- 势力与阵营
-
-每个分区给出具体、独特的细节。规则要有代价，设定要推动故事。
+根据故事类型，自行选择最合适的 3-4 个分区来组织世界观。不同故事类型关注的重点不同——年代文关注时代政策和家庭结构，厨艺小说关注店铺环境和食客圈子，玄幻关注力量体系——选对题材真正需要的分区，不要套固定模板。只写组织/群体/环境层面，具体人物留给角色生成环节。
 
 【输出格式——严格遵守】
 按分区名逐个输出正文内容，格式如下：
@@ -1715,22 +1909,30 @@ Markdown / 环境描写超三行 / 大段独白 / 平淡收尾 / 女主吃亏 / 
 分区名
 该分区的详细正文...
 
-（用空行分隔分区）
-回答的最后一行输出 JSON：
-{"action":"update_sections","sections":[{"name":"分区名","content":"完整内容"},...]}`;
+（用空行分隔分区，不用 Markdown 标题）`;
 
       const worldText = await aiCall(
         worldPrompt,
-        `题材和想法：${premise}\n\n请构建这个世界观。`,
+        `题材和想法：${shortPremise}\n\n请构建这个世界观。`,
       );
       send('step', {
         step: 'world',
         status: 'parsing',
-        label: '保存世界观',
-        preview: worldText.slice(0, 200),
+        label: `保存世界观（AI返回${worldText.length}字）`,
+        preview: worldText.slice(0, 300) || '(AI 返回空)',
       });
-      await this.parseAndSaveWorld(bookId, worldText);
-      send('step', { step: 'world', status: 'done', label: '世界观已生成' });
+      const worldCount =
+        worldText.length > 0
+          ? await this.parseAndSaveWorld(bookId, worldText)
+          : 0;
+      send('step', {
+        step: 'world',
+        status: 'done',
+        label:
+          worldCount > 0
+            ? `世界观已生成（${worldCount} 个分区）`
+            : `世界观：AI 未返回有效内容（${worldText.length}字），请重试`,
+      });
 
       // Step 3: 生成大纲
       send('step', {
@@ -1738,28 +1940,38 @@ Markdown / 环境描写超三行 / 大段独白 / 平淡收尾 / 女主吃亏 / 
         status: 'generating',
         label: '生成大纲',
       });
-      const outlinePrompt = `你是小说大纲规划助手。根据世界观，为这部小说设计情节大纲。
+      const outlinePrompt = `你是网文大纲规划助手。根据世界观为这部小说设计情节大纲。**只使用用户已提供的信息，可以合理扩展，但不要修改或替换用户已明确的情节。**
 
-每个节点是一个独立的情节事件，标题精炼有冲突感，摘要写清"谁做了什么，导致了什么变化"。
-故事弧线完整：铺垫 → 激励事件 → 上升冲突 → 转折 → 高潮 → 收束。
-节点之间必须有因果链。
+【核心要求】
+1. 分卷/分段推进：每段有明确的阶段目标，段末解决并引出下一段
+2. 递进节奏：每个节点应有实质进展（具体是什么取决于故事本身的驱动力）
+3. 格局扩展：故事舞台逐步扩大
+4. 每个节点应能制造悬念或期待，让读者想看下一章
 
-【输出格式】
-先按序号列出每个节点（标题 + 一句话摘要），最后一行输出纯 JSON 数组：
-[{"action":"add_chapter","title":"节点标题","summary":"谁做了什么事，导致了什么变化或后果"}]`;
+【数量要求】
+至少输出 8-12 个情节节点，覆盖前 1-2 卷。标题简洁有力。
+
+【输出格式——严格遵守】
+只输出 JSON 数组，不要任何其他文字。title 精炼有网文感（8字以内），summary 简短有力（30字以内，写清谁+做了什么+结果）：
+[{"action":"add_chapter","title":"裂缝心跳","summary":"沈桁在灰塔底层发现空间裂缝，接触神秘气体后指纹异变"}]`;
 
       const outlineText = await aiCall(
         outlinePrompt,
-        `题材和想法：${premise}\n\n世界观：${worldText.slice(0, 2000)}\n\n请设计大纲。`,
+        `题材和想法：${shortPremise}\n\n世界观：${worldText.slice(0, 2000)}\n\n请设计大纲。`,
+        8192,
       );
       send('step', {
         step: 'outline',
         status: 'parsing',
-        label: '保存大纲',
-        preview: outlineText.slice(0, 200),
+        label: `保存大纲（AI返回${outlineText.length}字）`,
+        preview: `首200字: ${outlineText.slice(0, 200)}\n末200字: ${outlineText.slice(-200)}`,
       });
-      await this.parseAndSaveOutline(bookId, outlineText);
-      send('step', { step: 'outline', status: 'done', label: '大纲已生成' });
+      const outlineCount = await this.parseAndSaveOutline(bookId, outlineText);
+      send('step', {
+        step: 'outline',
+        status: 'done',
+        label: `大纲已生成（${outlineCount} 个节点）`,
+      });
 
       // Step 4: 生成角色
       send('step', {
@@ -1767,41 +1979,53 @@ Markdown / 环境描写超三行 / 大段独白 / 平淡收尾 / 女主吃亏 / 
         status: 'generating',
         label: '生成角色',
       });
-      const charsPrompt = `你是角色创作顾问。根据世界观和大纲，塑造生动、立体的角色。
+      const charsPrompt = `你是网文角色创作顾问。根据世界观和大纲，输出 4-6 个核心角色的 JSON 数组。**只使用用户已提供和世界观/大纲已确定的角色信息，可以新增角色，但不要修改或替换用户已明确的角色身份。**
 
-【创作指引】
-- 角色要服务于故事：为什么需要这个角色？TA推动什么情节？
-- 性格不能凭空而来：用背景故事解释性格成因
-- 每个角色都要具体丰富，不能只有一两句笼统的话
-- 至少包含主角、重要配角、反派
+【必须包含的角色类型】
+- 主角（is_main:true）
+- 重要助力者/伙伴（1-2个）
+- 核心对手/反派（1个）
 
-【输出格式——严格遵守】
-先对每个角色进行自然语言描述。然后在最后一行输出 JSON 数组：
-[{"action":"create_character","name":"必填","gender":"男/女","age":0,"personality":"","identity":"","backstory":"","motivation":"","catchphrase":"","speech_style":"","appearance":"","is_main":false}]`;
+【输出格式——只输出 JSON 数组】
+[{"action":"create_character","name":"必填","gender":"男/女","personality":"性格标签（10字内）","identity":"身份（10字内）","backstory":"背景（30字内）","motivation":"动机（20字内）","is_main":true}]`;
 
       const charsText = await aiCall(
         charsPrompt,
-        `题材和想法：${premise}\n\n世界观：${worldText.slice(0, 1500)}\n\n请设计角色。`,
+        `题材和想法：${shortPremise}\n\n世界观：${worldText.slice(0, 1500)}\n\n大纲（角色必须与大纲中的名字一致）：${typeof outlineText === 'string' ? outlineText.slice(0, 1500) : ''}\n\n请设计角色，确保主角名字和大纲中完全一致。`,
       );
-      const charCount = await this.parseAndSaveCharacters(bookId, charsText);
       send('step', {
         step: 'characters',
-        status: 'done',
-        label: `已创建 ${charCount} 个角色`,
+        status: 'parsing',
+        label: `保存角色（AI返回${charsText.length}字）`,
+        preview: `首200字: ${charsText.slice(0, 200)}\n末200字: ${charsText.slice(-200)}`,
       });
+      if (charsText.length < 20) {
+        send('step', {
+          step: 'characters',
+          status: 'done',
+          label: '角色：AI 响应异常（过短），请重试',
+        });
+      } else {
+        const charCount = await this.parseAndSaveCharacters(bookId, charsText);
+        send('step', {
+          step: 'characters',
+          status: 'done',
+          label: `已创建 ${charCount} 个角色`,
+        });
+      }
 
       // Step 5: 生成书名
       send('step', { step: 'title', status: 'generating', label: '生成书名' });
       const titlePrompt = `根据以下小说设定，生成一个吸引人的书名（10-20字以内）。只输出书名，不要其他文字。`;
-      const titleSummary = `题材：${premise.slice(0, 300)}\n\n世界观：${worldText.slice(0, 500)}`;
+      const titleSummary = `题材：${fullPremise.slice(0, 500)}\n\n世界观：${worldText.slice(0, 500)}`;
       const generatedTitle = (await aiCall(titlePrompt, titleSummary))
         .trim()
         .slice(0, 40);
-      let finalTitle = generatedTitle || premise.slice(0, 20);
+      const finalTitle = generatedTitle || premise.slice(0, 20);
       // 更新书名
       await db
         .update(schema.books)
-        .set({ title: finalTitle, updated_at: new Date() } as any)
+        .set({ title: finalTitle, updated_at: new Date() })
         .where(eq(schema.books.book_id, bookId));
       send('step', {
         step: 'title',
@@ -1845,26 +2069,43 @@ Markdown / 环境描写超三行 / 大段独白 / 平淡收尾 / 女主吃亏 / 
 
     // 如果没有 JSON，按分区名分割
     if (sections.length === 0) {
-      const knownSections = [
-        '时代与背景',
-        '地理与场景',
-        '规则与体系',
-        '势力与阵营',
-      ];
       const text = aiText.replace(/\{"action"[\s\S]*\}/, '');
-      for (const name of knownSections) {
-        const regex = new RegExp(
-          `${name}\\s*\\n([\\s\\S]*?)(?=\\n(?:${knownSections.join('|')})\\n|$)`,
-          'i',
-        );
-        const m = text.match(regex);
-        if (m && m[1].trim()) {
-          sections.push({ name, content: m[1].trim() });
+      // 通用分区解析：匹配 "分区名\n内容" 模式（分区名为不含标点的短行）
+      const lines = text.split('\n');
+      let currentName = '';
+      let currentContent: string[] = [];
+      // 匹配分区标题：纯中文短行，或带 #/## 前缀
+      const headingRe = /^(?:#{1,3}\s*)?[一-龥\w·\s]{2,20}$/;
+      for (const line of lines) {
+        const trimmed = line
+          .trim()
+          .replace(/^#{1,3}\s*/, '')
+          .trim();
+        if (headingRe.test(trimmed)) {
+          // 保存上一个分区
+          if (currentName && currentContent.length > 0) {
+            sections.push({
+              name: currentName,
+              content: currentContent.join('\n').trim(),
+            });
+            currentContent = [];
+          }
+          currentName = trimmed;
+        } else if (currentName && trimmed) {
+          currentContent.push(line);
         }
+      }
+      // 最后一个分区
+      if (currentName && currentContent.length > 0) {
+        sections.push({
+          name: currentName,
+          content: currentContent.join('\n').trim(),
+        });
       }
       console.log(
         '[quickCreate] parsed world sections from text:',
         sections.length,
+        sections.map((s) => s.name).join(', '),
       );
     }
 
@@ -1877,15 +2118,15 @@ Markdown / 环境描写超三行 / 大段独白 / 平淡收尾 / 女主吃亏 / 
       );
       const result = await db
         .update(schema.world_settings)
-        .set({ sections: sections as any, updated_at: new Date() } as any)
+        .set({ sections: sections, updated_at: new Date() })
         .where(eq(schema.world_settings.book_id, bookId));
-      // 兜底：如果 update 没命中（可能行不存在），尝试 insert
       if ((result as any)?.rowCount === 0) {
         await db
           .insert(schema.world_settings)
-          .values({ book_id: bookId, sections: sections as any } as any);
+          .values({ book_id: bookId, sections: sections });
       }
     }
+    return sections.length;
   }
 
   // 解析并保存大纲
@@ -1897,21 +2138,97 @@ Markdown / 环境描写超三行 / 大段独白 / 平淡收尾 / 女主吃亏 / 
       '[quickCreate] outline AI response (first 300):',
       aiText.slice(0, 300),
     );
+    console.log('[quickCreate] outline AI full length:', aiText.length);
 
-    const jsonMatch = aiText.match(/\[[\s\S]*"action":"add_chapter"[\s\S]*\]/);
-    if (jsonMatch) {
+    const jsonAttempts: string[] = [];
+
+    // 1. 去掉 markdown 代码块
+    const codeBlock = aiText.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (codeBlock) jsonAttempts.push(codeBlock[1].trim());
+
+    // 2. 正则匹配完整 JSON 数组
+    const jsonMatch = aiText.match(
+      /\[[\s\S]*"action"\s*:\s*"add_chapter"[\s\S]*\]/,
+    );
+    if (jsonMatch) jsonAttempts.push(jsonMatch[0]);
+
+    // 3. 从最后一个 [ 到最后一个 ]
+    const lastOpen = aiText.lastIndexOf('[');
+    const lastClose = aiText.lastIndexOf(']');
+    if (lastOpen >= 0 && lastClose > lastOpen) {
+      jsonAttempts.push(aiText.slice(lastOpen, lastClose + 1));
+    }
+
+    for (const tryStr of jsonAttempts) {
       try {
-        const parsed = JSON.parse(jsonMatch[0]);
-        nodes = parsed
-          .filter((a: any) => a.action === 'add_chapter')
-          .map((a: any) => ({ title: a.title, summary: a.summary || '' }));
+        const parsed = JSON.parse(tryStr);
+        const found = Array.isArray(parsed)
+          ? parsed.filter((a: any) => a.action === 'add_chapter')
+          : [];
+        if (found.length > 0) {
+          nodes = found.map((a: any) => ({
+            title: a.title,
+            summary: a.summary || '',
+          }));
+          console.log(
+            '[quickCreate] parsed outline nodes from JSON:',
+            nodes.length,
+          );
+          break;
+        }
+      } catch (e: any) {
         console.log(
-          '[quickCreate] parsed outline nodes from JSON:',
-          nodes.length,
+          '[quickCreate] outline JSON parse attempt failed:',
+          e.message?.slice(0, 100),
         );
-      } catch (e) {
-        console.log('[quickCreate] outline JSON parse failed:', e);
       }
+    }
+
+    // 4. JSON 截断/语法修复：从末尾逐级回退找最后一个有效对象
+    if (nodes.length === 0) {
+      const text = aiText.trim();
+      let pos = text.length;
+      while (pos > 0) {
+        pos = text.lastIndexOf('},', pos - 1);
+        if (pos < 0) break;
+        const candidate = text.slice(0, pos + 1) + '\n]';
+        try {
+          const parsed = JSON.parse(candidate);
+          const found = Array.isArray(parsed)
+            ? parsed.filter((a: any) => a.action === 'add_chapter')
+            : [];
+          if (found.length > 0) {
+            nodes = found.map((a: any) => ({
+              title: a.title,
+              summary: a.summary || '',
+            }));
+            console.log(
+              '[quickCreate] parsed outline nodes from repaired JSON:',
+              nodes.length,
+            );
+            break;
+          }
+        } catch {
+          /* try previous }, */
+        }
+      }
+    }
+
+    // 5. 文本回退：按 "数字. 标题" 或 "第X章" 格式解析
+    if (nodes.length === 0) {
+      const lines = aiText.split('\n');
+      const textNodeRe =
+        /^\s*(?:\d+[.、)）]|第[一二三四五六七八九十\d]+章)\s*(.+?)(?:[：:]\s*(.*))?$/;
+      for (const line of lines) {
+        const m = line.match(textNodeRe);
+        if (m) {
+          nodes.push({ title: m[1].trim(), summary: (m[2] || '').trim() });
+        }
+      }
+      console.log(
+        '[quickCreate] parsed outline nodes from text:',
+        nodes.length,
+      );
     }
 
     if (nodes.length > 0) {
@@ -1932,6 +2249,7 @@ Markdown / 环境描写超三行 / 大段独白 / 平淡收尾 / 女主吃亏 / 
         }
       }
     }
+    return nodes.length;
   }
 
   // 解析并保存角色
@@ -1973,11 +2291,103 @@ Markdown / 环境描写超三行 / 大段独白 / 平淡收尾 / 女主吃亏 / 
           : [];
         if (found.length > 0) {
           chars = found;
+          console.log('[quickCreate] parsed chars from JSON:', chars.length);
           break;
         }
-      } catch {
-        /* try next */
+      } catch (e: any) {
+        console.log(
+          '[quickCreate] chars JSON parse attempt failed:',
+          e.message?.slice(0, 100),
+        );
       }
+    }
+
+    // 4. JSON 截断/语法修复：从末尾逐级回退找最后一个有效对象
+    if (chars.length === 0) {
+      const text = aiText.trim();
+      // 尝试所有 }, 位置，从后往前，直到找到能 parse 的有效 JSON
+      let pos = text.length;
+      while (pos > 0) {
+        pos = text.lastIndexOf('},', pos - 1);
+        if (pos < 0) break;
+        const candidate = text.slice(0, pos + 1) + '\n]';
+        try {
+          const parsed = JSON.parse(candidate);
+          const found = Array.isArray(parsed)
+            ? parsed.filter((a: any) => a.action === 'create_character')
+            : [];
+          if (found.length > 0) {
+            chars = found;
+            console.log(
+              '[quickCreate] parsed chars from repaired JSON:',
+              chars.length,
+            );
+            break;
+          }
+        } catch {
+          /* try previous }, */
+        }
+      }
+    }
+
+    // 5. 文本回退：按角色块解析（名字：xxx / 姓名：xxx 开头）
+    if (chars.length === 0) {
+      const text = aiText.replace(/```[\s\S]*?```/g, ''); // 去代码块
+      // 按 "名字"/"姓名"/"角色" 分割
+      const blocks = text.split(
+        /\n(?=名字[：:]|姓名[：:]|角色\d|[一二三四五六七八九十]、)/,
+      );
+      for (const block of blocks) {
+        const get = (key: string) => {
+          const m = block.match(new RegExp(`${key}[：:]\\s*(.+)`, 'i'));
+          return m ? m[1].trim() : '';
+        };
+        const name = get('名字') || get('姓名') || get('角色');
+        if (!name || name.length > 20) continue;
+        chars.push({
+          name,
+          gender: get('性别'),
+          age: parseInt(get('年龄')) || null,
+          personality: get('性格'),
+          identity: get('身份'),
+          backstory: get('背景') || get('背景故事'),
+          motivation: get('动机') || get('目标'),
+          catchphrase: get('口头禅'),
+          speech_style: get('说话风格'),
+          appearance: get('外貌'),
+          is_main: /主要|主角|main/i.test(block),
+          aliases: get('别名'),
+          custom_fields: [],
+        });
+      }
+      // 如果分块失败，尝试按 --- 或空行分隔
+      if (chars.length === 0) {
+        const altBlocks = text.split(/\n---\n|\n\n(?=名字|姓名|\w{2,4}[：:])/);
+        for (const block of altBlocks) {
+          const get = (key: string) => {
+            const m = block.match(new RegExp(`${key}[：:]\\s*(.+)`, 'i'));
+            return m ? m[1].trim() : '';
+          };
+          const name = get('名字') || get('姓名');
+          if (!name || name.length > 20) continue;
+          chars.push({
+            name,
+            gender: get('性别'),
+            age: parseInt(get('年龄')) || null,
+            personality: get('性格'),
+            identity: get('身份'),
+            backstory: get('背景') || get('背景故事'),
+            motivation: get('动机') || get('目标'),
+            catchphrase: get('口头禅'),
+            speech_style: get('说话风格'),
+            appearance: get('外貌'),
+            is_main: /主要|主角|main/i.test(block),
+            aliases: get('别名'),
+            custom_fields: [],
+          });
+        }
+      }
+      console.log('[quickCreate] parsed chars from text:', chars.length);
     }
 
     console.log('[quickCreate] parsed chars:', chars.length);
@@ -1997,7 +2407,7 @@ Markdown / 环境描写超三行 / 大段独白 / 平淡收尾 / 女主吃亏 / 
         is_main: c.is_main || false,
         aliases: c.aliases || '',
         custom_fields: c.custom_fields || [],
-      } as any);
+      });
     }
     return chars.length;
   }

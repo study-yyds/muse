@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/services/api";
@@ -20,7 +20,7 @@ import { Badge } from "@/components/ui/badge";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Plus, BookOpen, Loader2, Trash2, Undo2, Sparkles, Check } from "lucide-react";
+import { Plus, BookOpen, Loader2, Trash2, Undo2, Sparkles, Check, Send } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { ModelSelector } from "@/components/settings/ModelSelector";
@@ -66,6 +66,16 @@ export function BookListPage() {
   const [quickModel, setQuickModel] = useState("deepseek-v4-flash");
   const [quickGenerating, setQuickGenerating] = useState(false);
   const [quickSteps, setQuickSteps] = useState<Array<{ step: string; label: string; status: string; preview?: string }>>([]);
+  // 引导模式
+  const [quickGuiding, setQuickGuiding] = useState(false);
+  const [quickGuideMsgs, setQuickGuideMsgs] = useState<Array<{ role: string; content: string }>>([]);
+  const [quickGuideInput, setQuickGuideInput] = useState("");
+  const [quickGuideLoading, setQuickGuideLoading] = useState(false);
+  const guideAbortRef = useRef<AbortController | null>(null);
+  const quickAbortRef = useRef<AbortController | null>(null);
+  const guideChatRef = useRef<HTMLDivElement>(null);
+  const guideUserScrolledUp = useRef(false);
+  const guideGotContent = useRef(false);
 
   const { data, isLoading } = useQuery({
     queryKey: ["books", showDeleted ? "deleted" : "active"],
@@ -140,15 +150,18 @@ export function BookListPage() {
     reset();
   };
 
-  const doQuickCreate = async (premise: string, type: string) => {
+  const doQuickCreate = async (premise: string, type: string, guideSummary?: string, guideFullLog?: string) => {
     setQuickGenerating(true);
     setQuickSteps([]);
+    const controller = new AbortController();
+    quickAbortRef.current = controller;
     const token = localStorage.getItem("token");
     try {
       const res = await fetch("/api/ai/quick-create", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ premise, type, model: quickModel }),
+        body: JSON.stringify({ premise, type, model: quickModel, guide_summary: guideSummary, guide_full_log: guideFullLog }),
+        signal: controller.signal,
       });
       if (!res.ok) throw new Error(`请求失败 (${res.status})`);
       const reader = res.body?.getReader();
@@ -212,11 +225,120 @@ export function BookListPage() {
         navigate(`/books/${bookId}`);
       }
     } catch (err: any) {
-      toast({ title: err?.message || "生成失败", variant: "destructive" });
+      if (err?.name !== "AbortError") {
+        toast({ title: err?.message || "生成失败", variant: "destructive" });
+      }
     } finally {
       setQuickGenerating(false);
       setQuickSteps([]);
+      quickAbortRef.current = null;
     }
+  };
+
+  // 引导聊天自动滚底（用户上滑时暂停，发消息时恢复）
+  const scrollGuideToBottom = useCallback(() => {
+    const el = guideChatRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, []);
+
+  useEffect(() => {
+    if (!guideUserScrolledUp.current) {
+      scrollGuideToBottom();
+    }
+  }, [quickGuideMsgs, quickGuideLoading, scrollGuideToBottom]);
+
+  const handleGuideScroll = useCallback(() => {
+    const el = guideChatRef.current;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    guideUserScrolledUp.current = !atBottom;
+  }, []);
+
+  // 引导模式：发送消息
+  const sendGuideMsg = async () => {
+    guideUserScrolledUp.current = false;
+    guideGotContent.current = false; // 重置内容标记
+    const input = quickGuideInput.trim();
+    if (!input || quickGuideLoading) return;
+    setQuickGuideInput("");
+    const newMsgs = [...quickGuideMsgs, { role: "user", content: input }];
+    setQuickGuideMsgs(newMsgs);
+    setQuickGuideLoading(true);
+    const token = localStorage.getItem("token");
+    const controller = new AbortController();
+    guideAbortRef.current = controller;
+    try {
+      const res = await fetch("/api/ai/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          book_id: "",
+          context_type: "write",
+          model: quickModel,
+          message: input,
+          messages: newMsgs.map(m => ({ role: m.role, content: m.content })),
+          guide_mode: true,
+          guide_context: quickPremise,
+          guide_type: quickType,
+        }),
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error("无响应");
+      const decoder = new TextDecoder();
+      let buf = ""; let ac = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) { buf += decoder.decode(); break; }
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split("\n"); buf = lines.pop() ?? "";
+        let ev = "";
+        for (const line of lines) {
+          if (line.startsWith("event: ")) { ev = line.slice(7); continue; }
+          if (line.startsWith("data: ")) {
+            try { if (ev === "chunk") ac += JSON.parse(line.slice(6)); } catch { if (ev === "chunk") ac += line.slice(6); }
+            if (ev === "error") { const d = JSON.parse(line.slice(6)); throw new Error(d.message); }
+          }
+        }
+        // 只在有内容时才追加/更新 AI 回复
+        if (ac) {
+          guideGotContent.current = true;
+          setQuickGuideMsgs((prev) => {
+            const updated = [...prev];
+            const last = updated[updated.length - 1];
+            if (last?.role === "assistant") {
+              updated[updated.length - 1] = { role: "assistant", content: ac };
+            } else {
+              updated.push({ role: "assistant", content: ac });
+            }
+            return updated;
+          });
+        }
+      }
+    } catch (err: any) {
+      if (err.name === "AbortError") return;
+      toast({ title: err?.message || "发送失败", variant: "destructive" });
+    } finally {
+      setQuickGuideLoading(false);
+      if (!guideGotContent.current) {
+        setQuickGuideMsgs((prev) => [
+          ...prev,
+          { role: "assistant", content: "（AI 未响应，请重试）" },
+        ]);
+      }
+      guideAbortRef.current = null;
+    }
+  };
+
+  const resetQuickDialog = () => {
+    setQuickOpen(false);
+    setQuickPremise("");
+    setQuickSteps([]);
+    setQuickGuiding(false);
+    setQuickGuideMsgs([]);
+    setQuickGuideInput("");
+    setQuickGuideLoading(false);
   };
 
   return (
@@ -284,120 +406,314 @@ export function BookListPage() {
           </Dialog>
 
           {/* 快捷创作对话框 */}
-          <Dialog open={quickOpen} onOpenChange={(open) => { if (!open && !quickGenerating) { setQuickOpen(false); setQuickPremise(""); setQuickSteps([]); } }}>
-            <DialogContent>
+          <Dialog open={quickOpen} onOpenChange={(open) => {
+            if (open) return;
+            // 生成中：直接取消
+            if (quickGenerating) {
+              quickAbortRef.current?.abort();
+              resetQuickDialog();
+              return;
+            }
+            // 引导聊天中：确认后取消
+            if (quickGuiding) {
+              if (!confirm("确定退出引导？当前对话将丢失。")) return;
+              guideAbortRef.current?.abort();
+              resetQuickDialog();
+              return;
+            }
+            // 表单阶段：直接关闭
+            resetQuickDialog();
+          }}>
+            <DialogContent className={quickGuiding ? "max-w-lg h-[520px] flex flex-col" : ""}>
               <DialogHeader>
-                <DialogTitle>快捷创作</DialogTitle>
+                <DialogTitle>{quickGuiding ? "创作引导" : "快捷创作"}</DialogTitle>
                 <DialogDescription>
-                  {quickType === 'short' ? 'AI 一步写完完整短篇故事' : 'AI 自动生成世界观、大纲和角色'}
+                  {quickGuiding
+                    ? `第 ${Math.min(quickGuideMsgs.filter(m => m.role === "user").length + 1, 5)} 轮 · AI 帮你梳理想法`
+                    : (quickType === 'short' ? 'AI 一步写完完整短篇故事' : 'AI 自动生成世界观、大纲和角色')}
                 </DialogDescription>
               </DialogHeader>
-              <div className="space-y-4">
-                {/* 类型切换 + 模型选择 */}
-                <div className="flex items-center gap-2">
-                  <Button size="sm" variant={quickType === 'novel' ? 'default' : 'outline'} onClick={() => setQuickType('novel')} disabled={quickGenerating}>长篇</Button>
-                  <Button size="sm" variant={quickType === 'short' ? 'default' : 'outline'} onClick={() => setQuickType('short')} disabled={quickGenerating}>短篇</Button>
-                  <div className="flex-1" />
-                  <ModelSelector
-                    usage="chat"
-                    value={quickModel}
-                    onChange={(model) => setQuickModel(model)}
-                    className="text-xs rounded border border-border bg-background px-2 py-1"
-                  />
-                </div>
 
-                {/* 短篇模板 */}
-                {quickType === 'short' && (
-                  <div className="space-y-2">
-                    <Label className="text-xs">套模板</Label>
-                    <div className="grid grid-cols-3 gap-2">
-                      {SHORT_TEMPLATES.map((tpl) => (
-                        <Button key={tpl.key} size="xs" variant="outline"
-                          disabled={quickGenerating}
-                          onClick={() => setQuickPremise(tpl.prompt)}>
-                          {tpl.label}
-                        </Button>
-                      ))}
-                    </div>
+              {/* ===== 阶段 1：表单 ===== */}
+              {!quickGuiding && (
+                <div className="space-y-4">
+                  {/* 类型切换 + 模型选择 */}
+                  <div className="flex items-center gap-2">
+                    <Button size="sm" variant={quickType === 'novel' ? 'default' : 'outline'} onClick={() => setQuickType('novel')} disabled={quickGenerating}>长篇</Button>
+                    <Button size="sm" variant={quickType === 'short' ? 'default' : 'outline'} onClick={() => setQuickType('short')} disabled={quickGenerating}>短篇</Button>
+                    <div className="flex-1" />
+                    <ModelSelector
+                      usage="chat"
+                      value={quickModel}
+                      onChange={(model) => setQuickModel(model)}
+                      className="text-xs rounded border border-border bg-background px-2 py-1"
+                    />
                   </div>
-                )}
 
-                {/* 脑洞输入 */}
-                <div className="space-y-2">
-                  <Label htmlFor="premise">{quickType === 'short' ? '脑洞 / 想法（可选）' : '题材 / 想法'}</Label>
-                  <textarea
-                    id="premise"
-                    placeholder={quickType === 'short' ? '输入你的短篇脑洞，或选上面模板直接生成...' : '例如：我想写一本末世公路求生小说...'}
-                    value={quickPremise}
-                    onChange={(e) => setQuickPremise(e.target.value)}
-                    rows={quickType === 'short' ? 3 : 4}
-                    disabled={quickGenerating}
-                    className="w-full rounded border border-border bg-background px-3 py-2 text-sm resize-none"
-                  />
-                </div>
+                  {/* 短篇模板 */}
+                  {quickType === 'short' && (
+                    <div className="space-y-2">
+                      <Label className="text-xs">套模板</Label>
+                      <div className="grid grid-cols-3 gap-2">
+                        {SHORT_TEMPLATES.map((tpl) => (
+                          <Button key={tpl.key} size="xs" variant="outline"
+                            disabled={quickGenerating}
+                            onClick={() => setQuickPremise(tpl.prompt)}>
+                            {tpl.label}
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
-                {/* 进度 */}
-                {quickGenerating && (
+                  {/* 脑洞输入 */}
                   <div className="space-y-2">
-                    {quickSteps.map((s) => (
-                      <div key={s.step} className="flex items-center gap-2 text-xs">
-                        {s.status === "done" ? (
-                          <Check className="size-3 text-green-500" />
-                        ) : s.status === "generating" || s.status === "parsing" ? (
-                          <Loader2 className="size-3 animate-spin text-primary" />
-                        ) : (
-                          <div className="size-3 rounded-full border border-border" />
-                        )}
-                        <div>
-                          <span className={s.status === "done" ? "text-muted-foreground" : "text-foreground"}>
-                            {s.label}
-                          </span>
-                          {s.preview && (
-                            <p className="text-[10px] text-muted-foreground mt-0.5 truncate max-w-[300px]">
-                              {s.preview}
-                            </p>
+                    <Label htmlFor="premise">{quickType === 'short' ? '脑洞 / 想法' : '题材 / 想法'}</Label>
+                    <textarea
+                      id="premise"
+                      placeholder={quickType === 'short' ? '简单描述你的想法，AI 帮你完善...' : '例如：我想写一本末世公路求生小说...'}
+                      value={quickPremise}
+                      onChange={(e) => setQuickPremise(e.target.value)}
+                      rows={quickType === 'short' ? 3 : 4}
+                      disabled={quickGenerating}
+                      className="w-full rounded border border-border bg-background px-3 py-2 text-sm resize-none"
+                    />
+                  </div>
+
+                  {/* 进度 */}
+                  {quickGenerating && (
+                    <div className="space-y-2">
+                      {quickSteps.map((s) => (
+                        <div key={s.step} className="flex items-center gap-2 text-xs">
+                          {s.status === "done" ? (
+                            <Check className="size-3 text-green-500" />
+                          ) : (
+                            <Loader2 className="size-3 animate-spin text-primary" />
                           )}
+                          <div>
+                            <span className={s.status === "done" ? "text-muted-foreground" : "text-foreground"}>
+                              {s.label}
+                            </span>
+                            {s.preview && (
+                              <p className="text-[10px] text-muted-foreground mt-0.5 whitespace-pre-wrap break-all max-h-20 overflow-y-auto">
+                                {s.preview}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                      {quickSteps.length === 0 && (
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                          <Loader2 className="size-3 animate-spin" />
+                          正在准备...
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="flex justify-end gap-2">
+                    <Button
+                      variant="outline"
+                      onClick={resetQuickDialog}
+                      disabled={quickGenerating}
+                    >
+                      取消
+                    </Button>
+                    {quickType === 'short' && (
+                      <Button variant="outline" disabled={quickGenerating}
+                        onClick={() => {
+                          const ideas = [
+                            '我是一个死刑犯，临刑前收到一条短信：「你的死刑已延期」——发件人是三年前的自己。',
+                            '全城的人突然同时做了一个相同的梦，梦里有人在教他们唱一首歌。只有我没做梦。',
+                            '我的影子开始不听使唤，它会在我睡着时自己出门，第二天身上多了来历不明的伤疤。',
+                            '我继承了一家只在午夜营业的书店，每个顾客都来自不同的时代。',
+                            '地球停转了三秒，所有人失忆了那三秒的内容——但我用相机拍到了。',
+                          ];
+                          setQuickPremise(ideas[Math.floor(Math.random() * ideas.length)]);
+                        }}>
+                        <Sparkles className="size-3 mr-1" />随机灵感
+                      </Button>
+                    )}
+                    <Button variant="outline" onClick={() => {
+                      if (!quickPremise.trim()) { toast({ title: "请先输入想法", variant: "destructive" }); return; }
+                      setQuickGuiding(true);
+                      guideGotContent.current = false;
+                      // 自动发送第一条引导消息
+                      const initMsg = `我想写一个故事，我的想法是：${quickPremise}`;
+                      setQuickGuideMsgs([{ role: "user", content: initMsg }]);
+                      setQuickGuideLoading(true);
+                      const token = localStorage.getItem("token");
+                      fetch("/api/ai/chat", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                        body: JSON.stringify({
+                          book_id: "",
+                          context_type: "write",
+                          model: quickModel,
+                          message: initMsg,
+                          messages: [{ role: "user", content: initMsg }],
+                          guide_mode: true,
+                          guide_context: quickPremise,
+                          guide_type: quickType,
+                        }),
+                        signal: AbortSignal.timeout(120000),
+                      }).then(async (res) => {
+                        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                        const reader = res.body?.getReader();
+                        if (!reader) throw new Error("无响应");
+                        const decoder = new TextDecoder();
+                        let buf = "", ac = "";
+                        while (true) {
+                          const { done, value } = await reader.read();
+                          if (done) { buf += decoder.decode(); break; }
+                          buf += decoder.decode(value, { stream: true });
+                          const lines = buf.split("\n"); buf = lines.pop() ?? "";
+                          let ev = "";
+                          for (const line of lines) {
+                            if (line.startsWith("event: ")) { ev = line.slice(7); continue; }
+                            if (line.startsWith("data: ")) {
+                              try { if (ev === "chunk") ac += JSON.parse(line.slice(6)); } catch { if (ev === "chunk") ac += line.slice(6); }
+                            }
+                          }
+                          if (ac) {
+                            guideGotContent.current = true;
+                            setQuickGuideMsgs([{ role: "user", content: initMsg }, { role: "assistant", content: ac }]);
+                          }
+                        }
+                      }).catch((err) => {
+                        toast({ title: err?.message || "请求失败", variant: "destructive" });
+                        setQuickGuiding(false);
+                      }).finally(() => {
+                        setQuickGuideLoading(false);
+                        if (!guideGotContent.current) {
+                          setQuickGuideMsgs((prev) => [
+                            ...prev,
+                            { role: "assistant", content: "（AI 未响应，请重试）" },
+                          ]);
+                        }
+                      });
+                    }} disabled={quickGenerating || !quickPremise.trim()}>
+                      <Sparkles className="size-4 mr-1" />AI 引导
+                    </Button>
+                    <Button onClick={() => doQuickCreate(quickPremise, quickType)} disabled={quickGenerating || !quickPremise.trim()}>
+                      {quickGenerating && <Loader2 className="size-4 animate-spin mr-1" />}
+                      {quickGenerating ? "生成中..." : "直接生成"}
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {/* ===== 阶段 2：引导聊天 ===== */}
+              {quickGuiding && (
+                <>
+                  <div ref={guideChatRef} onScroll={handleGuideScroll} className="flex-1 overflow-y-auto space-y-3 min-h-0 border rounded-lg p-3 bg-muted/20">
+                    {quickGuideMsgs.map((m, i) => (
+                      <div key={i} className={m.role === "user" ? "flex justify-end" : "flex justify-start"}>
+                        <div className={cn(
+                          "max-w-[85%] rounded-lg px-3 py-2 text-sm",
+                          m.role === "user"
+                            ? "bg-primary text-primary-foreground"
+                            : "bg-card border border-border text-foreground",
+                        )}>
+                          {m.content || (i === quickGuideMsgs.length - 1 && quickGuideLoading ? "思考中..." : "")}
                         </div>
                       </div>
                     ))}
-                    {quickSteps.length === 0 && (
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                        <Loader2 className="size-3 animate-spin" />
-                        正在准备...
+                    {quickGuideLoading && quickGuideMsgs[quickGuideMsgs.length - 1]?.role === "user" && (
+                      <div className="flex justify-start">
+                        <div className="bg-card border border-border rounded-lg px-3 py-2 text-sm text-muted-foreground">
+                          <Loader2 className="size-3 animate-spin inline mr-1" />思考中...
+                        </div>
                       </div>
                     )}
                   </div>
-                )}
-
-                <div className="flex justify-end gap-2">
-                  <Button
-                    variant="outline"
-                    onClick={() => { setQuickOpen(false); setQuickPremise(""); }}
-                    disabled={quickGenerating}
-                  >
-                    取消
-                  </Button>
-                  {quickType === 'short' && (
-                    <Button variant="outline" disabled={quickGenerating}
-                      onClick={() => {
-                        const ideas = [
-                          '我是一个死刑犯，临刑前收到一条短信：「你的死刑已延期」——发件人是三年前的自己。',
-                          '全城的人突然同时做了一个相同的梦，梦里有人在教他们唱一首歌。只有我没做梦。',
-                          '我的影子开始不听使唤，它会在我睡着时自己出门，第二天身上多了来历不明的伤疤。',
-                          '我继承了一家只在午夜营业的书店，每个顾客都来自不同的时代。',
-                          '地球停转了三秒，所有人失忆了那三秒的内容——但我用相机拍到了。',
-                        ];
-                        setQuickPremise(ideas[Math.floor(Math.random() * ideas.length)]);
-                      }}>
-                      <Sparkles className="size-3 mr-1" />随机灵感
+                  {/* 引导输入 + 操作 */}
+                  <div className="flex items-end gap-2">
+                    <textarea
+                      value={quickGuideInput}
+                      onChange={(e) => {
+                        setQuickGuideInput(e.target.value);
+                        const el = e.target;
+                        el.style.height = "auto";
+                        el.style.height = Math.min(el.scrollHeight, 96) + "px";
+                      }}
+                      onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendGuideMsg(); } }}
+                      placeholder="回复 AI 的问题... Shift+Enter 换行"
+                      disabled={quickGuideLoading}
+                      rows={3}
+                      className="flex-1 rounded border border-border bg-background px-3 py-1.5 text-sm resize-none"
+                    />
+                    <Button size="sm" onClick={sendGuideMsg} disabled={quickGuideLoading || !quickGuideInput.trim()}>
+                      <Send className="size-3.5" />
                     </Button>
-                  )}
-                  <Button onClick={() => doQuickCreate(quickPremise, quickType)} disabled={quickGenerating || !quickPremise.trim()}>
-                    {quickGenerating && <Loader2 className="size-4 animate-spin mr-1" />}
-                    {quickGenerating ? "生成中..." : "开始生成"}
-                  </Button>
-                </div>
-              </div>
+                    <Button size="sm" variant="outline" onClick={async () => {
+                      // 先向 AI 发送"开始生成"，获取结构化创作摘要
+                      setQuickGuideLoading(true);
+                      const finalMsg = "开始生成，请输出创作摘要";
+                      const finalMsgs = [...quickGuideMsgs, { role: "user", content: finalMsg }];
+                      setQuickGuideMsgs(finalMsgs);
+                      const token = localStorage.getItem("token");
+                      let summary = "";
+                      try {
+                        const res = await fetch("/api/ai/chat", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                          body: JSON.stringify({
+                            book_id: "",
+                            context_type: "write",
+                            model: quickModel,
+                            message: finalMsg,
+                            messages: finalMsgs.map(m => ({ role: m.role, content: m.content })),
+                            guide_mode: true,
+                            guide_context: quickPremise,
+                            guide_type: quickType,
+                          }),
+                          signal: AbortSignal.timeout(120000),
+                        });
+                        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                        const reader = res.body?.getReader();
+                        if (!reader) throw new Error("无响应");
+                        const decoder = new TextDecoder();
+                        let buf = "", ac = "";
+                        while (true) {
+                          const { done, value } = await reader.read();
+                          if (done) { buf += decoder.decode(); break; }
+                          buf += decoder.decode(value, { stream: true });
+                          const lines = buf.split("\n"); buf = lines.pop() ?? "";
+                          let ev = "";
+                          for (const line of lines) {
+                            if (line.startsWith("event: ")) { ev = line.slice(7); continue; }
+                            if (line.startsWith("data: ")) {
+                              try { if (ev === "chunk") ac += JSON.parse(line.slice(6)); } catch { if (ev === "chunk") ac += line.slice(6); }
+                            }
+                          }
+                          if (ac) {
+                            setQuickGuideMsgs([...finalMsgs, { role: "assistant", content: ac }]);
+                          }
+                        }
+                        if (!ac) {
+                          setQuickGuideMsgs([...finalMsgs, { role: "assistant", content: "（AI 未响应，请重试）" }]);
+                        }
+                        summary = ac;
+                      } catch (err: any) {
+                        toast({ title: "获取摘要失败: " + (err?.message || "未知错误"), variant: "destructive" });
+                        setQuickGuideLoading(false);
+                        return;
+                      }
+                      setQuickGuideLoading(false);
+                      setQuickGuiding(false);
+                      // 构建完整对话日志作为参考附录
+                      const fullLog = quickGuideMsgs
+                        .filter(m => m.role === "user" || m.role === "assistant")
+                        .map(m => `${m.role === "user" ? "作者" : "AI"}: ${m.content}`)
+                        .join("\n");
+                      doQuickCreate(quickPremise, quickType, summary, fullLog);
+                    }} disabled={quickGuideLoading || quickGuideMsgs.length === 0}>
+                      开始生成
+                    </Button>
+                  </div>
+                </>
+              )}
             </DialogContent>
           </Dialog>
         </div>

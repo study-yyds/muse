@@ -35,7 +35,7 @@ export class AiController {
   async chat(
     @Body()
     body: {
-      book_id: string;
+      book_id?: string;
       context_type: string;
       message: string;
       messages?: any[];
@@ -43,11 +43,22 @@ export class AiController {
       chapter_id?: string;
       cursor_position?: number;
       style?: string;
+      guide_mode?: boolean;
+      guide_context?: string;
+      guide_type?: string;
     },
     @Res() res: Response,
     @Req() req: Request,
   ) {
-    await this.ai.chat(res, { ...body, user_id: (req as any).userId });
+    try {
+      await this.ai.chat(res, { ...body, book_id: body.book_id ?? '', user_id: (req as any).userId });
+    } catch (e: any) {
+      console.error('[chat controller] error:', e.message ?? e);
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ code: 500, message: 'AI 服务异常' }));
+      }
+    }
   }
 
   @Post('mimic-style')
@@ -160,7 +171,7 @@ export class AiController {
 
   @Post('quick-create')
   async quickCreate(
-    @Body() body: { premise: string; model?: string; type?: string },
+    @Body() body: { premise: string; model?: string; type?: string; guide_summary?: string; guide_full_log?: string },
     @Res() res: Response,
     @Req() req: Request,
   ) {
@@ -169,12 +180,16 @@ export class AiController {
         user_id: (req as any).userId,
         premise: body.premise,
         model: body.model,
+        guide_summary: body.guide_summary,
+        guide_full_log: body.guide_full_log,
       });
     } else {
       await this.ai.quickCreate(res, {
         user_id: (req as any).userId,
         premise: body.premise,
         model: body.model,
+        guide_summary: body.guide_summary,
+        guide_full_log: body.guide_full_log,
       });
     }
   }

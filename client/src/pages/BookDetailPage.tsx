@@ -333,6 +333,7 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
   const [loading, setLoading] = useState(false);
   const [model, setModel] = useState("deepseek-v4-flash");
   const [chatStyle, setChatStyle] = useState("default");
+  const [guideMode, setGuideMode] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [expandedReasoning, setExpandedReasoning] = useState<Set<number>>(new Set());
   const [streamReasonCollapsed, setStreamReasonCollapsed] = useState(false);
@@ -638,6 +639,7 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
       bodyExtra.cursor_position = rewriteCtx ? rewriteCtx.start : editor.cursorPosition;
       bodyExtra.style = chatStyle;
     }
+    bodyExtra.guide_mode = guideMode;
     // 确保有活跃会话
     const sid = await ensureSession();
     // 每3秒自动保存当前流式内容，避免刷新丢失
@@ -708,6 +710,7 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
       bodyExtra.cursor_position = rewriteCtx ? rewriteCtx.start : editor.cursorPosition;
       bodyExtra.style = chatStyle;
     }
+    bodyExtra.guide_mode = guideMode;
 
     // 在位更新：先保存原始版本为 versions[0]（占位消息不存档为版本）
     const isPlaceholder = curMsgs[lastAiIdx].content === "（生成中...）";
@@ -1223,6 +1226,18 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
                 <option value="deepseek-v4-flash">V4 Flash</option>
                 <option value="deepseek-v4-pro">V4 Pro</option>
               </select>
+              <button
+                onClick={() => setGuideMode(!guideMode)}
+                className={cn(
+                  "text-[11px] rounded-full px-2.5 py-1 transition-colors",
+                  guideMode
+                    ? "bg-primary/15 text-primary"
+                    : "text-muted-foreground bg-muted/50 hover:text-foreground",
+                )}
+                title={guideMode ? "关闭引导模式" : "开启引导模式"}
+              >
+                引导
+              </button>
             </div>
             {loading ? (
               <button onClick={stop} className="size-8 flex items-center justify-center rounded-full bg-destructive text-white">

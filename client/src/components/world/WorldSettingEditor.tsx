@@ -153,7 +153,7 @@ export function WorldSettingEditor({ bookId }: Props) {
       <div className="space-y-3">
         {editing.map((section, i) => (
           <div
-            key={`${section.name}-${i}`}
+            key={i}
             className={cn(
               "rounded-lg border border-border bg-card",
               collapsed.has(section.name) && "pb-0"
@@ -174,8 +174,9 @@ export function WorldSettingEditor({ bookId }: Props) {
               <input
                 value={section.name}
                 onChange={(e) => updateName(i, e.target.value)}
-                className="flex-1 bg-transparent text-sm font-medium text-foreground outline-none border-none"
+                className="flex-1 bg-transparent text-sm font-medium text-foreground outline-none focus:bg-muted/30 rounded px-1 -mx-1"
                 placeholder="分区名称"
+                title="点击编辑分区名称"
               />
               {editing.length > 1 && (
                 <Button
