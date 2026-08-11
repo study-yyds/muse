@@ -60,11 +60,16 @@ export function BookListPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [createType, setCreateType] = useState<'novel' | 'short'>('novel');
   const [showDeleted, setShowDeleted] = useState(false);
-  const [quickOpen, setQuickOpen] = useState(false);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [quickOpen, setQuickOpen] = useState(() => {
+    return localStorage.getItem("muse_quick_open") === "1" || !!localStorage.getItem("muse_guide_msgs");
+  });
   const [quickType, setQuickType] = useState<'novel' | 'short'>('novel');
   const [quickPremise, setQuickPremise] = useState("");
   const [quickModel, setQuickModel] = useState("deepseek-v4-flash");
   const [quickGenerating, setQuickGenerating] = useState(false);
+  const [inspireLoading, setInspireLoading] = useState(false);
   const [quickSteps, setQuickSteps] = useState<Array<{ step: string; label: string; status: string; preview?: string }>>([]);
   // 引导模式
   const [quickGuiding, setQuickGuiding] = useState(false);
@@ -72,6 +77,47 @@ export function BookListPage() {
   const [quickGuideInput, setQuickGuideInput] = useState("");
   const [quickGuideLoading, setQuickGuideLoading] = useState(false);
   const guideAbortRef = useRef<AbortController | null>(null);
+
+  // 生成中防止误刷新
+  useEffect(() => {
+    if (quickGenerating) {
+      const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); };
+      window.addEventListener("beforeunload", handler);
+      return () => window.removeEventListener("beforeunload", handler);
+    }
+  }, [quickGenerating]);
+
+  // 弹窗状态持久化
+  useEffect(() => {
+    localStorage.setItem("muse_quick_open", quickOpen ? "1" : "0");
+  }, [quickOpen]);
+
+  // 引导对话持久化到 localStorage
+  useEffect(() => {
+    if (quickGuiding && quickGuideMsgs.length > 0) {
+      localStorage.setItem("muse_guide_msgs", JSON.stringify(quickGuideMsgs));
+      localStorage.setItem("muse_guide_premise", quickPremise);
+      localStorage.setItem("muse_guide_type", quickType);
+    }
+  }, [quickGuideMsgs, quickGuiding, quickPremise, quickType]);
+
+  // 恢复引导对话内容
+  useEffect(() => {
+    const saved = localStorage.getItem("muse_guide_msgs");
+    const savedPremise = localStorage.getItem("muse_guide_premise");
+    const savedType = localStorage.getItem("muse_guide_type");
+    if (saved && savedPremise && savedType) {
+      try {
+        const msgs: Array<{ role: string; content: string }> = JSON.parse(saved);
+        if (msgs.length > 0) {
+          setQuickGuideMsgs(msgs);
+          setQuickPremise(savedPremise);
+          setQuickType(savedType as "novel" | "short");
+          setQuickGuiding(true);
+        }
+      } catch { /* ignore */ }
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const quickAbortRef = useRef<AbortController | null>(null);
   const guideChatRef = useRef<HTMLDivElement>(null);
   const guideUserScrolledUp = useRef(false);
@@ -219,8 +265,7 @@ export function BookListPage() {
       }
       if (bookId) {
         queryClient.invalidateQueries({ queryKey: ["books"] });
-        setQuickOpen(false);
-        setQuickPremise("");
+        resetQuickDialog();
         toast({ title: "创作完成！" });
         navigate(`/books/${bookId}`);
       }
@@ -257,7 +302,7 @@ export function BookListPage() {
   // 引导模式：发送消息
   const sendGuideMsg = async () => {
     guideUserScrolledUp.current = false;
-    guideGotContent.current = false; // 重置内容标记
+    guideGotContent.current = false;
     const input = quickGuideInput.trim();
     if (!input || quickGuideLoading) return;
     setQuickGuideInput("");
@@ -301,7 +346,7 @@ export function BookListPage() {
             if (ev === "error") { const d = JSON.parse(line.slice(6)); throw new Error(d.message); }
           }
         }
-        // 只在有内容时才追加/更新 AI 回复
+        // 只在有内容时才追加/更新 AI 回复，并同步写 localStorage
         if (ac) {
           guideGotContent.current = true;
           setQuickGuideMsgs((prev) => {
@@ -312,6 +357,9 @@ export function BookListPage() {
             } else {
               updated.push({ role: "assistant", content: ac });
             }
+            localStorage.setItem("muse_guide_msgs", JSON.stringify(updated));
+            localStorage.setItem("muse_guide_premise", quickPremise);
+            localStorage.setItem("muse_guide_type", quickType);
             return updated;
           });
         }
@@ -321,12 +369,18 @@ export function BookListPage() {
       toast({ title: err?.message || "发送失败", variant: "destructive" });
     } finally {
       setQuickGuideLoading(false);
-      if (!guideGotContent.current) {
-        setQuickGuideMsgs((prev) => [
-          ...prev,
-          { role: "assistant", content: "（AI 未响应，请重试）" },
-        ]);
-      }
+      setQuickGuideMsgs((prev) => {
+        const next = !guideGotContent.current
+          ? [...prev, { role: "assistant", content: "（AI 未响应，请重试）" }]
+          : prev;
+        // 流结束后立即同步到 localStorage
+        if (quickGuiding) {
+          localStorage.setItem("muse_guide_msgs", JSON.stringify(next));
+          localStorage.setItem("muse_guide_premise", quickPremise);
+          localStorage.setItem("muse_guide_type", quickType);
+        }
+        return next;
+      });
       guideAbortRef.current = null;
     }
   };
@@ -339,6 +393,11 @@ export function BookListPage() {
     setQuickGuideMsgs([]);
     setQuickGuideInput("");
     setQuickGuideLoading(false);
+    localStorage.removeItem("muse_quick_open");
+    localStorage.removeItem("muse_guide_sending");
+    localStorage.removeItem("muse_guide_msgs");
+    localStorage.removeItem("muse_guide_premise");
+    localStorage.removeItem("muse_guide_type");
   };
 
   return (
@@ -347,14 +406,52 @@ export function BookListPage() {
       <div className="mb-6 flex items-center justify-between">
         <h1 className="text-xl font-semibold text-foreground">我的作品</h1>
         <div className="flex items-center gap-2">
+          {selectMode ? (
+            <>
+              <Button variant="ghost" size="sm" onClick={() => { setSelectMode(false); setSelectedIds(new Set()); }}>
+                取消
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => {
+                if (books.length === selectedIds.size) setSelectedIds(new Set());
+                else setSelectedIds(new Set(books.map(b => b.book_id)));
+              }}>
+                {books.length === selectedIds.size ? "取消全选" : "全选"}
+              </Button>
+              <Button variant="destructive" size="sm" disabled={selectedIds.size === 0}
+                onClick={async () => {
+                  if (!confirm(`确定删除选中的 ${selectedIds.size} 个作品？`)) return;
+                  for (const id of selectedIds) {
+                    if (showDeleted) await api.delete(`/books/${id}/permanent`);
+                    else await api.delete(`/books/${id}`);
+                  }
+                  setSelectedIds(new Set());
+                  setSelectMode(false);
+                  queryClient.invalidateQueries({ queryKey: ["books"] });
+                  toast({ title: `已${showDeleted ? "彻底删除" : "删除"} ${selectedIds.size} 个作品` });
+                }}
+              >
+                删除选中 ({selectedIds.size})
+              </Button>
+            </>
+          ) : (
+            <Button variant="ghost" size="sm" onClick={() => setSelectMode(true)}>
+              批量选择
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => setShowDeleted(!showDeleted)}
+            onClick={() => { setShowDeleted(!showDeleted); setSelectMode(false); setSelectedIds(new Set()); }}
           >
             {showDeleted ? "查看作品" : "回收站"}
           </Button>
-          <Button size="sm" variant="outline" onClick={() => setQuickOpen(true)}>
+          <Button size="sm" variant="outline" onClick={() => {
+            localStorage.removeItem("muse_quick_open");
+                  localStorage.removeItem("muse_guide_msgs");
+            localStorage.removeItem("muse_guide_premise");
+            localStorage.removeItem("muse_guide_type");
+            setQuickOpen(true);
+          }}>
             <Sparkles className="size-4" />
             快捷创作
           </Button>
@@ -424,7 +521,7 @@ export function BookListPage() {
             // 表单阶段：直接关闭
             resetQuickDialog();
           }}>
-            <DialogContent className={quickGuiding ? "max-w-lg h-[520px] flex flex-col" : ""}>
+            <DialogContent className={quickGuiding ? "max-w-lg h-[520px] flex flex-col" : "max-w-lg sm:max-w-lg"}>
               <DialogHeader>
                 <DialogTitle>{quickGuiding ? "创作引导" : "快捷创作"}</DialogTitle>
                 <DialogDescription>
@@ -520,18 +617,51 @@ export function BookListPage() {
                       取消
                     </Button>
                     {quickType === 'short' && (
-                      <Button variant="outline" disabled={quickGenerating}
-                        onClick={() => {
-                          const ideas = [
-                            '我是一个死刑犯，临刑前收到一条短信：「你的死刑已延期」——发件人是三年前的自己。',
-                            '全城的人突然同时做了一个相同的梦，梦里有人在教他们唱一首歌。只有我没做梦。',
-                            '我的影子开始不听使唤，它会在我睡着时自己出门，第二天身上多了来历不明的伤疤。',
-                            '我继承了一家只在午夜营业的书店，每个顾客都来自不同的时代。',
-                            '地球停转了三秒，所有人失忆了那三秒的内容——但我用相机拍到了。',
-                          ];
-                          setQuickPremise(ideas[Math.floor(Math.random() * ideas.length)]);
+                      <Button variant="outline" disabled={quickGenerating || inspireLoading}
+                        onClick={async () => {
+                          setInspireLoading(true);
+                          const token = localStorage.getItem("token");
+                          try {
+                            const res = await fetch("/api/ai/chat", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                              body: JSON.stringify({
+                                book_id: "",
+                                context_type: "write",
+                                model: quickModel,
+                                message: "生成一个有趣的短篇小说创意，一句话描述，要有悬念或反转，不要套模板。只输出创意本身，不加解释。",
+                                messages: [{ role: "user", content: "生成一个有趣的短篇小说创意，一句话描述，要有悬念或反转。" }],
+                                guide_mode: true,
+                                guide_type: quickType,
+                              }),
+                              signal: AbortSignal.timeout(30000),
+                            });
+                            if (res.ok) {
+                              const reader = res.body?.getReader();
+                              if (reader) {
+                                const decoder = new TextDecoder();
+                                let buf = "", ac = "";
+                                while (true) {
+                                  const { done, value } = await reader.read();
+                                  if (done) break;
+                                  buf += decoder.decode(value, { stream: true });
+                                  const lines = buf.split("\n"); buf = lines.pop() ?? "";
+                                  let ev = "";
+                                  for (const line of lines) {
+                                    if (line.startsWith("event: ")) { ev = line.slice(7); continue; }
+                                    if (line.startsWith("data: ")) {
+                                      try { if (ev === "chunk") ac += JSON.parse(line.slice(6)); } catch { if (ev === "chunk") ac += line.slice(6); }
+                                    }
+                                  }
+                                }
+                                if (ac.trim()) setQuickPremise(ac.trim());
+                              }
+                            }
+                          } catch { /* 忽略 */ }
+                          setInspireLoading(false);
                         }}>
-                        <Sparkles className="size-3 mr-1" />随机灵感
+                        {inspireLoading ? <Loader2 className="size-3 mr-1 animate-spin" /> : <Sparkles className="size-3 mr-1" />}
+                        {inspireLoading ? "生成中..." : "随机灵感"}
                       </Button>
                     )}
                     <Button variant="outline" onClick={() => {
@@ -577,7 +707,11 @@ export function BookListPage() {
                           }
                           if (ac) {
                             guideGotContent.current = true;
-                            setQuickGuideMsgs([{ role: "user", content: initMsg }, { role: "assistant", content: ac }]);
+                            const nextMsgs = [{ role: "user", content: initMsg }, { role: "assistant", content: ac }];
+                            setQuickGuideMsgs(nextMsgs);
+                            localStorage.setItem("muse_guide_msgs", JSON.stringify(nextMsgs));
+                            localStorage.setItem("muse_guide_premise", quickPremise);
+                            localStorage.setItem("muse_guide_type", quickType);
                           }
                         }
                       }).catch((err) => {
@@ -585,6 +719,12 @@ export function BookListPage() {
                         setQuickGuiding(false);
                       }).finally(() => {
                         setQuickGuideLoading(false);
+                                          setQuickGuideMsgs((prev) => {
+                          localStorage.setItem("muse_guide_msgs", JSON.stringify(prev));
+                          localStorage.setItem("muse_guide_premise", quickPremise);
+                          localStorage.setItem("muse_guide_type", quickType);
+                          return prev;
+                        });
                         if (!guideGotContent.current) {
                           setQuickGuideMsgs((prev) => [
                             ...prev,
@@ -688,13 +828,24 @@ export function BookListPage() {
                             }
                           }
                           if (ac) {
-                            setQuickGuideMsgs([...finalMsgs, { role: "assistant", content: ac }]);
+                            const nextMsgs = [...finalMsgs, { role: "assistant", content: ac }];
+                            setQuickGuideMsgs(nextMsgs);
+                            localStorage.setItem("muse_guide_msgs", JSON.stringify(nextMsgs));
+                            localStorage.setItem("muse_guide_premise", quickPremise);
+                            localStorage.setItem("muse_guide_type", quickType);
                           }
                         }
                         if (!ac) {
                           setQuickGuideMsgs([...finalMsgs, { role: "assistant", content: "（AI 未响应，请重试）" }]);
                         }
                         summary = ac;
+                        // 摘要流结束，立即保存
+                        setQuickGuideMsgs((prev) => {
+                          localStorage.setItem("muse_guide_msgs", JSON.stringify(prev));
+                          localStorage.setItem("muse_guide_premise", quickPremise);
+                          localStorage.setItem("muse_guide_type", quickType);
+                          return prev;
+                        });
                       } catch (err: any) {
                         toast({ title: "获取摘要失败: " + (err?.message || "未知错误"), variant: "destructive" });
                         setQuickGuideLoading(false);
@@ -749,12 +900,26 @@ export function BookListPage() {
                 showDeleted && "opacity-60"
               )}
               onClick={() => {
+                if (selectMode) {
+                  setSelectedIds((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(book.book_id)) next.delete(book.book_id);
+                    else next.add(book.book_id);
+                    return next;
+                  });
+                  return;
+                }
                 if (!showDeleted) {
                   navigate(`/books/${book.book_id}`);
                 }
               }}
             >
               <CardContent className="p-4">
+                {selectMode && (
+                  <div className={cn("size-5 rounded border-2 flex items-center justify-center mb-2", selectedIds.has(book.book_id) ? "bg-primary border-primary" : "border-muted-foreground/40")}>
+                    {selectedIds.has(book.book_id) && <Check className="size-3 text-primary-foreground" />}
+                  </div>
+                )}
                 <div className="mb-2 flex items-start justify-between">
                   <h3 className="font-medium text-foreground truncate">{book.title}</h3>
                   <Badge variant="secondary" className="shrink-0 text-xs">

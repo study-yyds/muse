@@ -20,17 +20,19 @@ import { getDb, schema } from '../database/connection';
 
 const aiRateLimit = new RateLimitGuard(10, 60_000); // 每分钟10次
 
-@UseGuards(AuthGuard, aiRateLimit)
+@UseGuards(AuthGuard)
 @Controller('api/ai')
 export class AiController {
   constructor(private readonly ai: AiService) {}
 
+  @UseGuards(aiRateLimit)
   @Post('generate')
   async generate(@Body() body: any, @Res() res: Response, @Req() req: Request) {
     body.user_id = (req as any).userId;
     await this.ai.generate(res, body);
   }
 
+  @UseGuards(aiRateLimit)
   @Post('chat')
   async chat(
     @Body()
@@ -61,6 +63,7 @@ export class AiController {
     }
   }
 
+  @UseGuards(aiRateLimit)
   @Post('mimic-style')
   async mimicStyle(
     @Body() body: { book_id?: string; model?: string; text?: string },
@@ -73,6 +76,7 @@ export class AiController {
     return { code: 200, data };
   }
 
+  @UseGuards(aiRateLimit)
   @Post('apply-settings')
   async applySettings(
     @Body()
@@ -169,6 +173,7 @@ export class AiController {
 
   // ============== 快捷创作 ==============
 
+  @UseGuards(aiRateLimit)
   @Post('quick-create')
   async quickCreate(
     @Body() body: { premise: string; model?: string; type?: string; guide_summary?: string; guide_full_log?: string },
@@ -196,6 +201,7 @@ export class AiController {
 
   // ============== AI 生图 ==============
 
+  @UseGuards(aiRateLimit)
   @Post('generate-synopsis')
   async generateSynopsis(
     @Body() body: { book_id: string; model?: string },
@@ -206,6 +212,7 @@ export class AiController {
     return { code: 200, data };
   }
 
+  @UseGuards(aiRateLimit)
   @Post('recommend-style')
   async recommendStyle(
     @Body() body: { book_id: string },
@@ -216,6 +223,7 @@ export class AiController {
     return { code: 200, data };
   }
 
+  @UseGuards(aiRateLimit)
   @Post('generate-cover')
   async generateCover(
     @Body()
@@ -240,6 +248,7 @@ export class AiController {
     return { code: 200, data: { url, history } };
   }
 
+  @UseGuards(aiRateLimit)
   @Post('generate-char-image')
   async generateCharImage(
     @Body()

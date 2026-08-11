@@ -174,6 +174,7 @@ export function BookDetailPage() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [mobileAiExpanded, setMobileAiExpanded] = useState(false);
   const [aiPanelHeight, setAiPanelHeight] = useState(45); // vh
+  const [aiPanelWidth, setAiPanelWidth] = useState(288); // px
   const [isMobile, setIsMobile] = useState(window.innerWidth < 1024);
   const [coverUrl, setCoverUrl] = useState<string | null>(null);
 
@@ -296,7 +297,7 @@ export function BookDetailPage() {
                   setAiPanelHeight(Math.max(20, Math.min(80, startH + vhDelta)));
                 };
                 const onUp = () => {
-                  try { (e.target as HTMLElement).releasePointerCapture(e.pointerId); } catch {}
+                  try { (e.target as HTMLElement).releasePointerCapture(e.pointerId); } catch { }
                   document.removeEventListener("pointermove", onMove);
                   document.removeEventListener("pointerup", onUp);
                 };
@@ -313,7 +314,27 @@ export function BookDetailPage() {
 
       {/* ===== 桌面端 AI 面板 ===== */}
       {!isMobile && (
-        <div className="flex w-72 shrink-0 border-l border-border bg-card flex-col h-full">
+        <div className="flex shrink-0 border-l border-border bg-card flex-col h-full relative" style={{ width: aiPanelWidth, minWidth: 320, maxWidth: 9000 }}>
+          {/* 左边缘拖动把手 */}
+          <div
+            className="absolute top-0 -left-1 w-2 h-full cursor-col-resize z-10 hover:bg-primary/20 transition-colors"
+            onPointerDown={(e) => {
+              e.preventDefault();
+              const startX = e.clientX;
+              const startWidth = aiPanelWidth;
+              const onMove = (ev: PointerEvent) => {
+                const delta = startX - ev.clientX;
+                const newWidth = Math.min(500, Math.max(200, startWidth + delta));
+                setAiPanelWidth(newWidth);
+              };
+              const onUp = () => {
+                document.removeEventListener("pointermove", onMove);
+                document.removeEventListener("pointerup", onUp);
+              };
+              document.addEventListener("pointermove", onMove);
+              document.addEventListener("pointerup", onUp);
+            }}
+          />
           <AIChatPanel section={section} bookId={bookId ?? ""} />
         </div>
       )}
@@ -1026,151 +1047,152 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
 
       <div className="flex-1 min-h-0 overflow-hidden">
         <ScrollArea className="h-full">
-        <div className="p-4 space-y-3">
-          {msgs.map((m: Msg, i: number) => {
-            const reasonExpanded = expandedReasoning.has(i);
-            const toggleReasoning = () => {
-              setExpandedReasoning((prev) => {
-                const next = new Set(prev);
-                if (next.has(i)) next.delete(i);
-                else next.add(i);
-                return next;
-              });
-            };
-            return (
-              <div
-                key={i}
-                className={cn(
-                  "text-sm rounded-lg px-3 py-2",
-                  m.role === "user"
-                    ? "bg-primary/10 text-foreground ml-2"
-                    : "bg-muted text-foreground mr-2",
-                )}
-              >
-                {m.role === "user" ? (
-                  <div className="whitespace-pre-wrap">{m.content}</div>
-                ) : (() => {
-                  const hasVersions = m.versions && m.versions.length > 0;
-                  const verIdx = hasVersions ? (activeVer[i] ?? m.versions!.length - 1) : 0;
-                  const curVer: Ver = hasVersions
-                    ? m.versions![verIdx]
-                    : { content: m.content, action: m.action, reasoning: m.reasoning };
-                  const isLastAi = i === msgs.length - 1 && m.role === "assistant";
-                  const isAdopted = m.adoptedVer !== undefined;
-                  const hasAction = !!curVer.action;
+          <div className="p-4 space-y-3">
+            {msgs.map((m: Msg, i: number) => {
+              const reasonExpanded = expandedReasoning.has(i);
+              const toggleReasoning = () => {
+                setExpandedReasoning((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(i)) next.delete(i);
+                  else next.add(i);
+                  return next;
+                });
+              };
+              return (
+                <div
+                  key={i}
+                  className={cn(
+                    "text-sm rounded-lg px-3 py-2",
+                    m.role === "user"
+                      ? "bg-primary/10 text-foreground ml-2"
+                      : "bg-muted text-foreground mr-2",
+                  )}
+                >
+                  {m.role === "user" ? (
+                    <div className="whitespace-pre-wrap">{m.content}</div>
+                  ) : (() => {
+                    const hasVersions = m.versions && m.versions.length > 0;
+                    const verIdx = hasVersions ? (activeVer[i] ?? m.versions!.length - 1) : 0;
+                    const curVer: Ver = hasVersions
+                      ? m.versions![verIdx]
+                      : { content: m.content, action: m.action, reasoning: m.reasoning };
+                    const isLastAi = i === msgs.length - 1 && m.role === "assistant";
+                    const isAdopted = m.adoptedVer !== undefined;
+                    const hasAction = !!curVer.action;
 
-                  return (
-                  <div>
-                    {/* 思考块（折叠） */}
-                    {curVer.reasoning && (
-                      <div className="mb-2">
-                        <button
-                          onClick={toggleReasoning}
-                          className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors w-full text-left"
-                        >
-                          <ChevronRight
-                            className={cn(
-                              "size-3 transition-transform",
-                              reasonExpanded && "rotate-90",
+                    return (
+                      <div>
+                        {/* 思考块（折叠） */}
+                        {curVer.reasoning && (
+                          <div className="mb-2">
+                            <button
+                              onClick={toggleReasoning}
+                              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors w-full text-left"
+                            >
+                              <ChevronRight
+                                className={cn(
+                                  "size-3 transition-transform",
+                                  reasonExpanded && "rotate-90",
+                                )}
+                              />
+                              思考
+                            </button>
+                            {reasonExpanded && (
+                              <div className="mt-1.5 pl-4 border-l-2 border-border text-xs text-muted-foreground whitespace-pre-wrap leading-relaxed max-h-48 overflow-y-auto">
+                                {curVer.reasoning}
+                              </div>
                             )}
-                          />
-                          思考
-                        </button>
-                        {reasonExpanded && (
-                          <div className="mt-1.5 pl-4 border-l-2 border-border text-xs text-muted-foreground whitespace-pre-wrap leading-relaxed max-h-48 overflow-y-auto">
-                            {curVer.reasoning}
                           </div>
                         )}
+                        {curVer.content ? (
+                          <div className="whitespace-pre-wrap">{stripActionJson(curVer.content)}</div>
+                        ) : null}
+                        {isAdopted ? (
+                          <div className="mt-2 pt-2 border-t border-border text-xs text-muted-foreground text-center">
+                            已采纳
+                          </div>
+                        ) : isLastAi ? (
+                          <div className="mt-2 pt-2 border-t border-border flex items-center gap-2 flex-wrap">
+                            {hasAction && (
+                              <Button size="xs" disabled={adoptingRef.current} onClick={() => adopt(curVer.action!, i)}>
+                                {adoptingRef.current ? "采纳中..." : "采纳"}
+                              </Button>
+                            )}
+                            <Button size="xs" variant="ghost" onClick={regenerate}>
+                              重新生成
+                            </Button>
+                            {hasVersions && m.versions!.length > 1 && (
+                              <span className="text-xs text-muted-foreground ml-auto flex items-center gap-1">
+                                <button
+                                  className="hover:text-foreground disabled:opacity-30"
+                                  disabled={verIdx === 0}
+                                  onClick={() => setActiveVer((p) => ({ ...p, [i]: verIdx - 1 }))}
+                                >
+                                  ◀
+                                </button>
+                                版本 {verIdx + 1}/{m.versions!.length}
+                                <button
+                                  className="hover:text-foreground disabled:opacity-30"
+                                  disabled={verIdx === m.versions!.length - 1}
+                                  onClick={() => setActiveVer((p) => ({ ...p, [i]: verIdx + 1 }))}
+                                >
+                                  ▶
+                                </button>
+                              </span>
+                            )}
+                          </div>
+                        ) : hasAction ? (
+                          <div className="mt-2 pt-2 border-t border-border text-xs text-muted-foreground text-center">
+                            已覆盖
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })()}
+                </div>
+              );
+            })}
+            {/* 流式输出：思考（可折叠） + 正文 */}
+            {(reasoning || streaming) && (
+              <div className="text-sm rounded-lg px-3 py-2 bg-muted text-foreground mr-2">
+                {reasoning && (
+                  <div className={cn(streaming && "mb-2")}>
+                    <button
+                      onClick={() => setStreamReasonCollapsed(!streamReasonCollapsed)}
+                      className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      <ChevronRight
+                        className={cn(
+                          "size-3 transition-transform",
+                          !streamReasonCollapsed && "rotate-90",
+                        )}
+                      />
+                      <Loader2 className="size-3 animate-spin" />
+                      思考中...
+                    </button>
+                    {!streamReasonCollapsed && (
+                      <div className="mt-1.5 pl-4 border-l-2 border-border text-xs text-muted-foreground whitespace-pre-wrap leading-relaxed max-h-48 overflow-y-auto">
+                        {reasoning}
                       </div>
                     )}
-                    {curVer.content ? (
-                      <div className="whitespace-pre-wrap">{stripActionJson(curVer.content)}</div>
-                    ) : null}
-                    {isAdopted ? (
-                      <div className="mt-2 pt-2 border-t border-border text-xs text-muted-foreground text-center">
-                        已采纳
-                      </div>
-                    ) : isLastAi ? (
-                      <div className="mt-2 pt-2 border-t border-border flex items-center gap-2 flex-wrap">
-                        {hasAction && (
-                          <Button size="xs" disabled={adoptingRef.current} onClick={() => adopt(curVer.action!, i)}>
-                            {adoptingRef.current ? "采纳中..." : "采纳"}
-                          </Button>
-                        )}
-                        <Button size="xs" variant="ghost" onClick={regenerate}>
-                          重新生成
-                        </Button>
-                        {hasVersions && m.versions!.length > 1 && (
-                          <span className="text-xs text-muted-foreground ml-auto flex items-center gap-1">
-                            <button
-                              className="hover:text-foreground disabled:opacity-30"
-                              disabled={verIdx === 0}
-                              onClick={() => setActiveVer((p) => ({ ...p, [i]: verIdx - 1 }))}
-                            >
-                              ◀
-                            </button>
-                            版本 {verIdx + 1}/{m.versions!.length}
-                            <button
-                              className="hover:text-foreground disabled:opacity-30"
-                              disabled={verIdx === m.versions!.length - 1}
-                              onClick={() => setActiveVer((p) => ({ ...p, [i]: verIdx + 1 }))}
-                            >
-                              ▶
-                            </button>
-                          </span>
-                        )}
-                      </div>
-                    ) : hasAction ? (
-                      <div className="mt-2 pt-2 border-t border-border text-xs text-muted-foreground text-center">
-                        已覆盖
-                      </div>
-                    ) : null}
                   </div>
-                );})()}
+                )}
+                {streaming && (
+                  <div className={cn("whitespace-pre-wrap", reasoning && "pt-2 border-t border-border")}>
+                    {stripActionJson(streaming)}
+                    <span className="inline-block w-1.5 h-4 bg-primary animate-pulse ml-0.5 align-text-bottom" />
+                  </div>
+                )}
               </div>
-            );
-          })}
-          {/* 流式输出：思考（可折叠） + 正文 */}
-          {(reasoning || streaming) && (
-            <div className="text-sm rounded-lg px-3 py-2 bg-muted text-foreground mr-2">
-              {reasoning && (
-                <div className={cn(streaming && "mb-2")}>
-                  <button
-                    onClick={() => setStreamReasonCollapsed(!streamReasonCollapsed)}
-                    className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                  >
-                    <ChevronRight
-                      className={cn(
-                        "size-3 transition-transform",
-                        !streamReasonCollapsed && "rotate-90",
-                      )}
-                    />
-                    <Loader2 className="size-3 animate-spin" />
-                    思考中...
-                  </button>
-                  {!streamReasonCollapsed && (
-                    <div className="mt-1.5 pl-4 border-l-2 border-border text-xs text-muted-foreground whitespace-pre-wrap leading-relaxed max-h-48 overflow-y-auto">
-                      {reasoning}
-                    </div>
-                  )}
-                </div>
-              )}
-              {streaming && (
-                <div className={cn("whitespace-pre-wrap", reasoning && "pt-2 border-t border-border")}>
-                  {stripActionJson(streaming)}
-                  <span className="inline-block w-1.5 h-4 bg-primary animate-pulse ml-0.5 align-text-bottom" />
-                </div>
-              )}
-            </div>
-          )}
-          {loading && !reasoning && !streaming && !isRegeneratingRef.current && (
-            <div className="text-xs text-muted-foreground italic px-3">
-              <Loader2 className="inline size-3 animate-spin mr-1" />
-              连接中...
-            </div>
-          )}
-          <div ref={scrollBottomRef} />
-        </div>
+            )}
+            {loading && !reasoning && !streaming && !isRegeneratingRef.current && (
+              <div className="text-xs text-muted-foreground italic px-3">
+                <Loader2 className="inline size-3 animate-spin mr-1" />
+                连接中...
+              </div>
+            )}
+            <div ref={scrollBottomRef} />
+          </div>
         </ScrollArea>
       </div>
 
@@ -1226,25 +1248,30 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
                 <option value="deepseek-v4-flash">V4 Flash</option>
                 <option value="deepseek-v4-pro">V4 Pro</option>
               </select>
-              <button
-                onClick={() => setGuideMode(!guideMode)}
-                className={cn(
-                  "text-[11px] rounded-full px-2.5 py-1 transition-colors",
-                  guideMode
-                    ? "bg-primary/15 text-primary"
-                    : "text-muted-foreground bg-muted/50 hover:text-foreground",
-                )}
-                title={guideMode ? "关闭引导模式" : "开启引导模式"}
-              >
-                引导
-              </button>
+              <label className="flex items-center gap-1 cursor-pointer" title={guideMode ? "关闭引导模式" : "开启引导模式"}>
+                <button
+                  onClick={(e) => { e.preventDefault(); setGuideMode(!guideMode); }}
+                  className={cn(
+                    "relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors",
+                    guideMode ? "bg-primary" : "bg-muted",
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "pointer-events-none block h-4 w-4 rounded-full bg-white shadow transition-transform",
+                      guideMode ? "translate-x-4" : "translate-x-0",
+                    )}
+                  />
+                </button>
+                <span className="text-[11px] text-muted-foreground select-none">引导</span>
+              </label>
             </div>
             {loading ? (
-              <button onClick={stop} className="size-8 flex items-center justify-center rounded-full bg-destructive text-white">
+              <button onClick={stop} className="size-8 flex items-center justify-center rounded-full bg-destructive text-white ml-1">
                 <Square className="size-4" />
               </button>
             ) : (
-              <button onClick={send} disabled={!input.trim()} className="size-8 flex items-center justify-center rounded-full bg-primary text-primary-foreground disabled:opacity-30">
+              <button onClick={send} disabled={!input.trim()} className="size-8 flex items-center justify-center rounded-full bg-primary text-primary-foreground disabled:opacity-30 ml-1">
                 <Send className="size-4" />
               </button>
             )}

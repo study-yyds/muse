@@ -452,8 +452,11 @@ ${charContext || '暂无'}
 ✅ 正确："她重生回去做什么生意？为什么选这个行业？"
 
 【你的工作方式】
-1. 从作者上一轮的回答里找到没说清楚的点，追问
-2. 不确定作者的意思就问"是A还是B？"，不要猜
+1. **作者的描述越短，越帮他拆细**。他说"美食"，你问"美食的什么？做菜、经营、评测、还是收集？"他说"做菜"，你问"是系统升级流（做一道学一道），还是现实成长流（学艺拜师开店）？"——每一轮帮他把模糊的想法拆成一个可回答的具体问题
+2. **作者卡住了怎么办**：他不确定主角怎么突破瓶颈、不知道怎么推动剧情、不知道怎么收尾——给他 2-3 个具体的方向选项，附带简短的理由，让他选。不要反问"你想怎么解决"，而是"你可以试试A/B/C，因为..."
+3. **先定引擎，再展开**：确定故事靠什么推着走（升级/复仇/经营/关系/谜团），然后围绕引擎追问：升级路径是什么、关键转折在哪、终点是什么样
+2. 从作者上一轮的回答里找到没说清楚的点，追问
+3. 不确定作者的意思就问"是A还是B？"，不要猜
 3. 反馈 = 一句肯定 + 一句话提炼 + 一个问题，控制在 100 字内
 4. 作者说"开始生成""差不多了"时，立即停止提问，输出摘要。摘要基于对话中已讨论的内容进行总结，可以合理扩展细节，但不要修改或替换作者已明确的设定：
 
@@ -945,7 +948,24 @@ ${worldText.slice(0, 1000)}
 
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) {
+          // 处理最后一段残留数据
+          buffer += decoder.decode();
+          const lines = buffer.split('\n');
+          for (const line of lines) {
+            if (line.startsWith('data: ') && line.slice(6) !== '[DONE]') {
+              try {
+                const delta = JSON.parse(line.slice(6)).choices?.[0]?.delta;
+                if (delta?.content) fullContent += delta.content;
+                if (delta?.reasoning_content)
+                  fullReasoning += delta.reasoning_content;
+              } catch {
+                /* empty */
+              }
+            }
+          }
+          break;
+        }
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
         buffer = lines.pop() ?? '';
@@ -973,29 +993,48 @@ ${worldText.slice(0, 1000)}
         }
       }
 
-      // 从末尾行反向查找 JSON action，容错中文引号冲突和 markdown 代码块
+      // 多级回退提取 JSON action（对齐快捷创作解析器）
       try {
         const combined = fullContent || fullReasoning;
+        const attempts: string[] = [];
+
+        // 1. markdown 代码块
+        const codeBlock = combined.match(/```(?:json)?\s*([\s\S]*?)```/);
+        if (codeBlock) attempts.push(codeBlock[1].trim());
+
+        // 2. 正则匹配 JSON 对象/数组（含 action）
+        const objMatch = combined.match(/\{[\s\S]*"action"\s*:[\s\S]*\}/);
+        if (objMatch) attempts.push(objMatch[0]);
+        const arrMatch = combined.match(/\[[\s\S]*"action"\s*:[\s\S]*\]/);
+        if (arrMatch) attempts.push(arrMatch[0]);
+
+        // 3. 末行逐行回退（处理单行 JSON）
         const revLines = combined.split('\n').reverse();
         for (const line of revLines) {
           let trimmed = line.trim();
-          // 处理被 ``` 包裹的情况：去掉末尾的 ``` 和开头的 ```json
           if (trimmed.endsWith('```')) trimmed = trimmed.slice(0, -3).trim();
-          // 处理 ```json{"action":...} 或 {"action":...}``` 混合在同一行
           const fenceIdx = trimmed.indexOf('```json');
           if (fenceIdx >= 0) trimmed = trimmed.slice(fenceIdx + 7).trim();
           if (trimmed.startsWith('```')) trimmed = trimmed.slice(3).trim();
-          // 支持 JSON 对象 {...} 或数组 [{...}]
           if (
             (trimmed.startsWith('{') || trimmed.startsWith('[')) &&
             trimmed.includes('"action"')
           ) {
-            let parsed: any = null;
+            attempts.push(trimmed);
+          }
+        }
+
+        // 4. 逐级尝试 parse（加容错修复）
+        for (const tryStr of attempts) {
+          let parsed: any = null;
+          try {
+            parsed = JSON.parse(tryStr);
+          } catch {
+            /* try fix */
+          }
+          if (!parsed) {
             try {
-              parsed = JSON.parse(trimmed);
-            } catch {
-              // 尝试修复无效 JSON
-              const fixed = trimmed.replace(
+              const fixed = tryStr.replace(
                 /"content"\s*:\s*"([\s\S]*?)"\s*[,}]/g,
                 (_: string, inner: string) => {
                   const escaped = inner.replace(
@@ -1005,19 +1044,16 @@ ${worldText.slice(0, 1000)}
                   return `"content":"${escaped}"`;
                 },
               );
-              try {
-                parsed = JSON.parse(fixed);
-              } catch {
-                /* 放弃 */
-              }
+              parsed = JSON.parse(fixed);
+            } catch {
+              /* try next */
             }
-            if (parsed) {
-              if (Array.isArray(parsed) && parsed.length > 0) {
-                // 数组：逐个作为独立 action 发送；前端 adopt 会遍历处理
-                res.write(`event: action\ndata: ${JSON.stringify(parsed)}\n\n`);
-              } else if (parsed.action) {
-                res.write(`event: action\ndata: ${JSON.stringify(parsed)}\n\n`);
-              }
+          }
+          if (parsed) {
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              res.write(`event: action\ndata: ${JSON.stringify(parsed)}\n\n`);
+            } else if (parsed.action) {
+              res.write(`event: action\ndata: ${JSON.stringify(parsed)}\n\n`);
             }
             break;
           }
@@ -1651,7 +1687,9 @@ ${sample.slice(0, 5000)}`,
 6. 主要角色 ≤5 个，配角不给名字避免混淆
 
 【技术规则】
-纯文本输出，不用 Markdown。环境描写≤3 行。不写大段独白。角色名从头到尾不变。`;
+纯文本输出，不用 Markdown。环境描写≤3 行。不写大段独白。角色名从头到尾不变。
+
+**写 4000-5000 字作为故事前半部分，在剧情关键转折点停住，最后一行标注：【待续】。**`;
 
       // 第一轮：生成前半部分
       const r1 = await fetch(`${baseUrl}/chat/completions`, {
@@ -1669,7 +1707,7 @@ ${sample.slice(0, 5000)}`,
               content: `脑洞/想法：${premise}\n\n请写故事的前半部分（4000-5000字），在剧情关键时刻停住。`,
             },
           ],
-          max_tokens: 16384,
+          max_tokens: 24576,
           temperature: 0.8,
         }),
         signal: AbortSignal.timeout(300_000),
@@ -1708,7 +1746,7 @@ ${sample.slice(0, 5000)}`,
               content: `脑洞/想法：${premise}\n\n已写的前半部分：\n${part1.slice(-1000)}\n\n请接着写后半部分（4000-5000字），展开高潮、揭示真相、给出完整结局。`,
             },
           ],
-          max_tokens: 16384,
+          max_tokens: 24576,
           temperature: 0.8,
         }),
         signal: AbortSignal.timeout(300_000),
