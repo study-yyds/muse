@@ -29,7 +29,8 @@ function getPlainText(editor: ReturnType<typeof useEditor>): string {
 function getCursorTextOffset(editor: ReturnType<typeof useEditor>): number {
   if (!editor) return 0;
   const { from } = editor.state.selection;
-  return editor.state.doc.textBetween(0, from).length;
+  // 用 \n 作为块分隔符，与 getText() 保持一致，否则多段落文档偏移会错位
+  return editor.state.doc.textBetween(0, from, '\n').length;
 }
 
 export function TiptapEditor({ content, onChange, placeholder }: Props) {
@@ -65,7 +66,7 @@ export function TiptapEditor({ content, onChange, placeholder }: Props) {
       const { from, to } = editor.state.selection;
       const textOffset = getCursorTextOffset(editor);
       useEditorStore.getState().setCursor(textOffset);
-      const selectedText = editor.state.doc.textBetween(from, to);
+      const selectedText = editor.state.doc.textBetween(from, to, '\n');
       if (selectedText) {
         useEditorStore.getState().setSelection(selectedText, textOffset);
         useEditorStore.getState().setAiRewrite(selectedText, textOffset, textOffset + selectedText.length, from, to);
@@ -98,8 +99,8 @@ export function TiptapEditor({ content, onChange, placeholder }: Props) {
       const { newText, tiptapFrom, tiptapTo, oldText } = pendingReplace;
       let from = tiptapFrom;
       let to = tiptapTo;
-      if (from == null || to == null || editor.state.doc.textBetween(from, to) !== oldText) {
-        const docText = editor.state.doc.textBetween(0, editor.state.doc.content.size);
+      if (from == null || to == null || editor.state.doc.textBetween(from, to, '\n') !== oldText) {
+        const docText = editor.state.doc.textBetween(0, editor.state.doc.content.size, '\n');
         const idx = docText.indexOf(oldText);
         if (idx === -1) { clearPendingInsert(); return; }
         let pos = 0;

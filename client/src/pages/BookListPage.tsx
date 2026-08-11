@@ -62,9 +62,8 @@ export function BookListPage() {
   const [showDeleted, setShowDeleted] = useState(false);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [quickOpen, setQuickOpen] = useState(() => {
-    return localStorage.getItem("muse_quick_open") === "1" || !!localStorage.getItem("muse_guide_msgs");
-  });
+  const [quickOpen, setQuickOpen] = useState(false);
+  const [quickRestored, setQuickRestored] = useState(false);
   const [quickType, setQuickType] = useState<'novel' | 'short'>('novel');
   const [quickPremise, setQuickPremise] = useState("");
   const [quickModel, setQuickModel] = useState("deepseek-v4-flash");
@@ -78,50 +77,74 @@ export function BookListPage() {
   const [quickGuideLoading, setQuickGuideLoading] = useState(false);
   const guideAbortRef = useRef<AbortController | null>(null);
 
-  // 生成中防止误刷新
+  // 生成中 / 引导聊天中防止误刷新
   useEffect(() => {
-    if (quickGenerating) {
+    if (quickGenerating || quickGuiding) {
       const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); };
       window.addEventListener("beforeunload", handler);
       return () => window.removeEventListener("beforeunload", handler);
     }
-  }, [quickGenerating]);
+  }, [quickGenerating, quickGuiding]);
 
-  // 弹窗状态持久化
-  useEffect(() => {
-    localStorage.setItem("muse_quick_open", quickOpen ? "1" : "0");
-  }, [quickOpen]);
+  // 引导对话 session 管理
+  const guideSessionRef = useRef<string | null>(null);
 
-  // 引导对话持久化到 localStorage
+  // 恢复引导会话 / 弹窗状态（含中断生成自动恢复）
   useEffect(() => {
-    if (quickGuiding && quickGuideMsgs.length > 0) {
-      localStorage.setItem("muse_guide_msgs", JSON.stringify(quickGuideMsgs));
-      localStorage.setItem("muse_guide_premise", quickPremise);
-      localStorage.setItem("muse_guide_type", quickType);
-    }
-  }, [quickGuideMsgs, quickGuiding, quickPremise, quickType]);
-
-  // 恢复引导对话内容
-  useEffect(() => {
-    const saved = localStorage.getItem("muse_guide_msgs");
-    const savedPremise = localStorage.getItem("muse_guide_premise");
-    const savedType = localStorage.getItem("muse_guide_type");
-    if (saved && savedPremise && savedType) {
+    (async () => {
       try {
-        const msgs: Array<{ role: string; content: string }> = JSON.parse(saved);
-        if (msgs.length > 0) {
-          setQuickGuideMsgs(msgs);
-          setQuickPremise(savedPremise);
-          setQuickType(savedType as "novel" | "short");
+        const token = localStorage.getItem("token");
+        if (!token) { setQuickRestored(true); return; }
+        const res = await fetch(`/api/ai/chat-sessions/guide?section=guide`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        console.log('[guide restore] status:', res.status);
+        const json = await res.json();
+        console.log('[guide restore] data:', JSON.stringify(json?.data).slice(0, 200));
+        if (res.ok && json?.data?.active?.messages?.length > 0) {
+          guideSessionRef.current = json.data.active.id;
+          // 恢复用户最初输入的脑洞
+          const savedPremise = localStorage.getItem("muse_guide_premise");
+          if (savedPremise) setQuickPremise(savedPremise);
+          const allMsgs: Array<{ role: string; content: string }> = json.data.active.messages;
+          const lastMsg = allMsgs[allMsgs.length - 1];
+          // 检测中断的生成：最后一条是 AI 的 sentinel "（生成中...）"
+          if (lastMsg?.role === "assistant" && lastMsg.content === "（生成中...）") {
+            const resumeMsgs = allMsgs.slice(0, -1); // 去掉 sentinel
+            setQuickGuideMsgs(resumeMsgs);
+            setQuickGuiding(true);
+            setQuickOpen(true);
+            console.log('[guide restore] detected interrupted generation, auto-resuming...');
+            setQuickRestored(true);
+            // 等组件渲染完成后自动继续生成
+            setTimeout(() => resumeGuideGeneration(resumeMsgs), 300);
+            return;
+          }
+          setQuickGuideMsgs(allMsgs);
           setQuickGuiding(true);
+          setQuickOpen(true);
+          console.log('[guide restore] restored', allMsgs.length, 'msgs');
         }
-      } catch { /* ignore */ }
+      } catch (e) { console.log('[guide restore] error:', e); }
+      setQuickRestored(true);
+    })();
+  }, []);
+
+  // restore 完成后，如果没有引导会话，用 localStorage 恢复弹窗开关
+  useEffect(() => {
+    console.log('[quick restore] quickRestored:', quickRestored, 'quickGuiding:', quickGuiding, 'ls:', localStorage.getItem("muse_quick_open"));
+    if (quickRestored && !quickGuiding && localStorage.getItem("muse_quick_open") === "1") {
+      setQuickOpen(true);
+      console.log('[quick restore] opening dialog from localStorage');
     }
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [quickRestored, quickGuiding]);
+
   const quickAbortRef = useRef<AbortController | null>(null);
   const guideChatRef = useRef<HTMLDivElement>(null);
   const guideUserScrolledUp = useRef(false);
   const guideGotContent = useRef(false);
+  const guideStreamAcRef = useRef(""); // 流式累积内容，供定时保存用
+  const guideInitSaveRef = useRef<ReturnType<typeof setInterval> | null>(null); // 初始引导消息的定时保存
 
   const { data, isLoading } = useQuery({
     queryKey: ["books", showDeleted ? "deleted" : "active"],
@@ -312,6 +335,15 @@ export function BookListPage() {
     const token = localStorage.getItem("token");
     const controller = new AbortController();
     guideAbortRef.current = controller;
+    // 先保存用户消息（await 确保 DB 已写入），再发 AI 请求
+    if (guideSessionRef.current) {
+      await fetch(`/api/ai/chat-sessions/${guideSessionRef.current}/messages`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ messages: newMsgs }),
+      }).catch(() => {});
+    }
+    let saveInterval: ReturnType<typeof setInterval> | undefined;
     try {
       const res = await fetch("/api/ai/chat", {
         method: "POST",
@@ -323,7 +355,7 @@ export function BookListPage() {
           message: input,
           messages: newMsgs.map(m => ({ role: m.role, content: m.content })),
           guide_mode: true,
-          guide_context: quickPremise,
+          guide_context: quickPremise || localStorage.getItem("muse_guide_premise"),
           guide_type: quickType,
         }),
         signal: controller.signal,
@@ -333,6 +365,18 @@ export function BookListPage() {
       if (!reader) throw new Error("无响应");
       const decoder = new TextDecoder();
       let buf = ""; let ac = "";
+      guideStreamAcRef.current = "";
+      // 每 3 秒自动保存当前流式内容，避免刷新丢失 AI 回复
+      saveInterval = setInterval(() => {
+        if (guideSessionRef.current && guideStreamAcRef.current) {
+          const partialMsgs = [...newMsgs, { role: "assistant", content: guideStreamAcRef.current }];
+          fetch(`/api/ai/chat-sessions/${guideSessionRef.current}/messages`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ messages: partialMsgs }),
+          }).catch(() => {});
+        }
+      }, 3000);
       while (true) {
         const { done, value } = await reader.read();
         if (done) { buf += decoder.decode(); break; }
@@ -349,6 +393,7 @@ export function BookListPage() {
         // 只在有内容时才追加/更新 AI 回复，并同步写 localStorage
         if (ac) {
           guideGotContent.current = true;
+          guideStreamAcRef.current = ac;
           setQuickGuideMsgs((prev) => {
             const updated = [...prev];
             const last = updated[updated.length - 1];
@@ -357,9 +402,6 @@ export function BookListPage() {
             } else {
               updated.push({ role: "assistant", content: ac });
             }
-            localStorage.setItem("muse_guide_msgs", JSON.stringify(updated));
-            localStorage.setItem("muse_guide_premise", quickPremise);
-            localStorage.setItem("muse_guide_type", quickType);
             return updated;
           });
         }
@@ -368,16 +410,127 @@ export function BookListPage() {
       if (err.name === "AbortError") return;
       toast({ title: err?.message || "发送失败", variant: "destructive" });
     } finally {
+      if (saveInterval) clearInterval(saveInterval);
+      guideStreamAcRef.current = "";
       setQuickGuideLoading(false);
       setQuickGuideMsgs((prev) => {
         const next = !guideGotContent.current
           ? [...prev, { role: "assistant", content: "（AI 未响应，请重试）" }]
           : prev;
-        // 流结束后立即同步到 localStorage
-        if (quickGuiding) {
-          localStorage.setItem("muse_guide_msgs", JSON.stringify(next));
-          localStorage.setItem("muse_guide_premise", quickPremise);
-          localStorage.setItem("muse_guide_type", quickType);
+        // 保存到后端
+        if (guideSessionRef.current) {
+          console.log('[guide] saving', next.length, 'msgs to', guideSessionRef.current);
+          fetch(`/api/ai/chat-sessions/${guideSessionRef.current}/messages`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("token")}` },
+            body: JSON.stringify({ messages: next }),
+          }).then(r => { if (!r.ok) console.log('[guide] save failed:', r.status); else console.log('[guide] save ok'); })
+            .catch(e => console.log('[guide] save error:', e));
+        } else {
+          console.log('[guide] no session to save to');
+        }
+        return next;
+      });
+      guideAbortRef.current = null;
+    }
+  };
+
+  // 刷新后恢复中断的生成：去掉 sentinel，重新发起 AI 请求
+  const resumeGuideGeneration = async (msgs: Array<{ role: string; content: string }>) => {
+    guideUserScrolledUp.current = false;
+    guideGotContent.current = false;
+    setQuickGuideLoading(true);
+    const token = localStorage.getItem("token");
+    const controller = new AbortController();
+    guideAbortRef.current = controller;
+    // 先保存去掉 sentinel 的消息（含占位，标记"生成中"）
+    const resumeMsgs = [...msgs, { role: "assistant", content: "（生成中...）" }];
+    if (guideSessionRef.current) {
+      fetch(`/api/ai/chat-sessions/${guideSessionRef.current}/messages`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ messages: resumeMsgs }),
+      }).catch(() => {});
+    }
+    setQuickGuideMsgs(resumeMsgs);
+    let saveInterval: ReturnType<typeof setInterval> | undefined;
+    try {
+      const res = await fetch("/api/ai/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          book_id: "",
+          context_type: "write",
+          model: quickModel,
+          message: msgs[msgs.length - 1]?.content || "",
+          messages: msgs.map(m => ({ role: m.role, content: m.content })),
+          guide_mode: true,
+          guide_context: quickPremise || localStorage.getItem("muse_guide_premise"),
+          guide_type: quickType,
+        }),
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error("无响应");
+      const decoder = new TextDecoder();
+      let buf = ""; let ac = "";
+      guideStreamAcRef.current = "";
+      saveInterval = setInterval(() => {
+        if (guideSessionRef.current && guideStreamAcRef.current) {
+          const partialMsgs = [...msgs, { role: "assistant", content: guideStreamAcRef.current }];
+          fetch(`/api/ai/chat-sessions/${guideSessionRef.current}/messages`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ messages: partialMsgs }),
+          }).catch(() => {});
+        }
+      }, 3000);
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) { buf += decoder.decode(); break; }
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split("\n"); buf = lines.pop() ?? "";
+        let ev = "";
+        for (const line of lines) {
+          if (line.startsWith("event: ")) { ev = line.slice(7); continue; }
+          if (line.startsWith("data: ")) {
+            try { if (ev === "chunk") ac += JSON.parse(line.slice(6)); } catch { if (ev === "chunk") ac += line.slice(6); }
+            if (ev === "error") { const d = JSON.parse(line.slice(6)); throw new Error(d.message); }
+          }
+        }
+        if (ac) {
+          guideGotContent.current = true;
+          guideStreamAcRef.current = ac;
+          setQuickGuideMsgs((prev) => {
+            const updated = [...prev];
+            const last = updated[updated.length - 1];
+            if (last?.role === "assistant") {
+              updated[updated.length - 1] = { role: "assistant", content: ac };
+            } else {
+              updated.push({ role: "assistant", content: ac });
+            }
+            return updated;
+          });
+        }
+      }
+    } catch (err: any) {
+      if (err.name === "AbortError") return;
+      toast({ title: err?.message || "恢复生成失败", variant: "destructive" });
+    } finally {
+      if (saveInterval) clearInterval(saveInterval);
+      guideStreamAcRef.current = "";
+      setQuickGuideLoading(false);
+      setQuickGuideMsgs((prev) => {
+        const next = !guideGotContent.current
+          ? [...prev, { role: "assistant", content: "（AI 未响应，请重试）" }]
+          : prev;
+        if (guideSessionRef.current) {
+          fetch(`/api/ai/chat-sessions/${guideSessionRef.current}/messages`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("token")}` },
+            body: JSON.stringify({ messages: next }),
+          }).catch(() => {});
         }
         return next;
       });
@@ -394,10 +547,15 @@ export function BookListPage() {
     setQuickGuideInput("");
     setQuickGuideLoading(false);
     localStorage.removeItem("muse_quick_open");
-    localStorage.removeItem("muse_guide_sending");
-    localStorage.removeItem("muse_guide_msgs");
     localStorage.removeItem("muse_guide_premise");
-    localStorage.removeItem("muse_guide_type");
+    // 删除引导会话
+    if (guideSessionRef.current) {
+      fetch(`/api/ai/chat-sessions/${guideSessionRef.current}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+      }).catch(() => {});
+      guideSessionRef.current = null;
+    }
   };
 
   return (
@@ -446,10 +604,8 @@ export function BookListPage() {
             {showDeleted ? "查看作品" : "回收站"}
           </Button>
           <Button size="sm" variant="outline" onClick={() => {
-            localStorage.removeItem("muse_quick_open");
-                  localStorage.removeItem("muse_guide_msgs");
-            localStorage.removeItem("muse_guide_premise");
-            localStorage.removeItem("muse_guide_type");
+            guideSessionRef.current = null;
+            localStorage.setItem("muse_quick_open", "1");
             setQuickOpen(true);
           }}>
             <Sparkles className="size-4" />
@@ -664,15 +820,45 @@ export function BookListPage() {
                         {inspireLoading ? "生成中..." : "随机灵感"}
                       </Button>
                     )}
-                    <Button variant="outline" onClick={() => {
+                    <Button variant="outline" onClick={async () => {
                       if (!quickPremise.trim()) { toast({ title: "请先输入想法", variant: "destructive" }); return; }
                       setQuickGuiding(true);
+                      localStorage.setItem("muse_guide_premise", quickPremise);
                       guideGotContent.current = false;
-                      // 自动发送第一条引导消息
+                      // 先创建引导会话
+                      try {
+                        const r = await fetch("/api/ai/chat-sessions", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("token")}` },
+                          body: JSON.stringify({ book_id: "guide", section: "guide" }),
+                        });
+                        const d = await r.json();
+                        if (d.data?.id) guideSessionRef.current = d.data.id;
+                      } catch {}
+                      // 发送第一条引导消息
                       const initMsg = `我想写一个故事，我的想法是：${quickPremise}`;
-                      setQuickGuideMsgs([{ role: "user", content: initMsg }]);
-                      setQuickGuideLoading(true);
+                      const initMsgs = [{ role: "user", content: initMsg }];
+                      setQuickGuideMsgs(initMsgs);
                       const token = localStorage.getItem("token");
+                      // 立即持久化用户消息到 DB，防止刷新时弹窗消失
+                      if (guideSessionRef.current) {
+                        fetch(`/api/ai/chat-sessions/${guideSessionRef.current}/messages`, {
+                          method: "PUT",
+                          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                          body: JSON.stringify({ messages: initMsgs }),
+                        }).catch(() => {});
+                      }
+                      // 再存一个占位 AI 消息，恢复时可检测中断的生成
+                      const sentinelMsgs = [...initMsgs, { role: "assistant", content: "（生成中...）" }];
+                      if (guideSessionRef.current) {
+                        fetch(`/api/ai/chat-sessions/${guideSessionRef.current}/messages`, {
+                          method: "PUT",
+                          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                          body: JSON.stringify({ messages: sentinelMsgs }),
+                        }).catch(() => {});
+                      }
+                      setQuickGuideMsgs(sentinelMsgs);
+                      setQuickGuideLoading(true);
                       fetch("/api/ai/chat", {
                         method: "POST",
                         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -683,7 +869,7 @@ export function BookListPage() {
                           message: initMsg,
                           messages: [{ role: "user", content: initMsg }],
                           guide_mode: true,
-                          guide_context: quickPremise,
+                          guide_context: quickPremise || localStorage.getItem("muse_guide_premise"),
                           guide_type: quickType,
                         }),
                         signal: AbortSignal.timeout(120000),
@@ -693,6 +879,18 @@ export function BookListPage() {
                         if (!reader) throw new Error("无响应");
                         const decoder = new TextDecoder();
                         let buf = "", ac = "";
+                        guideStreamAcRef.current = "";
+                        // 每 3 秒自动保存当前流式内容，避免刷新丢失 AI 回复
+                        guideInitSaveRef.current = setInterval(() => {
+                          if (guideSessionRef.current && guideStreamAcRef.current) {
+                            const partialMsgs = [{ role: "user", content: initMsg }, { role: "assistant", content: guideStreamAcRef.current }];
+                            fetch(`/api/ai/chat-sessions/${guideSessionRef.current}/messages`, {
+                              method: "PUT",
+                              headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("token")}` },
+                              body: JSON.stringify({ messages: partialMsgs }),
+                            }).catch(() => {});
+                          }
+                        }, 3000);
                         while (true) {
                           const { done, value } = await reader.read();
                           if (done) { buf += decoder.decode(); break; }
@@ -707,30 +905,28 @@ export function BookListPage() {
                           }
                           if (ac) {
                             guideGotContent.current = true;
-                            const nextMsgs = [{ role: "user", content: initMsg }, { role: "assistant", content: ac }];
-                            setQuickGuideMsgs(nextMsgs);
-                            localStorage.setItem("muse_guide_msgs", JSON.stringify(nextMsgs));
-                            localStorage.setItem("muse_guide_premise", quickPremise);
-                            localStorage.setItem("muse_guide_type", quickType);
+                            guideStreamAcRef.current = ac;
+                            setQuickGuideMsgs([{ role: "user", content: initMsg }, { role: "assistant", content: ac }]);
                           }
                         }
                       }).catch((err) => {
                         toast({ title: err?.message || "请求失败", variant: "destructive" });
                         setQuickGuiding(false);
                       }).finally(() => {
+                        if (guideInitSaveRef.current) { clearInterval(guideInitSaveRef.current); guideInitSaveRef.current = null; }
+                        guideStreamAcRef.current = "";
                         setQuickGuideLoading(false);
-                                          setQuickGuideMsgs((prev) => {
-                          localStorage.setItem("muse_guide_msgs", JSON.stringify(prev));
-                          localStorage.setItem("muse_guide_premise", quickPremise);
-                          localStorage.setItem("muse_guide_type", quickType);
+                        setQuickGuideMsgs((prev) => {
+                          if (!guideGotContent.current) prev = [...prev, { role: "assistant", content: "（AI 未响应，请重试）" }];
+                          if (guideSessionRef.current) {
+                            fetch(`/api/ai/chat-sessions/${guideSessionRef.current}/messages`, {
+                              method: "PUT",
+                              headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("token")}` },
+                              body: JSON.stringify({ messages: prev }),
+                            }).catch(() => {});
+                          }
                           return prev;
                         });
-                        if (!guideGotContent.current) {
-                          setQuickGuideMsgs((prev) => [
-                            ...prev,
-                            { role: "assistant", content: "（AI 未响应，请重试）" },
-                          ]);
-                        }
                       });
                     }} disabled={quickGenerating || !quickPremise.trim()}>
                       <Sparkles className="size-4 mr-1" />AI 引导
@@ -767,6 +963,29 @@ export function BookListPage() {
                       </div>
                     )}
                   </div>
+                  {/* 作品生成进度（引导模式下 doQuickCreate 运行时显示） */}
+                  {quickGenerating && (
+                    <div className="space-y-1 px-1">
+                      {quickSteps.map((s) => (
+                        <div key={s.step} className="flex items-center gap-2 text-xs">
+                          {s.status === "done" ? (
+                            <Check className="size-3 text-green-500 shrink-0" />
+                          ) : (
+                            <Loader2 className="size-3 animate-spin text-primary shrink-0" />
+                          )}
+                          <span className={s.status === "done" ? "text-muted-foreground" : "text-foreground"}>
+                            {s.label}
+                          </span>
+                        </div>
+                      ))}
+                      {quickSteps.length === 0 && (
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                          <Loader2 className="size-3 animate-spin" />
+                          正在准备...
+                        </div>
+                      )}
+                    </div>
+                  )}
                   {/* 引导输入 + 操作 */}
                   <div className="flex items-end gap-2">
                     <textarea
@@ -805,7 +1024,7 @@ export function BookListPage() {
                             message: finalMsg,
                             messages: finalMsgs.map(m => ({ role: m.role, content: m.content })),
                             guide_mode: true,
-                            guide_context: quickPremise,
+                            guide_context: quickPremise || localStorage.getItem("muse_guide_premise"),
                             guide_type: quickType,
                           }),
                           signal: AbortSignal.timeout(120000),
@@ -830,10 +1049,7 @@ export function BookListPage() {
                           if (ac) {
                             const nextMsgs = [...finalMsgs, { role: "assistant", content: ac }];
                             setQuickGuideMsgs(nextMsgs);
-                            localStorage.setItem("muse_guide_msgs", JSON.stringify(nextMsgs));
-                            localStorage.setItem("muse_guide_premise", quickPremise);
-                            localStorage.setItem("muse_guide_type", quickType);
-                          }
+                                                      }
                         }
                         if (!ac) {
                           setQuickGuideMsgs([...finalMsgs, { role: "assistant", content: "（AI 未响应，请重试）" }]);
@@ -841,10 +1057,7 @@ export function BookListPage() {
                         summary = ac;
                         // 摘要流结束，立即保存
                         setQuickGuideMsgs((prev) => {
-                          localStorage.setItem("muse_guide_msgs", JSON.stringify(prev));
-                          localStorage.setItem("muse_guide_premise", quickPremise);
-                          localStorage.setItem("muse_guide_type", quickType);
-                          return prev;
+                                                    return prev;
                         });
                       } catch (err: any) {
                         toast({ title: "获取摘要失败: " + (err?.message || "未知错误"), variant: "destructive" });
@@ -852,14 +1065,14 @@ export function BookListPage() {
                         return;
                       }
                       setQuickGuideLoading(false);
-                      setQuickGuiding(false);
                       // 构建完整对话日志作为参考附录
                       const fullLog = quickGuideMsgs
                         .filter(m => m.role === "user" || m.role === "assistant")
                         .map(m => `${m.role === "user" ? "作者" : "AI"}: ${m.content}`)
                         .join("\n");
-                      doQuickCreate(quickPremise, quickType, summary, fullLog);
-                    }} disabled={quickGuideLoading || quickGuideMsgs.length === 0}>
+                      // 等待 quickCreate 完成；失败时留在引导界面可重试
+                      await doQuickCreate(quickPremise, quickType, summary, fullLog);
+                    }} disabled={quickGuideLoading || quickGenerating || quickGuideMsgs.length === 0}>
                       开始生成
                     </Button>
                   </div>

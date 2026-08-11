@@ -862,6 +862,26 @@ ${worldText.slice(0, 1000)}
 用自然语言回复作者的问题，涉及具体操作时给出明确指引。`,
     };
 
+    // 加载引导讨论上下文（创作概要），追加到所有 AI 对话的 system prompt
+    let guideBlock = '';
+    if (params.book_id && !isShort) {
+      try {
+        const [bs] = await db
+          .select({ extra: schema.book_settings.extra })
+          .from(schema.book_settings)
+          .where(eq(schema.book_settings.book_id, params.book_id))
+          .limit(1);
+        const extra = bs?.extra as Record<string, any> | undefined;
+        if (extra?.guide_summary) {
+          guideBlock = `\n\n【创作概要——引导讨论确定的方向，所有生成内容必须遵守】
+${extra.guide_summary}
+${extra.guide_full_log ? `\n【引导讨论原始记录——参考细节】\n${(extra.guide_full_log as string).slice(0, 1500)}` : ''}`;
+        }
+      } catch {
+        /* settings 行可能不存在 */
+      }
+    }
+
     const systemPrompt = isShort
       ? prompts.short
       : (prompts[ct] ?? prompts.write);
@@ -872,7 +892,7 @@ ${worldText.slice(0, 1000)}
         : [{ role: 'user', content: sanitizePrompt(params.message) }];
       void this.streamChatToClient(
         res,
-        systemPrompt,
+        systemPrompt + guideBlock,
         cleanMessages,
         params.model ?? 'deepseek-chat',
         isShort ? 24576 : 8192,
@@ -1143,14 +1163,21 @@ ${sample.slice(0, 5000)}`,
   // ============== 会话管理 ==============
 
   // 获取活跃会话（含消息），不存在则返回 null
-  async getActiveSession(bookId: string, section: string) {
+  // bookId 为 null 时按 user_id + section 查询（引导模式）
+  async getActiveSession(
+    bookId: string | null,
+    section: string,
+    userId?: string,
+  ) {
     const db = getDb();
     const [session] = await db
       .select()
       .from(schema.ai_chat_sessions)
       .where(
         and(
-          eq(schema.ai_chat_sessions.book_id, bookId),
+          bookId
+            ? eq(schema.ai_chat_sessions.book_id, bookId)
+            : eq(schema.ai_chat_sessions.user_id, userId ?? ''),
           eq(schema.ai_chat_sessions.section, section),
           eq(schema.ai_chat_sessions.active, true),
         ),
@@ -1160,14 +1187,16 @@ ${sample.slice(0, 5000)}`,
   }
 
   // 获取指定 section 的所有会话（按时间倒序）
-  async getSessions(bookId: string, section: string) {
+  async getSessions(bookId: string | null, section: string, userId?: string) {
     const db = getDb();
     return db
       .select()
       .from(schema.ai_chat_sessions)
       .where(
         and(
-          eq(schema.ai_chat_sessions.book_id, bookId),
+          bookId
+            ? eq(schema.ai_chat_sessions.book_id, bookId)
+            : eq(schema.ai_chat_sessions.user_id, userId ?? ''),
           eq(schema.ai_chat_sessions.section, section),
         ),
       )
@@ -1175,31 +1204,45 @@ ${sample.slice(0, 5000)}`,
   }
 
   // 创建新会话：归档当前活跃会话，创建新的
+  // bookId 为 null 时为引导模式，按 user_id 鉴权
   async createSession(
-    bookId: string,
+    bookId: string | null,
     section: string,
     title: string,
     userId: string,
   ) {
-    await this.checkBookOwnership(bookId, userId);
+    if (bookId) await this.checkBookOwnership(bookId, userId);
     const db = getDb();
 
     // 归档当前活跃会话
-    await db
-      .update(schema.ai_chat_sessions)
-      .set({ active: false, updated_at: new Date() })
-      .where(
-        and(
+    const archiveFilter = bookId
+      ? and(
           eq(schema.ai_chat_sessions.book_id, bookId),
           eq(schema.ai_chat_sessions.section, section),
           eq(schema.ai_chat_sessions.active, true),
-        ),
-      );
+        )
+      : and(
+          eq(schema.ai_chat_sessions.user_id, userId),
+          eq(schema.ai_chat_sessions.section, section),
+          eq(schema.ai_chat_sessions.active, true),
+        );
+    await db
+      .update(schema.ai_chat_sessions)
+      .set({ active: false, updated_at: new Date() } as any)
+      .where(archiveFilter)
+      .execute();
 
     // 创建新会话
     const [created] = await db
       .insert(schema.ai_chat_sessions)
-      .values({ book_id: bookId, section, title, messages: [], active: true })
+      .values({
+        book_id: bookId ?? undefined,
+        user_id: userId,
+        section,
+        title,
+        messages: [],
+        active: true,
+      } as any)
       .returning();
     return created;
   }
@@ -1217,7 +1260,8 @@ ${sample.slice(0, 5000)}`,
       .where(eq(schema.ai_chat_sessions.id, sessionId))
       .limit(1);
     if (!s) throw new Error('会话不存在');
-    await this.checkBookOwnership(s.book_id, userId);
+    if (s.book_id) await this.checkBookOwnership(s.book_id, userId);
+    else if (s.user_id !== userId) throw new Error('无权访问');
 
     // 自动更新标题（如果还没有标题，取第一条用户消息的前30字）
     let title = s.title;
@@ -1243,19 +1287,26 @@ ${sample.slice(0, 5000)}`,
       .where(eq(schema.ai_chat_sessions.id, sessionId))
       .limit(1);
     if (!target) throw new Error('会话不存在');
-    await this.checkBookOwnership(target.book_id, userId);
+    if (target.book_id) await this.checkBookOwnership(target.book_id, userId);
+    else if (target.user_id !== userId) throw new Error('无权访问');
 
     // 归档当前活跃会话
-    await db
-      .update(schema.ai_chat_sessions)
-      .set({ active: false, updated_at: new Date() })
-      .where(
-        and(
+    const archiveFilter = target.book_id
+      ? and(
           eq(schema.ai_chat_sessions.book_id, target.book_id),
           eq(schema.ai_chat_sessions.section, target.section),
           eq(schema.ai_chat_sessions.active, true),
-        ),
-      );
+        )
+      : and(
+          eq(schema.ai_chat_sessions.user_id, userId),
+          eq(schema.ai_chat_sessions.section, target.section),
+          eq(schema.ai_chat_sessions.active, true),
+        );
+    await db
+      .update(schema.ai_chat_sessions)
+      .set({ active: false, updated_at: new Date() } as any)
+      .where(archiveFilter)
+      .execute();
 
     // 激活目标会话
     await db
@@ -1273,7 +1324,8 @@ ${sample.slice(0, 5000)}`,
       .where(eq(schema.ai_chat_sessions.id, sessionId))
       .limit(1);
     if (!s) throw new Error('会话不存在');
-    await this.checkBookOwnership(s.book_id, userId);
+    if (s.book_id) await this.checkBookOwnership(s.book_id, userId);
+    else if (s.user_id !== userId) throw new Error('无权访问');
     await db
       .delete(schema.ai_chat_sessions)
       .where(eq(schema.ai_chat_sessions.id, sessionId));
@@ -1628,6 +1680,7 @@ ${sample.slice(0, 5000)}`,
     const send = (event: string, data: Record<string, any>) =>
       res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 
+    let bookId: string | undefined;
     try {
       // Step 1: 创建短篇作品 + 唯一章节
       send('step', { step: 'book', status: 'generating', label: '创建作品' });
@@ -1637,7 +1690,7 @@ ${sample.slice(0, 5000)}`,
         .insert(schema.books)
         .values({ user_id: params.user_id, title, type: 'short' } as any)
         .returning({ book_id: schema.books.book_id });
-      const bookId = book.book_id;
+      bookId = book.book_id;
       await db
         .insert(schema.book_settings)
         .values({ book_id: bookId, preset_style: 'default' });
@@ -1817,8 +1870,41 @@ ${sample.slice(0, 5000)}`,
         label: `书名：${finalTitle}`,
       });
 
+      // 保存引导讨论上下文，供后续 AI 对话使用
+      if (params.guide_summary || params.guide_full_log) {
+        const [s] = await db
+          .select({ extra: schema.book_settings.extra })
+          .from(schema.book_settings)
+          .where(eq(schema.book_settings.book_id, bookId))
+          .limit(1);
+        const extra = (s?.extra ?? {}) as Record<string, any>;
+        extra.guide_summary = params.guide_summary || '';
+        extra.guide_full_log = params.guide_full_log || '';
+        await db
+          .update(schema.book_settings)
+          .set({ extra: extra as any })
+          .where(eq(schema.book_settings.book_id, bookId));
+      }
+
       send('done', { book_id: bookId, title: finalTitle });
     } catch (err: any) {
+      // 回滚：删除已创建的资源
+      if (bookId) {
+        try {
+          const db2 = getDb();
+          await db2
+            .delete(schema.chapters)
+            .where(eq(schema.chapters.book_id, bookId));
+          await db2
+            .delete(schema.book_settings)
+            .where(eq(schema.book_settings.book_id, bookId));
+          await db2
+            .delete(schema.books)
+            .where(eq(schema.books.book_id, bookId));
+        } catch {
+          /* 回滚失败不掩盖原始错误 */
+        }
+      }
       send('error', { message: err?.message ?? '生成失败' });
     } finally {
       res.end();
@@ -1906,6 +1992,7 @@ ${sample.slice(0, 5000)}`,
       return '';
     };
 
+    let bookId: string | undefined;
     try {
       // Step 1: 创建作品
       send('step', { step: 'book', status: 'generating', label: '创建作品' });
@@ -1915,7 +2002,7 @@ ${sample.slice(0, 5000)}`,
         .insert(schema.books)
         .values({ user_id: params.user_id, title })
         .returning({ book_id: schema.books.book_id });
-      const bookId = book.book_id;
+      bookId = book.book_id;
       await db
         .insert(schema.book_settings)
         .values({ book_id: bookId, preset_style: 'default' });
@@ -2071,9 +2158,45 @@ ${sample.slice(0, 5000)}`,
         label: `书名：${finalTitle}`,
       });
 
+      // 保存引导讨论上下文，供后续 AI 对话使用
+      if (params.guide_summary || params.guide_full_log) {
+        const [s] = await db
+          .select({ extra: schema.book_settings.extra })
+          .from(schema.book_settings)
+          .where(eq(schema.book_settings.book_id, bookId))
+          .limit(1);
+        const extra = (s?.extra ?? {}) as Record<string, any>;
+        extra.guide_summary = params.guide_summary || '';
+        extra.guide_full_log = params.guide_full_log || '';
+        await db
+          .update(schema.book_settings)
+          .set({ extra: extra as any })
+          .where(eq(schema.book_settings.book_id, bookId));
+      }
+
       // 完成
       send('done', { book_id: bookId, title: finalTitle });
     } catch (err: any) {
+      // 回滚：删除已创建的资源
+      if (bookId) {
+        try {
+          const db2 = getDb();
+          await db2
+            .delete(schema.world_settings)
+            .where(eq(schema.world_settings.book_id, bookId));
+          await db2
+            .delete(schema.outlines)
+            .where(eq(schema.outlines.book_id, bookId));
+          await db2
+            .delete(schema.book_settings)
+            .where(eq(schema.book_settings.book_id, bookId));
+          await db2
+            .delete(schema.books)
+            .where(eq(schema.books.book_id, bookId));
+        } catch {
+          /* 回滚失败不掩盖原始错误 */
+        }
+      }
       send('error', { message: err?.message ?? '生成失败' });
     } finally {
       res.end();

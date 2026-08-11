@@ -21,8 +21,10 @@ export const ai_chat_sessions = pgTable(
     id: uuid('id').defaultRandom().primaryKey(),
 
     book_id: uuid('book_id')
-      .references(() => books.book_id, { onDelete: 'cascade' })
-      .notNull(),
+      .references(() => books.book_id, { onDelete: 'cascade' }),
+
+    // 会话所有者，book_id 为 null 时（引导模式）以此字段鉴权
+    user_id: uuid('user_id').notNull(),
 
     // 对应前端 tab：write / outline / characters / world / settings
     section: varchar('section', { length: 50 }).notNull(),

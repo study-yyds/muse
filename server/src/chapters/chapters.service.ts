@@ -20,13 +20,14 @@ export class ChaptersService {
       .orderBy(asc(schema.chapters.sort_order));
   }
 
-  async get(chapterId: string) {
+  async get(chapterId: string, bookId?: string) {
     const db = getDb();
     const [ch] = await db
       .select()
       .from(schema.chapters)
       .where(eq(schema.chapters.chapter_id, chapterId))
       .limit(1);
+    if (bookId && ch && ch.book_id !== bookId) return null;
     return ch ?? null;
   }
 
@@ -73,13 +74,16 @@ export class ChaptersService {
     if (expectedBookId) await this.#recalcBookWords(expectedBookId);
   }
 
-  async delete(chapterId: string) {
+  async delete(chapterId: string, bookId?: string) {
     const db = getDb();
     const [ch] = await db
       .select({ book_id: schema.chapters.book_id })
       .from(schema.chapters)
       .where(eq(schema.chapters.chapter_id, chapterId))
       .limit(1);
+    if (bookId && ch && ch.book_id !== bookId) {
+      throw new Error('章节不属于该作品');
+    }
     await db
       .delete(schema.chapters)
       .where(eq(schema.chapters.chapter_id, chapterId));

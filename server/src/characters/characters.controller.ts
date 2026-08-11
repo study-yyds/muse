@@ -31,27 +31,27 @@ export class CharactersController {
   }
 
   @Delete(":charId")
-  async delete(@Param("charId") charId: string) {
-    await this.chars.delete(charId);
+  async delete(@Param("bookId") bookId: string, @Param("charId") charId: string) {
+    await this.chars.delete(charId, bookId);
     return { code: 200, message: "已删除" };
   }
 
   // 角色关系
   @Get(":charId/relations")
-  async listRelations(@Param("charId") charId: string) {
-    const data = await this.chars.listRelations(charId);
+  async listRelations(@Param("bookId") bookId: string, @Param("charId") charId: string) {
+    const data = await this.chars.listRelations(charId, bookId);
     return { code: 200, data };
   }
 
   @Post(":charId/relations")
-  async addRelation(@Param("charId") charId: string, @Body() body: { target_char_id: string; relation_type: string; description?: string }) {
-    const data = await this.chars.addRelation(charId, body);
+  async addRelation(@Param("bookId") bookId: string, @Param("charId") charId: string, @Body() body: { target_char_id: string; relation_type: string; description?: string }) {
+    const data = await this.chars.addRelation(charId, body, bookId);
     return { code: 201, data };
   }
 
   @Delete(":charId/relations/:relationId")
-  async deleteRelation(@Param("relationId") relationId: string) {
-    await this.chars.deleteRelation(relationId);
+  async deleteRelation(@Param("bookId") bookId: string, @Param("relationId") relationId: string) {
+    await this.chars.deleteRelation(relationId, bookId);
     return { code: 200, message: "已删除" };
   }
 }

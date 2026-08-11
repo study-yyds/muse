@@ -6,8 +6,9 @@ import { Response } from 'express';
 @Injectable()
 export class CharTestService {
   // 创建或获取角色的测试会话
-  async getOrCreateSession(charId: string) {
+  async getOrCreateSession(charId: string, bookId?: string) {
     const db = getDb();
+    if (bookId) await this.#verifyCharOwnership(charId, bookId);
     const [existing] = await db
       .select()
       .from(schema.char_test_dialog_sessions)
@@ -24,8 +25,20 @@ export class CharTestService {
     return session;
   }
 
+  // 校验角色归属
+  async #verifyCharOwnership(charId: string, bookId: string) {
+    const db = getDb();
+    const [c] = await db
+      .select({ book_id: schema.characters.book_id })
+      .from(schema.characters)
+      .where(eq(schema.characters.char_id, charId))
+      .limit(1);
+    if (!c || c.book_id !== bookId) throw new Error('角色不属于该作品');
+  }
+
   // 列出角色的所有测试会话
-  async listSessions(charId: string) {
+  async listSessions(charId: string, bookId?: string) {
+    if (bookId) await this.#verifyCharOwnership(charId, bookId);
     const db = getDb();
     return db
       .select()
@@ -43,7 +56,9 @@ export class CharTestService {
     model: string = 'deepseek-v4-flash',
     customApiKey?: string,
     customBaseUrl?: string,
+    bookId?: string,
   ) {
+    if (bookId) await this.#verifyCharOwnership(charId, bookId);
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');

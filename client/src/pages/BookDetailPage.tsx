@@ -409,6 +409,23 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
       }
     });
     return () => {
+      // 卸载前保存当前流式内容，防止切换 tab 丢失 AI 生成的内容
+      const curMsgs = msgsRef.current;
+      const curStream = streamingRef.current;
+      const curReasoning = reasoningRef.current;
+      if ((curStream || curReasoning) && sessionId && curMsgs.length > 0) {
+        const lastMsg = curMsgs[curMsgs.length - 1];
+        const partialContent = curStream || (lastMsg?.role === 'assistant' ? lastMsg.content : '（生成中...）');
+        const partialMsgs =
+          lastMsg?.role === 'user'
+            ? [...curMsgs, { role: 'assistant' as const, content: partialContent, reasoning: curReasoning || undefined }]
+            : [...curMsgs.slice(0, -1), { ...curMsgs[curMsgs.length - 1], content: partialContent, reasoning: curReasoning || undefined }];
+        fetch(`/api/ai/chat-sessions/${sessionId}/messages`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ messages: partialMsgs }),
+        }).catch(() => {});
+      }
       clearTimeout(saveTimer.current);
       if (autoSaveIntervalRef.current) clearInterval(autoSaveIntervalRef.current);
       if (abortRef.current) { abortRef.current.abort(); abortRef.current = null; }

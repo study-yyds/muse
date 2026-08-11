@@ -29,12 +29,22 @@ async function request<T>(
       throw new ApiError(res.status, "登录已过期，请重新登录");
     }
 
-    if (!res.ok) {
-      const error = await res.json().catch(() => ({ message: res.statusText }));
-      throw new ApiError(res.status, error.message ?? "请求失败");
+    // 尝试解析 JSON body
+    const body = await res.json().catch(() => null);
+
+    // 检查业务状态码（服务端 HTTP 200/201 但 code 非 2xx 表示业务错误）
+    if (body && typeof body.code === "number" && body.code >= 400) {
+      throw new ApiError(body.code, body.message ?? "请求失败");
     }
 
-    return res.json();
+    if (!res.ok) {
+      throw new ApiError(
+        res.status,
+        body?.message ?? res.statusText ?? "请求失败",
+      );
+    }
+
+    return body as T;
   } finally {
     clearTimeout(timer);
   }

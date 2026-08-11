@@ -98,10 +98,29 @@ export class OutlineService {
     return ch;
   }
 
+  // 校验大纲节点是否属于指定作品
+  async #verifyNodeOwnership(nodeId: string, bookId: string) {
+    const db = getDb();
+    const [row] = await db
+      .select({ book_id: schema.outlines.book_id })
+      .from(schema.outline_chapters)
+      .innerJoin(
+        schema.outlines,
+        eq(schema.outline_chapters.outline_id, schema.outlines.outline_id),
+      )
+      .where(eq(schema.outline_chapters.id, nodeId))
+      .limit(1);
+    if (!row || row.book_id !== bookId) {
+      throw new Error('大纲节点不属于该作品');
+    }
+  }
+
   async updateChapter(
     chapterId: string,
     data: { title?: string; summary?: string },
+    bookId?: string,
   ) {
+    if (bookId) await this.#verifyNodeOwnership(chapterId, bookId);
     const db = getDb();
     await db
       .update(schema.outline_chapters)
@@ -109,7 +128,8 @@ export class OutlineService {
       .where(eq(schema.outline_chapters.id, chapterId));
   }
 
-  async deleteChapter(chapterId: string) {
+  async deleteChapter(chapterId: string, bookId?: string) {
+    if (bookId) await this.#verifyNodeOwnership(chapterId, bookId);
     const db = getDb();
     await db
       .delete(schema.outline_chapters)
@@ -117,7 +137,8 @@ export class OutlineService {
   }
 
   // 绑定大纲节点到正文章节
-  async bind(chapterId: string, boundChapterId: string | null) {
+  async bind(chapterId: string, boundChapterId: string | null, bookId?: string) {
+    if (bookId) await this.#verifyNodeOwnership(chapterId, bookId);
     const db = getDb();
     await db
       .update(schema.outline_chapters)

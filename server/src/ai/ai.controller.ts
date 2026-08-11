@@ -53,7 +53,11 @@ export class AiController {
     @Req() req: Request,
   ) {
     try {
-      await this.ai.chat(res, { ...body, book_id: body.book_id ?? '', user_id: (req as any).userId });
+      await this.ai.chat(res, {
+        ...body,
+        book_id: body.book_id ?? '',
+        user_id: (req as any).userId,
+      });
     } catch (e: any) {
       console.error('[chat controller] error:', e.message ?? e);
       if (!res.headersSent) {
@@ -72,7 +76,12 @@ export class AiController {
     if (body.book_id) {
       await this.ai.checkBookOwnership(body.book_id, (req as any).userId);
     }
-    const data = await this.ai.mimicStyle(body.book_id, body.model ?? 'deepseek-v4-flash', body.text, (req as any).userId);
+    const data = await this.ai.mimicStyle(
+      body.book_id,
+      body.model ?? 'deepseek-v4-flash',
+      body.text,
+      (req as any).userId,
+    );
     return { code: 200, data };
   }
 
@@ -110,13 +119,21 @@ export class AiController {
     @Req() req: Request,
   ) {
     const userId = (req as any).userId;
-    await this.ai.checkBookOwnership(bookId, userId);
+    const isGuide = bookId === 'guide';
+    if (!isGuide) await this.ai.checkBookOwnership(bookId, userId);
     if (!section) {
-      // 没有 section 参数时返回活跃会话
       return { code: 200, data: null };
     }
-    const active = await this.ai.getActiveSession(bookId, section);
-    const all = await this.ai.getSessions(bookId, section);
+    const active = await this.ai.getActiveSession(
+      isGuide ? null : bookId,
+      section,
+      isGuide ? userId : undefined,
+    );
+    const all = await this.ai.getSessions(
+      isGuide ? null : bookId,
+      section,
+      isGuide ? userId : undefined,
+    );
     return { code: 200, data: { active, sessions: all } };
   }
 
@@ -124,14 +141,14 @@ export class AiController {
   async createSession(
     @Body()
     body: {
-      book_id: string;
+      book_id?: string | null;
       section: string;
       title?: string;
     },
     @Req() req: Request,
   ) {
     const data = await this.ai.createSession(
-      body.book_id,
+      body.book_id === 'guide' ? null : (body.book_id ?? null),
       body.section,
       body.title ?? new Date().toLocaleDateString('zh-CN'),
       (req as any).userId,
@@ -176,7 +193,14 @@ export class AiController {
   @UseGuards(aiRateLimit)
   @Post('quick-create')
   async quickCreate(
-    @Body() body: { premise: string; model?: string; type?: string; guide_summary?: string; guide_full_log?: string },
+    @Body()
+    body: {
+      premise: string;
+      model?: string;
+      type?: string;
+      guide_summary?: string;
+      guide_full_log?: string;
+    },
     @Res() res: Response,
     @Req() req: Request,
   ) {
@@ -208,16 +232,17 @@ export class AiController {
     @Req() req: Request,
   ) {
     await this.ai.checkBookOwnership(body.book_id, (req as any).userId);
-    const data = await this.ai.generateSynopsis(body.book_id, (req as any).userId, body.model);
+    const data = await this.ai.generateSynopsis(
+      body.book_id,
+      (req as any).userId,
+      body.model,
+    );
     return { code: 200, data };
   }
 
   @UseGuards(aiRateLimit)
   @Post('recommend-style')
-  async recommendStyle(
-    @Body() body: { book_id: string },
-    @Req() req: Request,
-  ) {
+  async recommendStyle(@Body() body: { book_id: string }, @Req() req: Request) {
     await this.ai.checkBookOwnership(body.book_id, (req as any).userId);
     const data = await this.ai.recommendVisualStyle(body.book_id);
     return { code: 200, data };
@@ -227,23 +252,44 @@ export class AiController {
   @Post('generate-cover')
   async generateCover(
     @Body()
-    body: { book_id: string; prompt?: string; size?: string; style?: string; model?: string },
+    body: {
+      book_id: string;
+      prompt?: string;
+      size?: string;
+      style?: string;
+      model?: string;
+    },
     @Req() req: Request,
   ) {
     await this.ai.checkBookOwnership(body.book_id, (req as any).userId);
     const prompt =
       body.prompt || (await this.ai.buildCoverPrompt(body.book_id));
-    const url = await this.ai.generateImage(prompt, body.size, body.style, (req as any).userId, body.model);
+    const url = await this.ai.generateImage(
+      prompt,
+      body.size,
+      body.style,
+      (req as any).userId,
+      body.model,
+    );
 
     // 写入 cover_url + 历史
     const db = getDb();
-    await db.update(schema.books).set({ cover_url: url }).where(eq(schema.books.book_id, body.book_id));
+    await db
+      .update(schema.books)
+      .set({ cover_url: url })
+      .where(eq(schema.books.book_id, body.book_id));
 
-    const [settings] = await db.select({ extra: schema.book_settings.extra }).from(schema.book_settings).where(eq(schema.book_settings.book_id, body.book_id));
+    const [settings] = await db
+      .select({ extra: schema.book_settings.extra })
+      .from(schema.book_settings)
+      .where(eq(schema.book_settings.book_id, body.book_id));
     const extra = (settings?.extra ?? {}) as Record<string, any>;
     const history: string[] = extra.cover_history ?? [];
     if (!history.includes(url)) history.push(url);
-    await db.update(schema.book_settings).set({ extra: { ...extra, cover_history: history } } as any).where(eq(schema.book_settings.book_id, body.book_id));
+    await db
+      .update(schema.book_settings)
+      .set({ extra: { ...extra, cover_history: history } } as any)
+      .where(eq(schema.book_settings.book_id, body.book_id));
 
     return { code: 200, data: { url, history } };
   }
@@ -252,26 +298,52 @@ export class AiController {
   @Post('generate-char-image')
   async generateCharImage(
     @Body()
-    body: { book_id: string; char_id: string; prompt?: string; size?: string; style?: string; model?: string },
+    body: {
+      book_id: string;
+      char_id: string;
+      prompt?: string;
+      size?: string;
+      style?: string;
+      model?: string;
+    },
     @Req() req: Request,
   ) {
     await this.ai.checkBookOwnership(body.book_id, (req as any).userId);
     // 校验角色属于该书
     const db2 = getDb();
-    const [charCheck] = await db2.select({ book_id: schema.characters.book_id }).from(schema.characters).where(eq(schema.characters.char_id, body.char_id)).limit(1);
-    if (!charCheck || charCheck.book_id !== body.book_id) return { code: 403, message: '角色不属于该作品' };
+    const [charCheck] = await db2
+      .select({ book_id: schema.characters.book_id })
+      .from(schema.characters)
+      .where(eq(schema.characters.char_id, body.char_id))
+      .limit(1);
+    if (!charCheck || charCheck.book_id !== body.book_id)
+      return { code: 403, message: '角色不属于该作品' };
 
-    const prompt =
-      body.prompt || (await this.ai.buildCharPrompt(body.char_id));
-    const url = await this.ai.generateImage(prompt, body.size, body.style, (req as any).userId, body.model);
+    const prompt = body.prompt || (await this.ai.buildCharPrompt(body.char_id));
+    const url = await this.ai.generateImage(
+      prompt,
+      body.size,
+      body.style,
+      (req as any).userId,
+      body.model,
+    );
 
     // 写入 avatar_url + 历史
-    await db2.update(schema.characters).set({ avatar_url: url }).where(eq(schema.characters.char_id, body.char_id));
+    await db2
+      .update(schema.characters)
+      .set({ avatar_url: url })
+      .where(eq(schema.characters.char_id, body.char_id));
 
-    const [char] = await db2.select({ avatar_history: schema.characters.avatar_history }).from(schema.characters).where(eq(schema.characters.char_id, body.char_id));
+    const [char] = await db2
+      .select({ avatar_history: schema.characters.avatar_history })
+      .from(schema.characters)
+      .where(eq(schema.characters.char_id, body.char_id));
     const history: string[] = (char?.avatar_history as any[]) ?? [];
     if (!history.includes(url)) history.push(url);
-    await db2.update(schema.characters).set({ avatar_history: history } as any).where(eq(schema.characters.char_id, body.char_id));
+    await db2
+      .update(schema.characters)
+      .set({ avatar_history: history } as any)
+      .where(eq(schema.characters.char_id, body.char_id));
 
     return { code: 200, data: { url, history } };
   }

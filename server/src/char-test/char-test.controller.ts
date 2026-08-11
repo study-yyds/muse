@@ -11,26 +11,27 @@ export class CharTestController {
 
   // 获取或创建测试会话
   @Post()
-  async getOrCreateSession(@Param('charId') charId: string) {
-    const session = await this.service.getOrCreateSession(charId);
+  async getOrCreateSession(@Param('bookId') bookId: string, @Param('charId') charId: string) {
+    const session = await this.service.getOrCreateSession(charId, bookId);
     return { code: 200, data: session };
   }
 
   // 列出角色的测试会话
   @Get()
-  async listSessions(@Param('charId') charId: string) {
-    const sessions = await this.service.listSessions(charId);
+  async listSessions(@Param('bookId') bookId: string, @Param('charId') charId: string) {
+    const sessions = await this.service.listSessions(charId, bookId);
     return { code: 200, data: sessions };
   }
 
   // 发送消息进行对话（SSE 流式）
   @Post(':sessionId/message')
   async chat(
+    @Param('bookId') bookId: string,
     @Param('charId') charId: string,
     @Param('sessionId') sessionId: string,
     @Body() body: { message: string; model?: string; api_key?: string; base_url?: string },
     @Res() res: Response,
   ) {
-    await this.service.chat(res, charId, sessionId, body.message, body.model, body.api_key, body.base_url);
+    await this.service.chat(res, charId, sessionId, body.message, body.model, body.api_key, body.base_url, bookId);
   }
 }

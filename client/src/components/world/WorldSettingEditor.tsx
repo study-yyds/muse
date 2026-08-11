@@ -32,6 +32,7 @@ export function WorldSettingEditor({ bookId }: Props) {
     queryKey: ["world-setting", bookId],
     queryFn: () =>
       api.get<{ data: WorldSettingData }>(`/books/${bookId}/world-setting`),
+    refetchOnWindowFocus: false, // 防止切窗口后覆盖用户正在编辑的内容
   });
 
   const sections = data?.data?.sections?.length

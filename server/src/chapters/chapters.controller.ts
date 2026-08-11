@@ -30,8 +30,8 @@ export class ChaptersController {
   }
 
   @Get(':chapterId')
-  async get(@Param('chapterId') chapterId: string) {
-    const data = await this.ch.get(chapterId);
+  async get(@Param('bookId') bookId: string, @Param('chapterId') chapterId: string) {
+    const data = await this.ch.get(chapterId, bookId);
     if (!data) return { code: 404, message: '章节不存在' };
     return { code: 200, data };
   }
@@ -51,8 +51,8 @@ export class ChaptersController {
   }
 
   @Delete(':chapterId')
-  async delete(@Param('chapterId') chapterId: string) {
-    await this.ch.delete(chapterId);
+  async delete(@Param('bookId') bookId: string, @Param('chapterId') chapterId: string) {
+    await this.ch.delete(chapterId, bookId);
     return { code: 200, message: '已删除' };
   }
 
