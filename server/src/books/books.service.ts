@@ -134,9 +134,15 @@ export class BooksService {
       .where(eq(schema.books.book_id, bookId));
   }
 
-  // 永久删除
+  // 永久删除（显式清理子表，保底 DB FK 可能未配置）
   async permanentDelete(bookId: string) {
     const db = getDb();
+    await db.delete(schema.characters).where(eq(schema.characters.book_id, bookId));
+    await db.delete(schema.outlines).where(eq(schema.outlines.book_id, bookId));
+    await db.delete(schema.world_settings).where(eq(schema.world_settings.book_id, bookId));
+    await db.delete(schema.chapters).where(eq(schema.chapters.book_id, bookId));
+    await db.delete(schema.book_settings).where(eq(schema.book_settings.book_id, bookId));
+    await db.delete(schema.ai_chat_sessions).where(eq(schema.ai_chat_sessions.book_id, bookId));
     await db.delete(schema.books).where(eq(schema.books.book_id, bookId));
   }
 

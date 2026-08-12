@@ -116,80 +116,6 @@ export class AiService {
         };
   }
 
-  // SSE 流式续写/改写
-  async generate(
-    res: Response,
-    params: {
-      bookId: string;
-      chapterId: string;
-      mode: 'continue' | 'rewrite';
-      cursorPosition: number;
-      selectedText?: string;
-      instruction?: string;
-      style?: string;
-      model: string;
-      usePlatformKey: boolean;
-      user_id?: string;
-    },
-  ) {
-    if (params.user_id)
-      await this.checkBookOwnership(params.bookId, params.user_id);
-    const db = getDb();
-
-    // 获取角色设定
-    const characters = await db
-      .select({
-        name: schema.characters.name,
-        personality: schema.characters.personality,
-      })
-      .from(schema.characters)
-      .where(eq(schema.characters.book_id, params.bookId));
-
-    // 获取章节内容
-    const [chapter] = await db
-      .select({
-        content: schema.chapters.content,
-        title: schema.chapters.title,
-      })
-      .from(schema.chapters)
-      .where(
-        and(
-          eq(schema.chapters.chapter_id, params.chapterId),
-          eq(schema.chapters.book_id, params.bookId),
-        ),
-      )
-      .limit(1);
-
-    // 构建 AI 上下文
-    const charContext = characters
-      .filter((c) => c.personality)
-      .map((c) => `${c.name}: ${c.personality}`)
-      .join('\n');
-
-    const systemPrompt = `你是一个专业的小说写作助手。以下是当前作品的设定：
-
-【角色设定】
-${charContext || '暂无'}
-
-【写作要求】
-- 根据上下文和角色设定续写，保持角色性格一致
-- 文风：${params.style ?? '默认'}
-- 生成内容应与前文自然衔接`;
-
-    const userPrompt =
-      params.mode === 'continue'
-        ? `请从以下位置续写（光标位置：${params.cursorPosition}）：\n\n${(chapter?.content ?? '').slice(Math.max(0, params.cursorPosition - 1000), params.cursorPosition)}`
-        : `请改写以下内容（${sanitizePrompt(params.instruction ?? '优化这段文字')}）：\n\n${sanitizePrompt(params.selectedText ?? '')}`;
-
-    void this.streamToClient(
-      res,
-      systemPrompt,
-      userPrompt,
-      params.model,
-      params.usePlatformKey,
-    );
-  }
-
   // SSE 流式推送
   private async streamToClient(
     res: Response,
@@ -302,116 +228,6 @@ ${charContext || '暂无'}
     res.end();
   }
 
-  // 应用提取的设定：写入 characters 或 world_settings
-  async applySettings(
-    bookId: string,
-    suggestions: Array<{
-      type: 'character' | 'world';
-      target_char_id?: string | null;
-      field?: string;
-      value?: string;
-      section_name?: string;
-      content?: string;
-    }>,
-    userId: string,
-  ) {
-    await this.checkBookOwnership(bookId, userId);
-    const db = getDb();
-    const results: string[] = [];
-
-    for (const s of suggestions) {
-      if (s.type === 'character') {
-        // 角色字段映射
-        const charFields = [
-          'name',
-          'gender',
-          'personality',
-          'identity',
-          'backstory',
-          'motivation',
-          'appearance',
-          'catchphrase',
-          'speech_style',
-        ];
-        if (!s.field || !charFields.includes(s.field)) continue;
-
-        if (s.target_char_id) {
-          // 校验角色属于该书
-          const [charCheck] = await db
-            .select({ book_id: schema.characters.book_id })
-            .from(schema.characters)
-            .where(eq(schema.characters.char_id, s.target_char_id))
-            .limit(1);
-          if (!charCheck || charCheck.book_id !== bookId) continue;
-          // 更新已有角色
-          await db
-            .update(schema.characters)
-            .set({ [s.field]: s.value, updated_at: new Date() })
-            .where(eq(schema.characters.char_id, s.target_char_id));
-          results.push(`更新角色字段 ${s.field}`);
-        } else if (s.field === 'name' && s.value) {
-          // 新建角色：以 name 为必填
-          const [created] = await db
-            .insert(schema.characters)
-            .values({ book_id: bookId, name: s.value })
-            .returning({ char_id: schema.characters.char_id });
-          if (created) results.push(`新建角色 ${s.value}`);
-        } else if (s.value) {
-          // 新建角色并设置字段
-          const [created] = await db
-            .insert(schema.characters)
-            .values({
-              book_id: bookId,
-              name: '新角色',
-              [s.field]: s.value,
-            } as any)
-            .returning({ char_id: schema.characters.char_id });
-          if (created) results.push(`新建角色（${s.field}）`);
-        }
-      } else if (s.type === 'world' && s.section_name && s.content) {
-        // 世界观：查找已有分区，有则更新，无则追加
-        const [world] = await db
-          .select({ sections: schema.world_settings.sections })
-          .from(schema.world_settings)
-          .where(eq(schema.world_settings.book_id, bookId));
-
-        const currentSections: any[] = (world?.sections as any[]) ?? [];
-        const idx = currentSections.findIndex(
-          (sec: any) => sec.name === s.section_name,
-        );
-
-        if (idx >= 0) {
-          currentSections[idx] = {
-            ...currentSections[idx],
-            content: s.content,
-          };
-        } else {
-          currentSections.push({
-            name: s.section_name,
-            content: s.content,
-            sort_order: currentSections.length,
-          });
-        }
-
-        // upsert world_settings
-        await db
-          .insert(schema.world_settings)
-          .values({ book_id: bookId, sections: currentSections })
-          .onConflictDoUpdate({
-            target: schema.world_settings.book_id,
-            set: { sections: currentSections, updated_at: new Date() },
-          });
-        results.push(
-          idx >= 0
-            ? `更新世界观分区 ${s.section_name}`
-            : `新建世界观分区 ${s.section_name}`,
-        );
-      }
-    }
-
-    return { applied: results };
-  }
-
   // 校验 book_id 所有权
   async checkBookOwnership(bookId: string, userId: string) {
     const db = getDb();
@@ -501,12 +317,19 @@ ${context ? `\n【用户的初始想法】\n${context}` : ''}`;
         const cleanMessages = Array.isArray(params.messages)
           ? sanitizeMessages(params.messages)
           : [];
+        const resolved = await this.resolveApiKey(
+          params.user_id,
+          'chat',
+          params.model,
+        );
         await this.streamChatToClient(
           res,
           guidePrompt,
           cleanMessages,
-          params.model ?? 'deepseek-chat',
+          resolved.model,
           8192,
+          resolved.apiKey,
+          resolved.baseUrl,
         );
       } catch (e: any) {
         console.error('[guide_mode] stream error:', e.message ?? e);
@@ -890,12 +713,19 @@ ${extra.guide_full_log ? `\n【引导讨论原始记录——参考细节】\n${
       const cleanMessages = params.messages
         ? sanitizeMessages(params.messages)
         : [{ role: 'user', content: sanitizePrompt(params.message) }];
+      const resolved = await this.resolveApiKey(
+        params.user_id,
+        'chat',
+        params.model,
+      );
       void this.streamChatToClient(
         res,
         systemPrompt + guideBlock,
         cleanMessages,
-        params.model ?? 'deepseek-chat',
+        resolved.model,
         isShort ? 24576 : 8192,
+        resolved.apiKey,
+        resolved.baseUrl,
       );
     } catch (e: any) {
       res.write(
@@ -911,12 +741,14 @@ ${extra.guide_full_log ? `\n【引导讨论原始记录——参考细节】\n${
     messages: any[],
     model: string = 'deepseek-chat',
     maxTokens = 8192,
+    customApiKey?: string,
+    customBaseUrl?: string,
   ) {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
-    const apiKey = process.env.AI_PLATFORM_KEY;
+    const apiKey = customApiKey || process.env.AI_PLATFORM_KEY;
     if (!apiKey) {
       res.write(
         `event: error\ndata: ${JSON.stringify({ message: 'AI 未配置' })}\n\n`,
@@ -926,7 +758,9 @@ ${extra.guide_full_log ? `\n【引导讨论原始记录——参考细节】\n${
     }
 
     const baseUrl =
-      process.env.AI_PLATFORM_BASE_URL ?? 'https://api.deepseek.com/v1';
+      customBaseUrl ||
+      process.env.AI_PLATFORM_BASE_URL ||
+      'https://api.deepseek.com/v1';
 
     try {
       const response = await fetch(`${baseUrl}/chat/completions`, {

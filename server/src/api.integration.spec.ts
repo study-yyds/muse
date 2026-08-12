@@ -204,12 +204,6 @@ describe('API — 四层覆盖（正常/校验/权限/边界）', () => {
       expect(r.status).toBeGreaterThanOrEqual(400);
     });
 
-    it('权限 — 无 Token 调用 generate', async () => {
-      const r = await request(app.getHttpServer())
-        .post('/api/ai/generate').send({ bookId: 'x', chapterId: 'x', mode: 'continue' });
-      expect([401, 403]).toContain(r.status);
-    });
-
     it('权限 — 无 Token 调用 mimic-style', async () => {
       const r = await request(app.getHttpServer())
         .post('/api/ai/mimic-style').send({ book_id: 'x' });

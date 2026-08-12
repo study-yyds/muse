@@ -26,13 +26,6 @@ export class AiController {
   constructor(private readonly ai: AiService) {}
 
   @UseGuards(aiRateLimit)
-  @Post('generate')
-  async generate(@Body() body: any, @Res() res: Response, @Req() req: Request) {
-    body.user_id = (req as any).userId;
-    await this.ai.generate(res, body);
-  }
-
-  @UseGuards(aiRateLimit)
   @Post('chat')
   async chat(
     @Body()
@@ -80,31 +73,6 @@ export class AiController {
       body.book_id,
       body.model ?? 'deepseek-v4-flash',
       body.text,
-      (req as any).userId,
-    );
-    return { code: 200, data };
-  }
-
-  @UseGuards(aiRateLimit)
-  @Post('apply-settings')
-  async applySettings(
-    @Body()
-    body: {
-      book_id: string;
-      suggestions: Array<{
-        type: 'character' | 'world';
-        target_char_id?: string | null;
-        field?: string;
-        value?: string;
-        section_name?: string;
-        content?: string;
-      }>;
-    },
-    @Req() req: Request,
-  ) {
-    const data = await this.ai.applySettings(
-      body.book_id,
-      body.suggestions,
       (req as any).userId,
     );
     return { code: 200, data };
