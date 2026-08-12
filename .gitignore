@@ -9,5 +9,6 @@ DESIGN_SYSTEM.md
 # 开发规范（Skills 本地使用）
 .claude/
 
-# 测试文件（MVP 阶段先不提交）
 # 测试文件已纳入版本管理
+client/test-results/
+client/playwright-report/

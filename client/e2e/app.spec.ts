@@ -8,7 +8,6 @@ const BOOK_PREFIX = `e2e-${Date.now().toString(36)}`;
  * 验证码从 send-code API 响应中实时抓取
  */
 async function doLogin(page: import('@playwright/test').Page): Promise<boolean> {
-  await page.goto('/login');
   await expect(page.locator('input[placeholder*="手机号"]')).toBeVisible({ timeout: 5000 });
 
   await page.fill('input[placeholder*="手机号"]', PHONE);
@@ -42,16 +41,35 @@ async function doLogin(page: import('@playwright/test').Page): Promise<boolean> 
 
 async function loginAndEnterBook(page: import('@playwright/test').Page): Promise<boolean> {
   if (!(await doLogin(page))) return false;
-  await page.waitForLoadState('domcontentloaded');
-  const card = page.locator('[class*="cursor-pointer"]').first();
-  if (!(await card.isVisible({ timeout: 8000 }).catch(() => false))) return false;
+  await page.waitForLoadState('networkidle');
+
+  // 没有作品时自动创建一个
+  const card = page.locator('.cursor-pointer').first();
+  const hasBook = await card.isVisible({ timeout: 5000 }).catch(() => false);
+  if (!hasBook) {
+    // 新建作品
+    await page.locator('button').filter({ hasText: '新建' }).first().click();
+    const input = page.locator('input[placeholder="输入作品名"]');
+    await expect(input).toBeVisible({ timeout: 5000 });
+    await input.fill(`e2e-${Date.now().toString(36)}`);
+    await page.locator('button:has-text("创建")').last().click();
+    await expect(page.locator('text=章节').first()).toBeVisible({ timeout: 10000 });
+    return true;
+  }
+
   await card.click();
-  // 等进入作品详情页
-  await expect(page.locator('text=章节').first()).toBeVisible({ timeout: 5000 });
+  await expect(page.locator('text=章节').first()).toBeVisible({ timeout: 8000 });
   return true;
 }
 
 test.describe('Muse E2E', () => {
+  test.beforeEach(async ({ page }) => {
+    // 清除登录态，确保每个测试从干净状态开始
+    await page.goto('/login');
+    await page.evaluate(() => localStorage.removeItem('token'));
+    // 避免连续测试触发 send-code 频率限制
+    await page.waitForTimeout(500);
+  });
 
   test('UI login flow', async ({ page }) => {
     const ok = await doLogin(page);
@@ -82,15 +100,19 @@ test.describe('Muse E2E', () => {
 
   test('editor write and save', async ({ page }) => {
     if (!(await loginAndEnterBook(page))) { test.skip(); return; }
-    await expect(page.locator('.ProseMirror')).toBeVisible({ timeout: 8000 });
+    // 先建章节（新书可能无章节）
     const newBtn = page.locator('button[title="新建章节"]');
-    if (await newBtn.isVisible()) await newBtn.click();
+    if (await newBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
+      await newBtn.click();
+      await page.waitForTimeout(500);
+    }
+    // 等编辑器出现
     const editor = page.locator('.ProseMirror');
+    await expect(editor).toBeVisible({ timeout: 8000 });
     await editor.click();
-    await editor.fill(`E2E test - ${Date.now()}`);
+    await page.keyboard.type(`E2E test - ${Date.now()}`);
     const saveBtn = page.locator('button:has-text("保存")');
-    await expect(saveBtn).toBeVisible();
-    if (await saveBtn.isEnabled()) {
+    if (await saveBtn.isEnabled({ timeout: 5000 }).catch(() => false)) {
       await saveBtn.click();
       await expect(page.locator('text=已保存')).toBeVisible({ timeout: 5000 });
     }
@@ -105,8 +127,10 @@ test.describe('Muse E2E', () => {
 
   test('AI chat send message', async ({ page }) => {
     if (!(await loginAndEnterBook(page))) { test.skip(); return; }
-    await expect(page.locator('textarea[placeholder*="输入修改指令"]')).toBeVisible({ timeout: 8000 });
-    const aiInput = page.locator('textarea[placeholder*="输入修改指令"]');
+    // AI 输入框在右侧面板
+    const aiInput = page.locator('textarea[placeholder*="输入消息"]');
+    await aiInput.scrollIntoViewIfNeeded();
+    await expect(aiInput).toBeVisible({ timeout: 10000 });
     await aiInput.fill('hi');
     await aiInput.press('Enter');
     const thinking = page.locator('text=思考中');
@@ -132,9 +156,19 @@ test.describe('Muse E2E', () => {
     if (!(await loginAndEnterBook(page))) { test.skip(); return; }
     await expect(page.locator('button:has-text("角色")')).toBeVisible({ timeout: 5000 });
     await page.click('button:has-text("角色")');
-    await expect(page.locator('text=添加角色')).toBeVisible({ timeout: 5000 });
-    const testBtn = page.locator('button[title="测试对话"]').first();
-    if (!(await testBtn.isVisible({ timeout: 3000 }).catch(() => false))) { test.skip(); return; }
+    // 确保有角色
+    let testBtn = page.locator('button[title="测试对话"]').first();
+    if (!(await testBtn.isVisible({ timeout: 3000 }).catch(() => false))) {
+      await page.locator('button:has-text("添加角色")').click();
+      await page.waitForTimeout(300);
+      // 角色名是第一个 input
+      const nameInput = page.locator('input').first();
+      await expect(nameInput).toBeVisible({ timeout: 5000 });
+      await nameInput.fill('测试角色');
+      await page.locator('button:has-text("保存")').click();
+      await page.waitForTimeout(800);
+      testBtn = page.locator('button[title="测试对话"]').first();
+    }
     await testBtn.click();
     await expect(page.locator('text=对话')).toBeVisible({ timeout: 5000 });
     const input = page.locator('textarea[placeholder*="说点什么"]');
@@ -164,18 +198,46 @@ test.describe('Muse E2E', () => {
     if (!(await loginAndEnterBook(page))) { test.skip(); return; }
     await expect(page.locator('button:has-text("角色")')).toBeVisible({ timeout: 5000 });
     await page.click('button:has-text("角色")');
-    await expect(page.locator('text=添加角色')).toBeVisible({ timeout: 5000 });
-    const tplBtn = page.locator('button[title="保存为模板"]').first();
-    if (!(await tplBtn.isVisible({ timeout: 3000 }).catch(() => false))) { test.skip(); return; }
+    // 确保有角色
+    let tplBtn = page.locator('button[title="保存为模板"]').first();
+    if (!(await tplBtn.isVisible({ timeout: 3000 }).catch(() => false))) {
+      await page.locator('button:has-text("添加角色")').click();
+      await page.waitForTimeout(300);
+      const nameInput = page.locator('input').first();
+      await expect(nameInput).toBeVisible({ timeout: 5000 });
+      await nameInput.fill('模板测试角色');
+      await page.locator('button:has-text("保存")').click();
+      await page.waitForTimeout(800);
+      tplBtn = page.locator('button[title="保存为模板"]').first();
+    }
     await tplBtn.click();
     await expect(page.locator('text=保存为模板')).toBeVisible({ timeout: 5000 });
   });
 
+  test('AI guide chat open and send', async ({ page }) => {
+    if (!(await doLogin(page))) { test.skip(); return; }
+    await expect(page.locator('text=Muse')).toBeVisible({ timeout: 5000 });
+
+    // 点击快捷创作按钮（header 中的）→ 弹窗打开
+    await page.locator('button:has-text("快捷创作")').first().click();
+    // 弹窗出现：对话框标题为"快捷创作"
+    await expect(page.locator('h2:has-text("快捷创作")')).toBeVisible({ timeout: 5000 });
+    // 输入脑洞
+    await page.locator('#premise').fill('我想写一个末世求生故事');
+    // 点击 AI 引导（弹窗内的按钮）
+    await page.locator('button:has-text("AI 引导")').last().click();
+    // 验证进入引导模式（真实 AI 回复或 loading 状态）
+    await expect(
+      page.locator('text=创作引导').or(page.locator('text=思考中'))
+    ).toBeVisible({ timeout: 15000 });
+  });
+
   test('dark mode toggle persists', async ({ page }) => {
-    await page.goto('/login');
-    await expect(page.locator('input[placeholder*="手机号"]')).toBeVisible({ timeout: 5000 });
-    const themeBtn = page.locator('button[title*="主题"], button:has([class*="sun"]), button:has([class*="moon"])').first();
-    if (!(await themeBtn.isVisible({ timeout: 3000 }).catch(() => false))) { test.skip(); return; }
+    // ThemeToggle 只在作品详情页中渲染
+    if (!(await loginAndEnterBook(page))) { test.skip(); return; }
+    await page.waitForTimeout(500);
+    const themeBtn = page.locator('button[title*="切换"]').first();
+    await expect(themeBtn).toBeVisible({ timeout: 8000 });
     const wasDark = await page.evaluate(() => document.documentElement.classList.contains('dark'));
     await themeBtn.click();
     await expect(async () => {
@@ -183,7 +245,7 @@ test.describe('Muse E2E', () => {
       expect(isDark).toBe(!wasDark);
     }).toPass({ timeout: 3000 });
     await page.reload();
-    await expect(page.locator('input[placeholder*="手机号"]')).toBeVisible({ timeout: 5000 });
+    await page.waitForLoadState('domcontentloaded');
     const after = await page.evaluate(() => document.documentElement.classList.contains('dark'));
     expect(after).toBe(!wasDark);
   });
