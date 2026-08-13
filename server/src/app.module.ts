@@ -11,6 +11,7 @@ import { TemplatesModule } from './templates/templates.module';
 import { ExportModule } from './export/export.module';
 import { CharTestModule } from './char-test/char-test.module';
 import { AdminModule } from './admin/admin.module';
+import { PromoModule } from './promo/promo.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { AdminModule } from './admin/admin.module';
     ExportModule,
     CharTestModule,
     AdminModule,
+    PromoModule,
   ],
 })
 export class AppModule {}

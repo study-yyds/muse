@@ -143,7 +143,7 @@ export function WorldSettingEditor({ bookId }: Props) {
       {editing.length === 0 && (
         <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
           <Globe className="size-12" />
-          <p className="mt-4 text-sm">还没有世界观设定</p>
+          <p className="mt-4 text-sm">还没有世界观设定，可手动添加或让右侧 AI 助手帮你构建</p>
           <Button variant="link" onClick={addSection}>
             添加第一个分区
           </Button>

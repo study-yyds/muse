@@ -93,7 +93,6 @@ export class BooksService {
         type: schema.books.type,
         last_updated: schema.books.updated_at,
         preset_style: schema.book_settings.preset_style,
-        auto_save_interval_sec: schema.book_settings.auto_save_interval_sec,
         extra: schema.book_settings.extra,
       })
       .from(schema.books)
@@ -166,7 +165,6 @@ export class BooksService {
     bookId: string,
     data: {
       preset_style?: string;
-      auto_save_interval_sec?: number;
       daily_word_goal?: number;
       extra?: Record<string, any>;
     },
@@ -175,7 +173,6 @@ export class BooksService {
     // 构建更新对象，extra 需要合并而非覆盖
     const updateData: any = { updated_at: sql`NOW()` };
     if (data.preset_style !== undefined) updateData.preset_style = data.preset_style;
-    if (data.auto_save_interval_sec !== undefined) updateData.auto_save_interval_sec = data.auto_save_interval_sec;
     if (data.extra) {
       // 先取当前 extra，合并后再写入
       const [settings] = await db

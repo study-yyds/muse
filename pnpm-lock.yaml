@@ -89,7 +89,7 @@ importers:
         version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.2.4(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@testing-library/user-event':
         specifier: ^14.6.1
-        version: 14.6.1(@testing-library/dom@10.4.1)
+        version: 14.6.3(@testing-library/dom@10.4.1)
       '@types/node':
         specifier: ^24.13.2
         version: 24.13.3
@@ -129,6 +129,9 @@ importers:
       '@muse/shared':
         specifier: workspace:*
         version: link:../shared
+      '@napi-rs/canvas':
+        specifier: ^1.0.5
+        version: 1.0.5
       '@neondatabase/serverless':
         specifier: ^1.1.0
         version: 1.1.0
@@ -156,6 +159,9 @@ importers:
       drizzle-orm:
         specifier: ^0.45.2
         version: 0.45.2(@neondatabase/serverless@1.1.0)(@types/pg@8.20.0)(pg@8.22.0)
+      ffmpeg-static:
+        specifier: ^5.3.0
+        version: 5.3.0
       marked:
         specifier: ^18.0.7
         version: 18.0.7
@@ -645,6 +651,10 @@ packages:
   '@csstools/css-tokenizer@4.0.0':
     resolution: {integrity: sha512-QxULHAm7cNu72w97JUNCBFODFaXpbDg+dP8b/oWFAZ2MTRppA3U00Y2L1HqaS4J6yBqxwa/Y3nMBaxVKbB/NsA==}
     engines: {node: '>=20.19.0'}
+
+  '@derhuerst/http-basic@8.2.4':
+    resolution: {integrity: sha512-F9rL9k9Xjf5blCz8HsJRO4diy111cayL2vkY2XE4r4t3n0yPXVYy3KD3nJ1qbrSn9743UWSXH4IwuCa/HWlGFw==}
+    engines: {node: '>=6.0.0'}
 
   '@drizzle-team/brocli@0.10.2':
     resolution: {integrity: sha512-z33Il7l5dKjUgGULTqBsQBQwckHh5AbIuxhdsIxDDiZAzBOrZO6q9ogcWC65kU382AfynTfgNumVcNIjuIua6w==}
@@ -1802,6 +1812,81 @@ packages:
   '@milkdown/utils@7.21.3':
     resolution: {integrity: sha512-pJxcEy1cJKRT4CsDLJ8OlokKww2PMBdlULCtFM4ccN+7EBc//fpR8ZnnOzoSnPxtgsbijaLzSSWiXBE5BdlolQ==}
 
+  '@napi-rs/canvas-android-arm64@1.0.5':
+    resolution: {integrity: sha512-ZzDlpKQocwFfCwhMh17UWre6Qt5yZN3kNIJoUpGfRZqwDDZ164IKOsPOHsRd3d8Tuj5KM6bDjGuPmZxuPuG3NQ==}
+    engines: {node: '>= 10'}
+    cpu: [arm64]
+    os: [android]
+
+  '@napi-rs/canvas-darwin-arm64@1.0.5':
+    resolution: {integrity: sha512-Hr8v6CA/TBe+OJOePdV3sXWxzQHQKfQsTKPbc8wG7iPqVeAx6MMdzKGXlYID6SVvpfwV/zqkvGcdImYWSlhrZg==}
+    engines: {node: '>= 10'}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@napi-rs/canvas-darwin-x64@1.0.5':
+    resolution: {integrity: sha512-9BXlLHBXpYnK4jSae1MdFdyPq09Xi1I3PeCNpvRzqgmUUBhgJS7aC1z7SZEP8JUXDHtbfIrolCS3sFuT9IGP2A==}
+    engines: {node: '>= 10'}
+    cpu: [x64]
+    os: [darwin]
+
+  '@napi-rs/canvas-linux-arm-gnueabihf@1.0.5':
+    resolution: {integrity: sha512-zEW4fgvtYsOJ/N56Us4TQPfaFrUf0shGr9CgGSj3GACc+NHfUM3ci0YF9xFTjwJWGDmaEhYPL6KqCfFCxwm/qg==}
+    engines: {node: '>= 10'}
+    cpu: [arm]
+    os: [linux]
+
+  '@napi-rs/canvas-linux-arm64-gnu@1.0.5':
+    resolution: {integrity: sha512-HFprwLspelJxCEtZvdMcz95Mwvfs63GzFVedLFmC/wslHnaOXhjXxgYxPCM/VdM4Jhx3CV4Lk0vVmh6hJv2etQ==}
+    engines: {node: '>= 10'}
+    cpu: [arm64]
+    os: [linux]
+    libc: [glibc]
+
+  '@napi-rs/canvas-linux-arm64-musl@1.0.5':
+    resolution: {integrity: sha512-FNMGFAx8DvtDwlLfWyBJ+oQjgPXoIAqCnNTJYqtJCFRwwzK3AyAe5B1Ll3NZ6hcOzqw7HylZsq4nQxVyPCQX1Q==}
+    engines: {node: '>= 10'}
+    cpu: [arm64]
+    os: [linux]
+    libc: [musl]
+
+  '@napi-rs/canvas-linux-riscv64-gnu@1.0.5':
+    resolution: {integrity: sha512-2vd5v8Lui+37Hh/spITKIvTT384ip4dnUc5XBn0E+sMNS4b7au7IswyT5YDG2udPTjSh/eLUs3sGuB5YHooFOA==}
+    engines: {node: '>= 10'}
+    cpu: [riscv64]
+    os: [linux]
+    libc: [glibc]
+
+  '@napi-rs/canvas-linux-x64-gnu@1.0.5':
+    resolution: {integrity: sha512-iQIPy+Uey0expZTOszLri5n8rY7x4WUpMaY82mcXNIgbil30iHvc01OsiizhZC1KQHTK90RFMFWSpwFU+ON3aA==}
+    engines: {node: '>= 10'}
+    cpu: [x64]
+    os: [linux]
+    libc: [glibc]
+
+  '@napi-rs/canvas-linux-x64-musl@1.0.5':
+    resolution: {integrity: sha512-Npthji25t7FUqIAKsoEkFS0qY5CYVkHjvI3tuZjDTG92wX8g4dst+Lfb4hhubdqPazlDcIwalPzInsFCtf3FFg==}
+    engines: {node: '>= 10'}
+    cpu: [x64]
+    os: [linux]
+    libc: [musl]
+
+  '@napi-rs/canvas-win32-arm64-msvc@1.0.5':
+    resolution: {integrity: sha512-bi+JsdCdbfVJDoAQybTYmkLKwh1xpYpptg5j/BNr2BB56u4/R26jrVvtjqff+CxYMXV6Kz1/jeDVhZCuj6bDng==}
+    engines: {node: '>= 10'}
+    cpu: [arm64]
+    os: [win32]
+
+  '@napi-rs/canvas-win32-x64-msvc@1.0.5':
+    resolution: {integrity: sha512-KQQwG9/sBmcGxqaLFIQf+k2OefREGoyEaIBmRuTM8bUuFKOEE9Xk5pel90hE6pmBwk/vo4RB0OdX+FxobJGMFw==}
+    engines: {node: '>= 10'}
+    cpu: [x64]
+    os: [win32]
+
+  '@napi-rs/canvas@1.0.5':
+    resolution: {integrity: sha512-GaPlicMtnvgPr5SowFRprkEJicDSrV3qCq17U4jiF5u0kNORZo3IbdN2Bk4SfcZJAMYFHbMVJ81O3w21CYxazg==}
+    engines: {node: '>= 10'}
+
   '@napi-rs/wasm-runtime@1.2.0':
     resolution: {integrity: sha512-kDoONqMa+VnZ4vvvu/ZUurpJ4gkZU57e7g69qpNgWhYcZFPUHZM2CEMKm+cG6ufDVALbjMvfmMjFVqaK7uEMnA==}
     engines: {node: ^20.19.0 || ^22.13.0 || >=23.5.0}
@@ -2286,8 +2371,8 @@ packages:
       '@types/react-dom':
         optional: true
 
-  '@testing-library/user-event@14.6.1':
-    resolution: {integrity: sha512-vq7fv0rnt+QTXgPxr5Hjc210p6YKq2kmdziLgnsZGgLJ9e6VAShx1pACLuRjd/AS/sr7phAR58OIIpf0LlmQNw==}
+  '@testing-library/user-event@14.6.3':
+    resolution: {integrity: sha512-6dBq67jT8lE+JTE8Exm02Kt6ze43hz1jdiSpSJwtTZiT1xQQ6b7nZYTTQ9njdArdU8XklOwaDp/AbT/eYSKF4g==}
     engines: {node: '>=12', npm: '>=6'}
     peerDependencies:
       '@testing-library/dom': '>=7.21.4'
@@ -2561,6 +2646,9 @@ packages:
 
   '@types/ms@2.1.0':
     resolution: {integrity: sha512-GsCCIZDE/p3i96vtEqx+7dBUGXrc7zeSK3wwPHIaRThS+9OhWIXRqzs4d6k1SVU8g91DrNRWxWUGhp5KXQb2VA==}
+
+  '@types/node@10.0.3':
+    resolution: {integrity: sha512-J7nx6JzxmtT4zyvfLipYL7jNaxvlCWpyG7JhhCQ4fQyG+AGfovAHoYR55TFx+X8akfkUJYpt5JG6GPeFMjZaCQ==}
 
   '@types/node@24.13.3':
     resolution: {integrity: sha512-Dh8vAsV36ig5wa9OX4pXvMc9D3Veibfw2wix0CUwYODLD8nkj9UsLjASr49nPg+2eKzxhBV+v7L8pXvT4e639Q==}
@@ -2955,6 +3043,10 @@ packages:
     engines: {node: '>=0.4.0'}
     hasBin: true
 
+  agent-base@6.0.0:
+    resolution: {integrity: sha512-j1Q7cSCqN+AwrmDd+pzgqc0/NpC655x2bUf5ZjRIO77DcNBFmh+OgRNzF6OKdCC9RSCb19fGd99+bhXFdkRNqw==}
+    engines: {node: '>= 6.0.0'}
+
   ajv-formats@2.1.1:
     resolution: {integrity: sha512-Wx0Kx52hxE7C18hkMEggYlEifqWZtYaRgouJor+WMdPnQyEK13vgEWyVNup7SoeeoLMsr4kf5h6dOW11I15MUA==}
     peerDependencies:
@@ -3247,6 +3339,9 @@ packages:
 
   caniuse-lite@1.0.30001806:
     resolution: {integrity: sha512-72Cuvd95zbSYPKq6Fhg8eDJRlzgWDf7/mtoZv6Qe/DYNCEBdNxoA3+rZAU2ZhGCpZlns3EssFavaZomckT5Uuw==}
+
+  caseless@0.12.0:
+    resolution: {integrity: sha512-4tYFyifaFfGacoiObjJegolkwSU4xQNGbVgUiNYVUxbQ2x2lUsFvY4hVgVzGiIe6WLOPqycWXA40l+PWsxthUw==}
 
   ccount@2.0.1:
     resolution: {integrity: sha512-eyrF0jiFpY+3drT6383f1qhkbGsLSifNAjA61IUjZjmLCWjItY6LB9ft9YhoDgwfmclB2zhu51Lc7+95b8NRAg==}
@@ -3685,6 +3780,10 @@ packages:
     resolution: {integrity: sha512-zwfzJecQ/Uej6tusMqwAqU/6KL2XaB2VZ2Jg54Je6ahNBGNH6Ek6g3jjNCF0fG9EWQKGZNddNjU5F1ZQn/sBnA==}
     engines: {node: '>=20.19.0'}
 
+  env-paths@2.2.0:
+    resolution: {integrity: sha512-6u0VYSCo/OW6IoD5WCLLy9JUGARbamfSavcNXry/eu8aHVFei6CD3Sw+VGX5alea1i9pgPHW0mbu6Xj0uBh7gA==}
+    engines: {node: '>=6'}
+
   error-ex@1.3.4:
     resolution: {integrity: sha512-sqQamAnR14VgCr1A618A3sGrygcpK+HEbenA/HiEAkkUwcZIIB/tgWqHFxWgOyDh4nB4JCRimh79dR5Ywc9MDQ==}
 
@@ -3916,6 +4015,10 @@ packages:
       picomatch:
         optional: true
 
+  ffmpeg-static@5.3.0:
+    resolution: {integrity: sha512-H+K6sW6TiIX6VGend0KQwthe+kaceeH/luE8dIZyOP35ik7ahYojDuqlTV1bOrtEwl01sy2HFNGQfi5IDJvotg==}
+    engines: {node: '>=16'}
+
   file-entry-cache@8.0.0:
     resolution: {integrity: sha512-XXTUwCvisa5oacNGRP9SfNtYBNAMi+RPwBFmblZEF7N7swHYQS6/Zfk7SRwx4D5j3CH211YNRco1DEMNVfZCnQ==}
     engines: {node: '>=16.0.0'}
@@ -4092,6 +4195,13 @@ packages:
   http-errors@2.0.1:
     resolution: {integrity: sha512-4FbRdAX+bSdmo4AUFuS0WNiPz8NgFt+r8ThgNWmlrjQjt1Q7ZR9+zTlce2859x4KSXrwIsaeTqDoKQmtP8pLmQ==}
     engines: {node: '>= 0.8'}
+
+  http-response-object@3.0.2:
+    resolution: {integrity: sha512-bqX0XTF6fnXSQcEJ2Iuyr75yVakyjIDCqroJQ/aHfSdlM743Cwqoi2nDYMzLGWUcuTWGWy8AAvOKXTfiv6q9RA==}
+
+  https-proxy-agent@5.0.0:
+    resolution: {integrity: sha512-EkYm5BcKUGiduxzSt3Eppko+PiNWNEpa4ySk9vTC6wDsQJW9rHSa+UhGNJoRYp7bz6Ht1eaRIa6QaJqO5rCFbA==}
+    engines: {node: '>= 6'}
 
   human-signals@2.1.0:
     resolution: {integrity: sha512-B4FFZ6q/T2jhhksgkbEW3HBvWIfDW85snkQgawt07S7J5QXTk6BkNV+0yAeZrM5QpMAdYlocGoljn0sJ/WQkFw==}
@@ -5086,6 +5196,9 @@ packages:
     resolution: {integrity: sha512-GQ2EWRpQV8/o+Aw8YqtfZZPfNRWZYkbidE9k5rpl/hC3vtHHBfGm2Ifi6qWV+coDGkrUKZAxE3Lot5kcsRlh+g==}
     engines: {node: '>=6'}
 
+  parse-cache-control@1.0.1:
+    resolution: {integrity: sha512-60zvsJReQPX5/QP0Kzfd/VrpjScIQ7SHBW6bFCYfEP+fp0Eppr1SHhIO5nd1PjZtvclzSzES9D/p5nFJurwfWg==}
+
   parse-json@5.2.0:
     resolution: {integrity: sha512-ayCKvm/phCGxOkYRSCM82iDwct8/EonSEgCSxWxD7ve6jHggsFl4fZVQBPRNgQoKiuV/odhFrGzQXZwbifC8Rg==}
     engines: {node: '>=8'}
@@ -5265,6 +5378,10 @@ packages:
   process@0.11.10:
     resolution: {integrity: sha512-cdGef/drWFoydD1JsMzuFf8100nZl+GT+yacc2bEced5f9Rjk4z+WtFUTBu9PhOi9j/jfmBPu0mMEY4wIdAF8A==}
     engines: {node: '>= 0.6.0'}
+
+  progress@2.0.3:
+    resolution: {integrity: sha512-7PiHtLll5LdnKIMw100I+8xJXR5gW2QwWYkT6iJva0bXitZKa/XMrSbdmg3r2Xnaidz9Qumd0VPaMrZlF9V9sA==}
+    engines: {node: '>=0.4.0'}
 
   prosemirror-changeset@2.4.1:
     resolution: {integrity: sha512-96WBLhOaYhJ+kPhLg3uW359Tz6I/MfcrQfL4EGv4SrcqKEMC1gmoGrXHecPE8eOwTVCJ4IwgfzM8fFad25wNfw==}
@@ -6927,6 +7044,13 @@ snapshots:
 
   '@csstools/css-tokenizer@4.0.0': {}
 
+  '@derhuerst/http-basic@8.2.4':
+    dependencies:
+      caseless: 0.12.0
+      concat-stream: 2.0.0
+      http-response-object: 3.0.2
+      parse-cache-control: 1.0.1
+
   '@drizzle-team/brocli@0.10.2': {}
 
   '@emnapi/core@1.10.0':
@@ -8167,6 +8291,53 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
+  '@napi-rs/canvas-android-arm64@1.0.5':
+    optional: true
+
+  '@napi-rs/canvas-darwin-arm64@1.0.5':
+    optional: true
+
+  '@napi-rs/canvas-darwin-x64@1.0.5':
+    optional: true
+
+  '@napi-rs/canvas-linux-arm-gnueabihf@1.0.5':
+    optional: true
+
+  '@napi-rs/canvas-linux-arm64-gnu@1.0.5':
+    optional: true
+
+  '@napi-rs/canvas-linux-arm64-musl@1.0.5':
+    optional: true
+
+  '@napi-rs/canvas-linux-riscv64-gnu@1.0.5':
+    optional: true
+
+  '@napi-rs/canvas-linux-x64-gnu@1.0.5':
+    optional: true
+
+  '@napi-rs/canvas-linux-x64-musl@1.0.5':
+    optional: true
+
+  '@napi-rs/canvas-win32-arm64-msvc@1.0.5':
+    optional: true
+
+  '@napi-rs/canvas-win32-x64-msvc@1.0.5':
+    optional: true
+
+  '@napi-rs/canvas@1.0.5':
+    optionalDependencies:
+      '@napi-rs/canvas-android-arm64': 1.0.5
+      '@napi-rs/canvas-darwin-arm64': 1.0.5
+      '@napi-rs/canvas-darwin-x64': 1.0.5
+      '@napi-rs/canvas-linux-arm-gnueabihf': 1.0.5
+      '@napi-rs/canvas-linux-arm64-gnu': 1.0.5
+      '@napi-rs/canvas-linux-arm64-musl': 1.0.5
+      '@napi-rs/canvas-linux-riscv64-gnu': 1.0.5
+      '@napi-rs/canvas-linux-x64-gnu': 1.0.5
+      '@napi-rs/canvas-linux-x64-musl': 1.0.5
+      '@napi-rs/canvas-win32-arm64-msvc': 1.0.5
+      '@napi-rs/canvas-win32-x64-msvc': 1.0.5
+
   '@napi-rs/wasm-runtime@1.2.0(@emnapi/core@1.10.0)(@emnapi/runtime@1.10.0)':
     dependencies:
       '@emnapi/core': 1.10.0
@@ -8553,7 +8724,7 @@ snapshots:
       '@types/react': 19.2.17
       '@types/react-dom': 19.2.4(@types/react@19.2.17)
 
-  '@testing-library/user-event@14.6.1(@testing-library/dom@10.4.1)':
+  '@testing-library/user-event@14.6.3(@testing-library/dom@10.4.1)':
     dependencies:
       '@testing-library/dom': 10.4.1
 
@@ -8874,6 +9045,8 @@ snapshots:
   '@types/methods@1.1.4': {}
 
   '@types/ms@2.1.0': {}
+
+  '@types/node@10.0.3': {}
 
   '@types/node@24.13.3':
     dependencies:
@@ -9317,6 +9490,12 @@ snapshots:
 
   acorn@8.18.0: {}
 
+  agent-base@6.0.0:
+    dependencies:
+      debug: 4.4.3
+    transitivePeerDependencies:
+      - supports-color
+
   ajv-formats@2.1.1(ajv@8.20.0):
     optionalDependencies:
       ajv: 8.20.0
@@ -9617,6 +9796,8 @@ snapshots:
   camelcase@6.3.0: {}
 
   caniuse-lite@1.0.30001806: {}
+
+  caseless@0.12.0: {}
 
   ccount@2.0.1: {}
 
@@ -9919,6 +10100,8 @@ snapshots:
   entities@7.0.1: {}
 
   entities@8.0.0: {}
+
+  env-paths@2.2.0: {}
 
   error-ex@1.3.4:
     dependencies:
@@ -10244,6 +10427,15 @@ snapshots:
     optionalDependencies:
       picomatch: 4.0.5
 
+  ffmpeg-static@5.3.0:
+    dependencies:
+      '@derhuerst/http-basic': 8.2.4
+      env-paths: 2.2.0
+      https-proxy-agent: 5.0.0
+      progress: 2.0.3
+    transitivePeerDependencies:
+      - supports-color
+
   file-entry-cache@8.0.0:
     dependencies:
       flat-cache: 4.0.0
@@ -10455,6 +10647,17 @@ snapshots:
       setprototypeof: 1.2.0
       statuses: 2.0.2
       toidentifier: 1.0.1
+
+  http-response-object@3.0.2:
+    dependencies:
+      '@types/node': 10.0.3
+
+  https-proxy-agent@5.0.0:
+    dependencies:
+      agent-base: 6.0.0
+      debug: 4.4.3
+    transitivePeerDependencies:
+      - supports-color
 
   human-signals@2.1.0: {}
 
@@ -11722,6 +11925,8 @@ snapshots:
     dependencies:
       callsites: 3.1.0
 
+  parse-cache-control@1.0.1: {}
+
   parse-json@5.2.0:
     dependencies:
       '@babel/code-frame': 7.29.7
@@ -11902,6 +12107,8 @@ snapshots:
   process-warning@5.0.0: {}
 
   process@0.11.10: {}
+
+  progress@2.0.3: {}
 
   prosemirror-changeset@2.4.1:
     dependencies:

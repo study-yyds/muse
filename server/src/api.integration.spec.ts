@@ -220,14 +220,6 @@ describe('API — 四层覆盖（正常/校验/权限/边界）', () => {
       expect(r.status).toBe(200);
     });
 
-    it('校验 — 非法 auto_save_interval', async () => {
-      if (!token || !bookId) return;
-      const r = await request(app.getHttpServer())
-        .put(`/api/books/${bookId}/settings`).set(auth())
-        .send({ auto_save_interval_sec: -1 });
-      expect([200, 400, 500]).toContain(r.status);
-    });
-
     it('权限 — 无 Token 修改设置', async () => {
       const r = await request(app.getHttpServer())
         .put('/api/books/x/settings').send({});

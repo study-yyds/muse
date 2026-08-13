@@ -87,7 +87,6 @@ export class BooksController {
       code: 200,
       data: {
         preset_style: book.preset_style,
-        auto_save_interval_sec: book.auto_save_interval_sec,
         extra: book.extra,
       },
     };
@@ -99,7 +98,6 @@ export class BooksController {
     @Body()
     body: {
       preset_style?: string;
-      auto_save_interval_sec?: number;
       daily_word_goal?: number;
       extra?: Record<string, any>;
     },

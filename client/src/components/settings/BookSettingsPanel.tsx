@@ -14,7 +14,6 @@ import { SynopsisSection } from "@/components/settings/SynopsisSection";
 
 interface BookSettings {
   preset_style: string;
-  auto_save_interval_sec: number;
   daily_word_goal?: number;
 }
 
@@ -35,15 +34,6 @@ const WRITING_STYLES = [
   { value: "colloquial", label: "口语化" },
 ];
 
-const SAVE_INTERVALS = [
-  { value: 30, label: "30 秒" },
-  { value: 60, label: "1 分钟" },
-  { value: 120, label: "2 分钟" },
-  { value: 300, label: "5 分钟（默认）" },
-  { value: 600, label: "10 分钟" },
-  { value: 1800, label: "30 分钟" },
-];
-
 export function BookSettingsPanel({ bookId, book, coverUrl, onCoverChange }: Props) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -56,7 +46,6 @@ export function BookSettingsPanel({ bookId, book, coverUrl, onCoverChange }: Pro
   const settings = data?.data;
 
   const [presetStyle, setPresetStyle] = useState("default");
-  const [saveInterval, setSaveInterval] = useState(300);
   const [wordGoal, setWordGoal] = useState(0);
   const [isMimicking, setIsMimicking] = useState(false);
   const [mimicResult, setMimicResult] = useState<string | null>(null);
@@ -97,7 +86,6 @@ export function BookSettingsPanel({ bookId, book, coverUrl, onCoverChange }: Pro
   useEffect(() => {
     if (settings) {
       setPresetStyle(settings.preset_style ?? "default");
-      setSaveInterval(settings.auto_save_interval_sec ?? 300);
       setWordGoal(settings.daily_word_goal ?? 0);
       setMimicResult((settings as any).extra?.mimic_style_analysis ?? null);
       const h = (settings as any).extra?.cover_history;
@@ -117,7 +105,6 @@ export function BookSettingsPanel({ bookId, book, coverUrl, onCoverChange }: Pro
 
   const isDirty =
     presetStyle !== (settings?.preset_style ?? "default") ||
-    saveInterval !== (settings?.auto_save_interval_sec ?? 300) ||
     wordGoal !== (settings?.daily_word_goal ?? 0);
 
   if (isLoading) {
@@ -194,25 +181,6 @@ export function BookSettingsPanel({ bookId, book, coverUrl, onCoverChange }: Pro
 
       {/* 作品简介 */}
       <SynopsisSection bookId={bookId} />
-
-      <Separator />
-
-      {/* 自动保存间隔 */}
-      <div className="space-y-3">
-        <Label className="text-sm font-medium">自动保存间隔</Label>
-        <div className="grid grid-cols-3 gap-2">
-          {SAVE_INTERVALS.map((opt) => (
-            <Button
-              key={opt.value}
-              variant={saveInterval === opt.value ? "default" : "outline"}
-              size="sm"
-              onClick={() => setSaveInterval(opt.value)}
-            >
-              {opt.label}
-            </Button>
-          ))}
-        </div>
-      </div>
 
       <Separator />
 
@@ -318,7 +286,6 @@ export function BookSettingsPanel({ bookId, book, coverUrl, onCoverChange }: Pro
           onClick={() =>
             saveMutation.mutate({
               preset_style: presetStyle,
-              auto_save_interval_sec: saveInterval,
               daily_word_goal: wordGoal || undefined,
             })
           }

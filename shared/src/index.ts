@@ -60,7 +60,6 @@ export interface BookListItem {
 
 export interface BookDetail extends BookListItem {
   preset_style: string;
-  auto_save_interval_sec: number;
   type?: string;
   extra?: Record<string, any>;
 }

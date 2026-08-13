@@ -4,4 +4,5 @@ packages:
   - "shared"
 allowBuilds:
   esbuild: true
+  ffmpeg-static: true
   unrs-resolver: true

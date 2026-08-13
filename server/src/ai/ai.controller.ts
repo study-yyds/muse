@@ -78,6 +78,30 @@ export class AiController {
     return { code: 200, data };
   }
 
+  // ============== TTS 语音合成 ==============
+
+  @UseGuards(aiRateLimit)
+  @Post('generate-speech')
+  async generateSpeech(
+    @Body()
+    body: {
+      text: string;
+      voice_type?: string;
+    },
+    @Req() req: Request,
+  ) {
+    try {
+      const url = await this.ai.generateSpeech(
+        body.text,
+        body.voice_type,
+        (req as any).userId,
+      );
+      return { code: 200, data: { url } };
+    } catch (e: any) {
+      return { code: 500, message: e.message ?? 'TTS 失败' };
+    }
+  }
+
   // ============== 会话管理 ==============
 
   @Get('chat-sessions/:bookId')

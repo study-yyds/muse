@@ -18,8 +18,10 @@ import {
   PanelLeftClose,
   Target,
   Sparkles,
+  Video,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { PromoVideoDialog } from "@/components/promo/PromoVideoDialog";
 
 interface Props {
   bookId: string;
@@ -38,7 +40,11 @@ export function WritingEditor({ bookId }: Props) {
 
   const chapters = chapterList?.data ?? [];
   const [activeChapterId, setActiveChapterId] = useState<string | null>(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(
+    typeof window !== 'undefined' && window.innerWidth < 768,
+  );
+  const [promoOpen, setPromoOpen] = useState(false);
+  const selectedText = useEditorStore((s) => s.selectedText);
 
   // 当前章节内容
   const { data: chapterData, isLoading: chapterLoading } = useQuery({
@@ -266,6 +272,17 @@ export function WritingEditor({ bookId }: Props) {
               </select>
             )}
             {isDirty && <span className="text-xs text-muted-foreground">未保存</span>}
+            {selectedText && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setPromoOpen(true)}
+                title="用选中文字生成推文视频"
+              >
+                <Video className="size-4 mr-1" />
+                推文视频
+              </Button>
+            )}
             <Button size="sm" onClick={() => saveMutation.mutate()} disabled={!isDirty || saveMutation.isPending}>
               {saveMutation.isPending && <Loader2 className="size-4 animate-spin" />}保存
             </Button>
@@ -277,7 +294,7 @@ export function WritingEditor({ bookId }: Props) {
           <div className="flex-1 flex items-center justify-center text-muted-foreground">
             <div className="text-center">
               <FileText className="size-12 mx-auto" />
-              <p className="mt-4 text-sm">选择或创建一个章节开始写作</p>
+              <p className="mt-4 text-sm">选择或创建一个章节开始写作，右侧 AI 助手可帮你续写</p>
             </div>
           </div>
         ) : chapterLoading ? (
@@ -297,6 +314,8 @@ export function WritingEditor({ bookId }: Props) {
         )}
       </div>
 
+
+      <PromoVideoDialog bookId={bookId} open={promoOpen} onOpenChange={setPromoOpen} />
     </div>
   );
 }

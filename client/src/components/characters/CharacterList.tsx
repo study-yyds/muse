@@ -172,7 +172,7 @@ export function CharacterList({ bookId }: Props) {
       {!isLoading && characters.length === 0 && (
         <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
           <UserRound className="size-12" />
-          <p className="mt-4 text-sm">还没有角色，点击右上角「添加角色」开始</p>
+          <p className="mt-4 text-sm">还没有角色，点击右上角「添加角色」手动创建，或切换到 AI 助手让它帮你生成</p>
         </div>
       )}
 

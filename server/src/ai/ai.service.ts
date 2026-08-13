@@ -3,7 +3,7 @@ import { eq, and, desc } from 'drizzle-orm';
 import { getDb, schema } from '../database/connection';
 import { Response } from 'express';
 import crypto from 'crypto';
-import { writeFile, mkdir } from 'fs/promises';
+import { writeFile, mkdir, unlink } from 'fs/promises';
 import path from 'path';
 
 // 提示注入防护
@@ -683,6 +683,16 @@ ${charBrief}
 ${worldText.slice(0, 1000)}
 
 用自然语言回复作者的问题，涉及具体操作时给出明确指引。`,
+
+      promo: `你是竖屏推文视频脚本策划。用户会提供一段小说原文，你需要将其改写成适合短视频口播的推文脚本。
+
+【脚本要求】
+- 每句 15-25 字，共 6-10 句
+- 口语化、有悬念钩子、适合口播朗读
+- 第一句必须是吸引人的开头（悬念/反转/冲突）
+- 最后一句加引导语（如"想知道后续吗？评论区告诉我"）
+- 每句单独一行，不要编号、不要任何标记符号
+- 只输出脚本正文，不要加解释或前缀`,
     };
 
     // 加载引导讨论上下文（创作概要），追加到所有 AI 对话的 system prompt
@@ -1391,6 +1401,349 @@ ${sample.slice(0, 5000)}`,
       '要求：高质量角色立绘，精细刻画，符合角色设定，半身像，光影细腻，oc渲染风格。',
     ];
     return parts.filter(Boolean).join('，');
+  }
+
+  // ============== TTS 语音合成 ==============
+
+  // ============== TTS 语音合成 ==============
+
+  // 单次 TTS 请求（豆包语音合成 2.0 HTTP 单向流式 SSE，V3 接口）
+  private async ttsRequest(
+    text: string,
+    apiKey: string,
+    voiceType: string,
+  ): Promise<{ base64: string; durationSec: number }> {
+    const estimatedSec = Math.ceil(text.length / 4);
+    const timeoutMs = Math.max(estimatedSec * 1000 + 30000, 60000);
+
+    // 火山网关瞬时故障（502/超时）常见：最多重试 2 次
+    const MAX_RETRIES = 2;
+    let res: any;
+    let retried = 0;
+    for (;;) {
+      try {
+        res = await fetch(
+          'https://openspeech.bytedance.com/api/v3/tts/unidirectional/sse',
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Api-Key': apiKey,
+              'X-Api-Resource-Id': 'seed-tts-2.0',
+              'X-Api-Request-Id': crypto.randomUUID(),
+            },
+            body: JSON.stringify({
+              user: { uid: 'muse-tts' },
+              req_params: {
+                text,
+                speaker: voiceType,
+                sample_rate: 24000,
+                audio_params: {
+                  format: 'mp3',
+                  speech_rate: 0,
+                  loudness_rate: 0,
+                  bit_rate: 64000,
+                },
+                additions: JSON.stringify({
+                  post_process: { pitch: 0 },
+                  disable_markdown_filter: true,
+                  enable_latex_tn: true,
+                  latex_parser: 'v2',
+                }),
+              },
+            }),
+            signal: AbortSignal.timeout(timeoutMs),
+          },
+        );
+        // 5xx 网关错误且未用尽重试次数：重试
+        if (res.status >= 500 && retried < MAX_RETRIES) {
+          retried++;
+          continue;
+        }
+        break;
+      } catch (e: any) {
+        if (
+          (e.name === 'AbortError' || e.name === 'TimeoutError') &&
+          retried < MAX_RETRIES
+        ) {
+          retried++;
+          continue;
+        }
+        if (e.name === 'AbortError' || e.name === 'TimeoutError') {
+          throw new Error(
+            `[TTS] 请求超时（等 ${Math.round(timeoutMs / 1000)}s），文本 ${text.length} 字`,
+          );
+        }
+        if (e.cause?.code === 'ENOTFOUND' || e.message?.includes('fetch')) {
+          throw new Error(`[TTS] 网络不通：${e.message}`);
+        }
+        throw new Error(`[TTS] 请求异常：${e.message}`);
+      }
+    }
+
+    if (res.status === 401 || res.status === 403) {
+      throw new Error(
+        `[TTS] API Key 无效 (${res.status})，请检查：${apiKey.slice(0, 8)}...`,
+      );
+    }
+    if (res.status === 429) {
+      throw new Error('[TTS] 请求太频繁（火山限流），请稍后重试');
+    }
+    if (!res.ok) {
+      const err = await res.text().catch(() => '');
+      throw new Error(
+        `[TTS] HTTP ${res.status}：${err.slice(0, 300) || res.statusText}`,
+      );
+    }
+
+    // SSE 流式：逐行解析 data: {...} 分片，音频 base64 在 data 字段
+    const reader = res.body?.getReader();
+    if (!reader) throw new Error('[TTS] 无法读取响应流');
+    const decoder = new TextDecoder();
+    let audioBase64 = '';
+    let buf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        buf += decoder.decode();
+        break;
+      }
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop() ?? '';
+      for (const line of lines) {
+        if (!line.startsWith('data:')) continue;
+        const payload = line.slice(5).trim();
+        if (!payload) continue;
+        try {
+          const parsed = JSON.parse(payload);
+          if (parsed.code && parsed.code !== 0 && parsed.code !== 20000000) {
+            throw new Error(
+              `[TTS] API 错误 (code=${parsed.code})：${parsed.message || '未知'}`,
+            );
+          }
+          if (parsed.data) audioBase64 += parsed.data;
+        } catch (e: any) {
+          if (e.message?.startsWith('[TTS]')) throw e;
+          // 非 JSON 分片，忽略
+        }
+      }
+    }
+
+    if (!audioBase64 || audioBase64.length < 100) {
+      throw new Error('[TTS] 返回空音频，请确认音色 ID 和模型版本');
+    }
+
+    // V3 响应不含 duration，本地用 ffmpeg 解析真实时长
+    const durationSec = this.getAudioDurationSec(
+      Buffer.from(audioBase64, 'base64'),
+      text,
+    );
+    return { base64: audioBase64, durationSec };
+  }
+
+  /** 用 ffmpeg 解析音频真实时长（秒），失败时按 4 字/秒估算 */
+  private getAudioDurationSec(audioBuf: Buffer, text: string): number {
+    const { execSync } = require('child_process');
+    const ffmpegPath = require('ffmpeg-static');
+    const { mkdtempSync, writeFileSync, rmSync } = require('fs');
+    const os = require('os');
+    const tmpDir = mkdtempSync(path.join(os.tmpdir(), 'muse-tts-'));
+    const tmpFile = path.join(tmpDir, 'audio.mp3');
+    try {
+      writeFileSync(tmpFile, audioBuf);
+      // ffmpeg -i 无输出参数时以非零码退出，Duration 信息在 stderr
+      execSync(`"${ffmpegPath}" -i "${tmpFile}"`, {
+        timeout: 15000,
+        encoding: 'utf8',
+        stdio: 'pipe',
+      });
+    } catch (e: any) {
+      const m = /Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/.exec(e.stderr || '');
+      if (m) {
+        return (
+          parseInt(m[1], 10) * 3600 + parseInt(m[2], 10) * 60 + parseFloat(m[3])
+        );
+      }
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+    return Math.max(1, Math.ceil(text.length / 4));
+  }
+
+  /** 合成短文本并返回音频 base64（音色试听等轻量场景，调用方自行缓存） */
+  async synthesizeShortText(
+    text: string,
+    voiceType: string,
+    userId?: string,
+  ): Promise<string> {
+    const resolved = await this.resolveApiKey(userId, 'image');
+    const apiKey =
+      process.env.VOLCANO_TTS_KEY ||
+      resolved.apiKey ||
+      process.env.VOLCANO_IMAGE_KEY ||
+      '';
+    if (!apiKey)
+      throw new Error(
+        '[TTS] API Key 未配置，请在 .env 中设置 VOLCANO_TTS_KEY（或 VOLCANO_IMAGE_KEY 兜底）',
+      );
+
+    const { base64 } = await this.ttsRequest(
+      text.slice(0, 3000),
+      apiKey,
+      voiceType,
+    );
+    return base64;
+  }
+
+  async generateSpeech(
+    text: string,
+    voiceType: string = 'zh_female_xiaohe_uranus_bigtts',
+    userId?: string,
+  ): Promise<{ url: string; durationSec: number }> {
+    const resolved = await this.resolveApiKey(userId, 'image');
+    const apiKey =
+      process.env.VOLCANO_TTS_KEY ||
+      resolved.apiKey ||
+      process.env.VOLCANO_IMAGE_KEY ||
+      '';
+    if (!apiKey)
+      throw new Error(
+        '[TTS] API Key 未配置，请在 .env 中设置 VOLCANO_TTS_KEY（或 VOLCANO_IMAGE_KEY 兜底）',
+      );
+
+    const uploadsDir = path.join(__dirname, '..', '..', 'public', 'uploads');
+    await mkdir(uploadsDir, { recursive: true });
+
+    // 分段：每段 <= 2800 字，在句号/换行处断开
+    const MAX_CHUNK = 2800;
+    const chunks: string[] = [];
+    let remaining = text;
+    while (remaining.length > 0) {
+      if (remaining.length <= MAX_CHUNK) {
+        chunks.push(remaining);
+        break;
+      }
+      let cutAt = MAX_CHUNK;
+      const searchRange = remaining.slice(MAX_CHUNK - 200, MAX_CHUNK);
+      const lastBreak = Math.max(
+        searchRange.lastIndexOf('。'),
+        searchRange.lastIndexOf('！'),
+        searchRange.lastIndexOf('？'),
+        searchRange.lastIndexOf('\n'),
+        searchRange.lastIndexOf('，'),
+      );
+      if (lastBreak >= 0) cutAt = MAX_CHUNK - 200 + lastBreak + 1;
+      chunks.push(remaining.slice(0, cutAt));
+      remaining = remaining.slice(cutAt);
+    }
+
+    // 单段直返
+    if (chunks.length === 1) {
+      const { base64, durationSec } = await this.ttsRequest(
+        chunks[0],
+        apiKey,
+        voiceType,
+      );
+      const filename = `audio-${crypto.randomUUID()}.mp3`;
+      await writeFile(
+        path.join(uploadsDir, filename),
+        Buffer.from(base64, 'base64'),
+      );
+      return {
+        url: `/uploads/${filename}`,
+        durationSec: durationSec || Math.ceil(chunks[0].length / 4),
+      };
+    }
+
+    // 多段：逐段合成 → ffmpeg 拼接
+    const { execSync } = require('child_process');
+    const ffmpegPath = require('ffmpeg-static');
+    const tempFiles: string[] = [];
+    let totalDur = 0;
+    for (let i = 0; i < chunks.length; i++) {
+      const { base64, durationSec } = await this.ttsRequest(
+        chunks[i],
+        apiKey,
+        voiceType,
+      );
+      totalDur += durationSec;
+      const tf = path.join(uploadsDir, `tts-temp-${crypto.randomUUID()}.mp3`);
+      await writeFile(tf, Buffer.from(base64, 'base64'));
+      tempFiles.push(tf);
+      if (i < chunks.length - 1) await new Promise((r) => setTimeout(r, 500));
+    }
+
+    const outputFile = path.join(
+      uploadsDir,
+      `audio-${crypto.randomUUID()}.mp3`,
+    );
+    const listFile = path.join(uploadsDir, 'concat-list.txt');
+    await writeFile(
+      listFile,
+      tempFiles.map((f) => `file '${f.replace(/\\/g, '/')}'`).join('\n'),
+      'utf-8',
+    );
+
+    try {
+      execSync(
+        `"${ffmpegPath}" -f concat -safe 0 -i "${listFile.replace(/\\/g, '/')}" -c copy "${outputFile.replace(/\\/g, '/')}" -y`,
+        { timeout: 30000, encoding: 'utf8' },
+      );
+    } catch {
+      return { url: `/uploads/${path.basename(tempFiles[0])}`, durationSec: 0 };
+    }
+
+    // 清理
+    unlink(listFile).catch(() => {});
+    for (const tf of tempFiles) unlink(tf).catch(() => {});
+
+    return {
+      url: `/uploads/${path.basename(outputFile)}`,
+      durationSec: totalDur,
+    };
+  }
+
+  /** 逐句合成：返回每句音频 URL 和真实时长（供视频字幕同步） */
+  async generateSpeechPerLine(
+    lines: string[],
+    voiceType: string = 'zh_female_xiaohe_uranus_bigtts',
+    userId?: string,
+  ): Promise<Array<{ url: string; durationSec: number }>> {
+    const resolved = await this.resolveApiKey(userId, 'image');
+    const apiKey =
+      process.env.VOLCANO_TTS_KEY ||
+      resolved.apiKey ||
+      process.env.VOLCANO_IMAGE_KEY ||
+      '';
+    if (!apiKey)
+      throw new Error(
+        '[TTS] API Key 未配置，请在 .env 中设置 VOLCANO_TTS_KEY（或 VOLCANO_IMAGE_KEY 兜底）',
+      );
+
+    const uploadsDir = path.join(__dirname, '..', '..', 'public', 'uploads');
+    await mkdir(uploadsDir, { recursive: true });
+
+    const results: Array<{ url: string; durationSec: number }> = [];
+    for (let i = 0; i < lines.length; i++) {
+      const { base64, durationSec } = await this.ttsRequest(
+        lines[i].slice(0, 3000),
+        apiKey,
+        voiceType,
+      );
+      const filename = `audio-line-${crypto.randomUUID()}.mp3`;
+      await writeFile(
+        path.join(uploadsDir, filename),
+        Buffer.from(base64, 'base64'),
+      );
+      results.push({
+        url: `/uploads/${filename}`,
+        durationSec: durationSec || Math.ceil(lines[i].length / 4),
+      });
+      // 段间稍等避免限流
+      if (i < lines.length - 1) await new Promise((r) => setTimeout(r, 300));
+    }
+    return results;
   }
 
   // ============== 生成简介 ==============

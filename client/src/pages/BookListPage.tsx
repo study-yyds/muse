@@ -1097,7 +1097,7 @@ export function BookListPage() {
         <div className="flex flex-col items-center justify-center py-20 text-muted-foreground">
           <BookOpen className="size-12" />
           <p className="mt-4 text-sm">
-            {showDeleted ? "回收站为空" : "还没有作品，点击「新建作品」开始"}
+            {showDeleted ? "回收站为空" : "还没有作品，点击「快捷创作」让 AI 帮你生成，或「新建作品」从空白开始"}
           </p>
         </div>
       )}

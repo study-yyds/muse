@@ -12,3 +12,6 @@ DESIGN_SYSTEM.md
 # 测试文件已纳入版本管理
 client/test-results/
 client/playwright-report/
+
+# 运行时生成产物（音频/视频/图片）
+server/public/uploads/
