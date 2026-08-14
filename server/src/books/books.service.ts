@@ -34,7 +34,12 @@ export class BooksService {
   }
 
   // 创建作品
-  async create(userId: string, title: string, presetStyle?: string, type?: string) {
+  async create(
+    userId: string,
+    title: string,
+    presetStyle?: string,
+    type?: string,
+  ) {
     const db = getDb();
 
     // 检查配额
@@ -60,12 +65,10 @@ export class BooksService {
       .returning({ book_id: schema.books.book_id });
 
     // 创建关联的 settings 和 outline
-    await db
-      .insert(schema.book_settings)
-      .values({
-        book_id: book.book_id,
-        preset_style: presetStyle ?? 'default',
-      });
+    await db.insert(schema.book_settings).values({
+      book_id: book.book_id,
+      preset_style: presetStyle ?? 'default',
+    });
     await db.insert(schema.outlines).values({ book_id: book.book_id });
 
     // 短篇自动创建唯一章节
@@ -136,13 +139,86 @@ export class BooksService {
   // 永久删除（显式清理子表，保底 DB FK 可能未配置）
   async permanentDelete(bookId: string) {
     const db = getDb();
-    await db.delete(schema.characters).where(eq(schema.characters.book_id, bookId));
+    await db
+      .delete(schema.characters)
+      .where(eq(schema.characters.book_id, bookId));
     await db.delete(schema.outlines).where(eq(schema.outlines.book_id, bookId));
-    await db.delete(schema.world_settings).where(eq(schema.world_settings.book_id, bookId));
+    await db
+      .delete(schema.world_settings)
+      .where(eq(schema.world_settings.book_id, bookId));
     await db.delete(schema.chapters).where(eq(schema.chapters.book_id, bookId));
-    await db.delete(schema.book_settings).where(eq(schema.book_settings.book_id, bookId));
-    await db.delete(schema.ai_chat_sessions).where(eq(schema.ai_chat_sessions.book_id, bookId));
+    await db
+      .delete(schema.book_settings)
+      .where(eq(schema.book_settings.book_id, bookId));
+    await db
+      .delete(schema.ai_chat_sessions)
+      .where(eq(schema.ai_chat_sessions.book_id, bookId));
     await db.delete(schema.books).where(eq(schema.books.book_id, bookId));
+  }
+
+  /** 批量彻底删除：子表并发删除，书本间也并发，大幅提速 */
+  async permanentDeleteBatch(userId: string, bookIds: string[]) {
+    const db = getDb();
+    if (bookIds.length === 0) return;
+    // 所有权过滤：只删属于当前用户的
+    const owned = await db
+      .select({ book_id: schema.books.book_id })
+      .from(schema.books)
+      .where(
+        and(
+          eq(schema.books.user_id, userId),
+          sql`${schema.books.book_id} IN (${sql.join(
+            bookIds.map((id) => sql`${id}`),
+            sql`,`,
+          )})`,
+        ),
+      );
+    const ownedIds = owned.map((b) => b.book_id);
+    if (ownedIds.length === 0) return;
+
+    await Promise.all(
+      ownedIds.map(async (bookId) => {
+        // 子表并发删除（互不依赖），最后删主表
+        await Promise.all([
+          db
+            .delete(schema.characters)
+            .where(eq(schema.characters.book_id, bookId)),
+          db.delete(schema.outlines).where(eq(schema.outlines.book_id, bookId)),
+          db
+            .delete(schema.world_settings)
+            .where(eq(schema.world_settings.book_id, bookId)),
+          db.delete(schema.chapters).where(eq(schema.chapters.book_id, bookId)),
+          db
+            .delete(schema.book_settings)
+            .where(eq(schema.book_settings.book_id, bookId)),
+          db
+            .delete(schema.ai_chat_sessions)
+            .where(eq(schema.ai_chat_sessions.book_id, bookId)),
+        ]);
+        await db.delete(schema.books).where(eq(schema.books.book_id, bookId));
+      }),
+    );
+  }
+
+  /** 批量恢复：并发执行，7 天窗口校验，只恢复属于当前用户的 */
+  async restoreBatch(userId: string, bookIds: string[]) {
+    const db = getDb();
+    if (bookIds.length === 0) return;
+    await Promise.all(
+      bookIds.map(async (bookId) => {
+        await db
+          .update(schema.books)
+          .set({ deleted_at: null })
+          .where(
+            and(
+              eq(schema.books.book_id, bookId),
+              eq(schema.books.user_id, userId),
+              sql`${schema.books.deleted_at} IS NOT NULL`,
+              sql`${schema.books.deleted_at} > NOW() - INTERVAL '7 days'`,
+            ),
+          );
+      }),
+    );
   }
 
   // 恢复
@@ -172,7 +248,8 @@ export class BooksService {
     const db = getDb();
     // 构建更新对象，extra 需要合并而非覆盖
     const updateData: any = { updated_at: sql`NOW()` };
-    if (data.preset_style !== undefined) updateData.preset_style = data.preset_style;
+    if (data.preset_style !== undefined)
+      updateData.preset_style = data.preset_style;
     if (data.extra) {
       // 先取当前 extra，合并后再写入
       const [settings] = await db
@@ -188,7 +265,10 @@ export class BooksService {
           .select({ extra: schema.book_settings.extra })
           .from(schema.book_settings)
           .where(eq(schema.book_settings.book_id, bookId));
-        updateData.extra = { ...((settings?.extra ?? {}) as Record<string, any>), daily_word_goal: data.daily_word_goal };
+        updateData.extra = {
+          ...((settings?.extra ?? {}) as Record<string, any>),
+          daily_word_goal: data.daily_word_goal,
+        };
       } else {
         updateData.extra.daily_word_goal = data.daily_word_goal;
       }

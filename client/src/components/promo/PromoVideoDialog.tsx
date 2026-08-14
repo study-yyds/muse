@@ -148,7 +148,7 @@ export function PromoVideoDialog({ bookId, open, onOpenChange }: Props) {
   const [videoUrl, setVideoUrl] = useState('');
   const [packUrl, setPackUrl] = useState('');
   const [editing, setEditing] = useState(false);
-  const [mode, setMode] = useState<'cards' | 'background' | 'pack'>('cards');
+  const [mode, setMode] = useState<'background' | 'pack'>('pack');
   const [backgroundUrl, setBackgroundUrl] = useState('');
   const [error, setError] = useState('');
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -473,6 +473,8 @@ export function PromoVideoDialog({ bookId, open, onOpenChange }: Props) {
             </div>
             {/* 固定在底部 */}
             <div className="shrink-0 space-y-3">
+              {/* 音色仅解压背景模式需要（素材包不生成音频） */}
+              {mode === 'background' && (
               <div className="flex items-center gap-2">
                 <label className="text-sm font-medium shrink-0">音色：</label>
                 <select
@@ -503,18 +505,19 @@ export function PromoVideoDialog({ bookId, open, onOpenChange }: Props) {
                   试听
                 </Button>
               </div>
+              )}
               {/* 输出模式选择 */}
               <div className="space-y-2">
                 <label className="text-sm font-medium">输出模式：</label>
                 <div className="flex gap-1">
                   <Button
                     size="sm"
-                    variant={mode === 'cards' ? 'default' : 'outline'}
-                    onClick={() => setMode('cards')}
+                    variant={mode === 'pack' ? 'default' : 'outline'}
+                    onClick={() => setMode('pack')}
                     disabled={loading}
-                    title="黑色卡片左右滑动切换，导出 MP4"
+                    title="小说阅读式卡片图片 + 文案，zip 打包（不生成音频）"
                   >
-                    卡片视频
+                    素材包
                   </Button>
                   <Button
                     size="sm"
@@ -524,15 +527,6 @@ export function PromoVideoDialog({ bookId, open, onOpenChange }: Props) {
                     title="上传解压视频作为背景，烧录配音和字幕"
                   >
                     解压背景
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant={mode === 'pack' ? 'default' : 'outline'}
-                    onClick={() => setMode('pack')}
-                    disabled={loading}
-                    title="每句一张卡片图片 + 配音 + 文案，zip 打包"
-                  >
-                    素材包
                   </Button>
                 </div>
                 {mode === 'background' && (
@@ -570,9 +564,8 @@ export function PromoVideoDialog({ bookId, open, onOpenChange }: Props) {
                   </label>
                 )}
                 <p className="text-xs text-muted-foreground">
-                  {mode === 'cards' && '黑色卡片左右滑动切换，导出 MP4'}
                   {mode === 'background' && '上传解压视频作为背景，烧录配音和字幕'}
-                  {mode === 'pack' && '每句一张卡片图片 + 配音 + 文案，zip 打包'}
+                  {mode === 'pack' && '小说阅读式卡片图片 + 文案，zip 打包（不含音频）'}
                 </p>
               </div>
               {error && <p className="text-sm text-destructive">{error}</p>}
@@ -628,7 +621,7 @@ export function PromoVideoDialog({ bookId, open, onOpenChange }: Props) {
           <div className="space-y-4">
             {mode === 'pack' ? (
               <div className="text-center text-sm text-muted-foreground py-4">
-                素材包已生成：每句一张卡片 PNG + 配音 MP3 + 文案 TXT
+                素材包已生成：小说阅读式卡片 PNG + 文案 TXT（不含音频）
               </div>
             ) : videoUrl ? (
               <video src={videoUrl} controls className="w-full rounded-lg" style={{ aspectRatio: '9/16', maxHeight: '60vh' }} />

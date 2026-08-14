@@ -60,7 +60,7 @@ export class PromoService {
       voiceType: string;
       userId: string;
       bookId: string;
-      mode: 'cards' | 'background' | 'pack';
+      mode: 'background' | 'pack';
       backgroundUrl?: string;
     },
   ) {
@@ -99,26 +99,29 @@ export class PromoService {
         label: `脚本已就绪（${scriptLines.length} 句）`,
       });
 
-      // Step 1: TTS 逐句合成（拿每句真实时长，保证字幕同步）
-      send('step', {
-        step: 'tts',
-        status: 'generating',
-        label: `语音合成中（${scriptLines.length} 句）...`,
-      });
+      // Step 1: 素材包模式不需要配音（只出卡片图）；解压背景需要 TTS
+      let lineAudios: Array<{ url: string; durationSec: number }> = [];
+      if (params.mode !== 'pack') {
+        send('step', {
+          step: 'tts',
+          status: 'generating',
+          label: `语音合成中（${scriptLines.length} 句）...`,
+        });
 
-      const lineAudios = await this.ai.generateSpeechPerLine(
-        scriptLines,
-        params.voiceType || 'zh_female_xiaohe_uranus_bigtts',
-        params.userId,
-      );
-      const totalDur = lineAudios.reduce((s, a) => s + a.durationSec, 0);
+        lineAudios = await this.ai.generateSpeechPerLine(
+          scriptLines,
+          params.voiceType || 'zh_female_xiaohe_uranus_bigtts',
+          params.userId,
+        );
+        const totalDur = lineAudios.reduce((s, a) => s + a.durationSec, 0);
 
-      send('step', {
-        step: 'tts',
-        status: 'done',
-        label: `配音完成（${Math.round(totalDur)} 秒）`,
-        data: { lineAudios },
-      });
+        send('step', {
+          step: 'tts',
+          status: 'done',
+          label: `配音完成（${Math.round(totalDur)} 秒）`,
+          data: { lineAudios },
+        });
+      }
 
       // Step 2: 按模式分叉
       if (params.mode === 'pack') {
@@ -127,11 +130,7 @@ export class PromoService {
           status: 'generating',
           label: '生成卡片素材包...',
         });
-        const packUrl = await this.renderCardPack(
-          scriptLines,
-          blankBefore,
-          lineAudios,
-        );
+        const packUrl = await this.renderCardPack(scriptLines, blankBefore);
         send('step', {
           step: 'render',
           status: 'done',
@@ -154,25 +153,6 @@ export class PromoService {
           scriptLines,
           lineAudios,
           params.backgroundUrl,
-          send,
-        );
-        send('step', {
-          step: 'render',
-          status: 'done',
-          label: '视频生成完成',
-          data: { videoUrl },
-        });
-        send('done', { videoUrl });
-      } else {
-        send('step', {
-          step: 'render',
-          status: 'generating',
-          label: '渲染卡片切换视频...',
-        });
-        const videoUrl = await this.renderCardsVideo(
-          scriptLines,
-          blankBefore,
-          lineAudios,
           send,
         );
         send('step', {
@@ -400,190 +380,6 @@ export class PromoService {
     return `/uploads/videos/${path.basename(outFile)}`;
   }
 
-  // ============ 模式 B：卡片切换视频 ============
-
-  private async renderCardsVideo(
-    scriptLines: string[],
-    blankBefore: number[],
-    lineAudios: Array<{ url: string; durationSec: number }>,
-    send: (event: string, data: Record<string, any>) => void,
-  ): Promise<string> {
-    const ffmpegPath = this.getFfmpegPath();
-    const fontPath = this.getFontPath();
-    const { execSync } = require('child_process');
-    const dir = await this.ensureOutputDir();
-    const videoId = crypto.randomUUID();
-    const outputPath = path.join(dir, `promo-${videoId}.mp4`);
-
-    const lines = scriptLines.filter((l) => l.trim());
-    // 小说阅读式分页：每页多句，满页换页
-    const pages = this.paginateLines(lines, blankBefore);
-    // 每页时长 = 页内各行对应音频时长之和（段跨页时按行数占比分配该句时长）
-    const pageDurations: number[] = [];
-    for (const page of pages) {
-      let dur = 0;
-      for (const item of page) {
-        dur +=
-          lineAudios[item.audioIdx].durationSec *
-          (item.rows.length / item.totalRows);
-      }
-      pageDurations.push(dur);
-    }
-    const segFiles: string[] = [];
-
-    send('step', {
-      step: 'render',
-      status: 'generating',
-      label: `渲染 ${pages.length} 张卡片（总时长约 ${Math.round(pageDurations.reduce((s, d) => s + d, 0))} 秒）...`,
-    });
-
-    // 1. 每页渲染独立片段（时长 = 页内音频时长和 + 过渡余量）
-    for (let p = 0; p < pages.length; p++) {
-      const segPath = path.join(dir, `seg-${videoId}-${p}.mp4`);
-      // 手机小说排版：顶对齐（每页起始位置固定），上下边距 30px，段距 > 行距
-      // 页内剩余空间均摊到各段距（纵向微 justify），保证下边距 ≈ 30px
-      let used = 0;
-      let gaps = 0;
-      for (const item of pages[p]) {
-        used += item.rows.length * LINE_HEIGHT;
-        if (item.rows.length >= item.totalRows) {
-          used +=
-            item.blankBefore > 0
-              ? item.blankBefore * LINE_HEIGHT
-              : PARA_GAP - LINE_HEIGHT;
-          gaps++;
-        }
-      }
-      const extra = gaps > 0 ? (PromoService.PAGE_CONTENT_H - used) / gaps : 0;
-
-      let y = PromoService.TOP_MARGIN + Math.floor(FONT_SIZE / 2);
-      const drawChainParts: string[] = [];
-      for (const item of pages[p]) {
-        for (const chunk of item.rows) {
-          drawChainParts.push(
-            `drawtext=fontfile='${fontPath}'` +
-              `:text='${this.escapeText(chunk)}'` +
-              `:fontsize=${FONT_SIZE}` +
-              `:fontcolor=white` +
-              `:x=${PromoService.CARD_MARGIN_X}` +
-              `:y=${Math.round(y)}`,
-          );
-          y += LINE_HEIGHT;
-        }
-        // 段尾才加段间距（跨页拆断的段不加）；
-        // 有段前空行时 = 空行×行高（空行替代基础段距）；无空行时 = 基础段距
-        if (item.rows.length >= item.totalRows) {
-          y +=
-            (item.blankBefore > 0
-              ? item.blankBefore * LINE_HEIGHT
-              : PARA_GAP - LINE_HEIGHT) + extra;
-        }
-      }
-      const drawChain = drawChainParts.join(',');
-      const cmd = [
-        `"${ffmpegPath}"`,
-        '-f',
-        'lavfi',
-        '-i',
-        `color=c=0x1a1a2e:s=${W}x${H}:d=${(pageDurations[p] + XFADE_SEC).toFixed(2)}:r=30`,
-        '-vf',
-        drawChain,
-        '-c:v',
-        'libx264',
-        '-preset',
-        'ultrafast',
-        '-pix_fmt',
-        'yuv420p',
-        '-an',
-        '-y',
-        `"${segPath.replace(/\\/g, '/')}"`,
-      ].join(' ');
-      execSync(cmd, { timeout: 60000, encoding: 'utf8', stdio: 'pipe' });
-      segFiles.push(segPath);
-    }
-
-    // 2. 合并音频
-    const mergedAudioUrl = await this.concatAudios(lineAudios);
-    const mergedAudioPath = path.join(
-      __dirname,
-      '..',
-      '..',
-      'public',
-      mergedAudioUrl,
-    );
-
-    try {
-      if (segFiles.length === 1) {
-        execSync(
-          [
-            `"${ffmpegPath}"`,
-            '-i',
-            `"${segFiles[0].replace(/\\/g, '/')}"`,
-            '-i',
-            `"${mergedAudioPath.replace(/\\/g, '/')}"`,
-            '-c:v',
-            'copy',
-            '-c:a',
-            'aac',
-            '-b:a',
-            '128k',
-            '-shortest',
-            '-y',
-            `"${outputPath.replace(/\\/g, '/')}"`,
-          ].join(' '),
-          { timeout: 60000, encoding: 'utf8', stdio: 'pipe' },
-        );
-      } else {
-        // 多段：链式 xfade，offset 按每页真实时长累加
-        const filterParts: string[] = [];
-        let curOffset = pageDurations[0];
-        for (let i = 1; i < segFiles.length; i++) {
-          const inA = i === 1 ? '[0:v]' : `[v${i - 1}]`;
-          const out = i === segFiles.length - 1 ? '[vout]' : `[v${i}]`;
-          filterParts.push(
-            `${inA}[${i}:v]xfade=transition=slideleft:duration=${XFADE_SEC}:offset=${curOffset.toFixed(2)}${out}`,
-          );
-          curOffset += pageDurations[i];
-        }
-        const inputArgs = segFiles
-          .map((f) => `-i "${f.replace(/\\/g, '/')}"`)
-          .join(' ');
-        execSync(
-          [
-            `"${ffmpegPath}"`,
-            inputArgs,
-            '-i',
-            `"${mergedAudioPath.replace(/\\/g, '/')}"`,
-            '-filter_complex',
-            `"${filterParts.join(';')}"`,
-            '-map',
-            '[vout]',
-            '-map',
-            `${segFiles.length}:a`,
-            '-c:v',
-            'libx264',
-            '-preset',
-            'ultrafast',
-            '-pix_fmt',
-            'yuv420p',
-            '-c:a',
-            'aac',
-            '-b:a',
-            '128k',
-            '-shortest',
-            '-y',
-            `"${outputPath.replace(/\\/g, '/')}"`,
-          ].join(' '),
-          { timeout: 180000, encoding: 'utf8', stdio: 'pipe' },
-        );
-      }
-    } finally {
-      for (const f of segFiles) unlink(f).catch(() => {});
-    }
-
-    return `/uploads/videos/promo-${videoId}.mp4`;
-  }
-
   // ============ 模式 C：解压视频背景 ============
 
   private async renderBackgroundVideo(
@@ -704,7 +500,6 @@ export class PromoService {
   private async renderCardPack(
     scriptLines: string[],
     blankBefore: number[],
-    lineAudios: Array<{ url: string; durationSec: number }>,
   ): Promise<string> {
     const { createCanvas, GlobalFonts } = require('@napi-rs/canvas');
     const JSZip = require('jszip');
@@ -774,19 +569,8 @@ export class PromoService {
       zip.file(`card-${String(p + 1).padStart(2, '0')}.png`, png);
     }
 
-    // 附文案和音频
+    // 附文案（素材包只含卡片图和文案，不生成音频）
     zip.file('script.txt', lines.join('\n'));
-    const mergedAudioUrl = await this.concatAudios(lineAudios);
-    const audioPath = path.join(
-      __dirname,
-      '..',
-      '..',
-      'public',
-      mergedAudioUrl,
-    );
-    const { readFile } = require('fs/promises');
-    const audioBuffer = await readFile(audioPath);
-    zip.file('audio.mp3', audioBuffer);
 
     const zipBuffer = await zip.generateAsync({
       type: 'nodebuffer',

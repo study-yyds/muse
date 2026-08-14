@@ -15,3 +15,6 @@ client/playwright-report/
 
 # 运行时生成产物（音频/视频/图片）
 server/public/uploads/
+
+# 运行时日志
+server/logs/

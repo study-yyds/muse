@@ -19,7 +19,7 @@ interface BookSettings {
 
 interface Props {
   bookId: string;
-  book?: { title: string };
+  book?: { title: string; type?: string };
   coverUrl?: string | null;
   onCoverChange?: (url: string) => void;
   onCoverHistory?: (history: string[]) => void;
@@ -180,7 +180,8 @@ export function BookSettingsPanel({ bookId, book, coverUrl, onCoverChange }: Pro
       <Separator />
 
       {/* 作品简介 */}
-      <SynopsisSection bookId={bookId} />
+      {/* 短篇不需要简介：短篇平台的"简介"就是正文开头三句，不单独生成 */}
+      {book?.type !== "short" && <SynopsisSection bookId={bookId} />}
 
       <Separator />
 

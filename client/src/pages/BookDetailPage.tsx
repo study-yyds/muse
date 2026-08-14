@@ -263,7 +263,7 @@ export function BookDetailPage() {
 
         {/* 主内容区 */}
         <div className="flex-1 min-h-0">
-          {section === "write" && bookId && <WritingEditor bookId={bookId} />}
+          {section === "write" && bookId && <WritingEditor bookId={bookId} bookType={book.type} />}
           {section === "outline" && bookId && (
             <div className="p-4 h-full min-h-0"><OutlinePanel bookId={bookId} /></div>
           )}
@@ -277,7 +277,7 @@ export function BookDetailPage() {
             <div className="p-4 h-full overflow-y-auto"><WritingStats bookId={bookId} /></div>
           )}
           {section === "settings" && bookId && (
-            <div className="h-full overflow-y-auto"><BookSettingsPanel bookId={bookId} coverUrl={coverUrl} onCoverChange={setCoverUrl} /></div>
+            <div className="h-full overflow-y-auto"><BookSettingsPanel bookId={bookId} book={book} coverUrl={coverUrl} onCoverChange={setCoverUrl} /></div>
           )}
         </div>
 
@@ -624,7 +624,17 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
     const r = await fetch("/api/ai/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
-      body: JSON.stringify({ book_id: bookId, context_type: section, model, message: msg, messages: prevMsgs, ...bodyExtra }),
+      body: JSON.stringify({
+        book_id: bookId,
+        context_type: section,
+        model,
+        message: msg,
+        messages: prevMsgs,
+        // 带当前章节和光标位置，让 AI 知道正在写的内容
+        chapter_id: useEditorStore.getState().activeChapterId ?? undefined,
+        cursor_position: useEditorStore.getState().cursorPosition ?? undefined,
+        ...bodyExtra,
+      }),
       signal,
     });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);

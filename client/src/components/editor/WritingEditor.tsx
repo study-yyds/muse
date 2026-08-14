@@ -22,12 +22,14 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { PromoVideoDialog } from "@/components/promo/PromoVideoDialog";
+import { ZhihuPackDialog } from "@/components/zhihu/ZhihuPackDialog";
 
 interface Props {
   bookId: string;
+  bookType?: string;
 }
 
-export function WritingEditor({ bookId }: Props) {
+export function WritingEditor({ bookId, bookType }: Props) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
@@ -44,6 +46,7 @@ export function WritingEditor({ bookId }: Props) {
     typeof window !== 'undefined' && window.innerWidth < 768,
   );
   const [promoOpen, setPromoOpen] = useState(false);
+  const [zhihuOpen, setZhihuOpen] = useState(false);
   const selectedText = useEditorStore((s) => s.selectedText);
 
   // 当前章节内容
@@ -272,6 +275,17 @@ export function WritingEditor({ bookId }: Props) {
               </select>
             )}
             {isDirty && <span className="text-xs text-muted-foreground">未保存</span>}
+            {bookType === 'short' && activeChapterId && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setZhihuOpen(true)}
+                title="生成知乎体标题和抓人开篇"
+              >
+                <Sparkles className="size-4 mr-1" />
+                知乎包装
+              </Button>
+            )}
             {selectedText && (
               <Button
                 size="sm"
@@ -316,6 +330,17 @@ export function WritingEditor({ bookId }: Props) {
 
 
       <PromoVideoDialog bookId={bookId} open={promoOpen} onOpenChange={setPromoOpen} />
+      <ZhihuPackDialog
+        bookId={bookId}
+        content={editorContent}
+        open={zhihuOpen}
+        onOpenChange={setZhihuOpen}
+        onApplyOpening={(opening) => {
+          // 替换章节前 500 字为改写开篇
+          setEditorContent(opening + '\n\n' + editorContent.slice(500));
+          setIsDirty(true);
+        }}
+      />
     </div>
   );
 }

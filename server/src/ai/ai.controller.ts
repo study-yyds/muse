@@ -10,6 +10,7 @@ import {
   Param,
   Query,
   UseGuards,
+  BadRequestException,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { AiService } from './ai.service';
@@ -216,6 +217,48 @@ export class AiController {
   }
 
   // ============== AI 生图 ==============
+
+  @UseGuards(aiRateLimit)
+  @Post('generate-story')
+  async generateStory(
+    @Body()
+    body: {
+      book_id: string;
+      premise: string;
+      model?: string;
+    },
+    @Res() res: Response,
+    @Req() req: Request,
+  ) {
+    if (!body.book_id) {
+      throw new BadRequestException('缺少 book_id');
+    }
+    await this.ai.checkBookOwnership(body.book_id, (req as any).userId);
+    await this.ai.generateStory(res, {
+      user_id: (req as any).userId,
+      book_id: body.book_id,
+      premise: body.premise || '',
+      model: body.model,
+    });
+  }
+
+  @UseGuards(aiRateLimit)
+  @Post('zhihu-pack')
+  async zhihuPack(
+    @Body() body: { book_id: string; content: string },
+    @Req() req: Request,
+  ) {
+    if (!body.content?.trim()) {
+      throw new BadRequestException('缺少章节内容');
+    }
+    await this.ai.checkBookOwnership(body.book_id, (req as any).userId);
+    const data = await this.ai.generateZhihuPack(
+      body.content,
+      (req as any).userId,
+      body.book_id,
+    );
+    return { code: 200, data };
+  }
 
   @UseGuards(aiRateLimit)
   @Post('generate-synopsis')

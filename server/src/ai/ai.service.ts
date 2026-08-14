@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, sql } from 'drizzle-orm';
 import { getDb, schema } from '../database/connection';
 import { Response } from 'express';
 import crypto from 'crypto';
@@ -43,7 +43,12 @@ export class AiService {
     userId: string | undefined,
     usage: 'chat' | 'image',
     modelHint?: string,
-  ): Promise<{ apiKey: string; baseUrl: string; model: string }> {
+  ): Promise<{
+    apiKey: string;
+    baseUrl: string;
+    model: string;
+    source: 'user' | 'platform';
+  }> {
     const db = getDb();
     if (userId) {
       const keys = await db
@@ -83,6 +88,7 @@ export class AiService {
             apiKey: decrypted,
             baseUrl: k.base_url,
             model: k.model_name,
+            source: 'user',
           };
         } catch {
           /* fall through */
@@ -99,6 +105,7 @@ export class AiService {
           process.env.QWEN_BASE_URL ||
           'https://llm-6pagmd0n2hiazjz1.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
         model: modelHint || 'qwen3.7-plus',
+        source: 'platform',
       };
     }
 
@@ -107,12 +114,14 @@ export class AiService {
           apiKey: process.env.VOLCANO_IMAGE_KEY || '',
           baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
           model: modelHint || 'doubao-seedream-5-0-260128',
+          source: 'platform',
         }
       : {
           apiKey: process.env.AI_PLATFORM_KEY || '',
           baseUrl:
             process.env.AI_PLATFORM_BASE_URL || 'https://api.deepseek.com/v1',
           model: modelHint || 'deepseek-v4-flash',
+          source: 'platform',
         };
   }
 
@@ -241,6 +250,50 @@ export class AiService {
     }
   }
 
+  /**
+   * 记录 AI 用量：明细表 + 月度汇总原子累加
+   * 中文按 1 字 ≈ 1 token 估算；失败不阻断主流程（用量记录不影响生成）
+   */
+  private async recordUsage(params: {
+    userId?: string;
+    bookId?: string;
+    model: string;
+    inChars: number;
+    outChars: number;
+    usageType: 'platform_key' | 'user_key';
+  }): Promise<void> {
+    if (!params.userId) return;
+    try {
+      const db = getDb();
+      const tokenCount = Math.max(
+        1,
+        Math.round((params.inChars + params.outChars) * 0.75),
+      );
+      await db.insert(schema.token_usage_records).values({
+        user_id: params.userId,
+        book_id: params.bookId || null,
+        token_count: tokenCount,
+        model_name: params.model,
+        usage_type: params.usageType,
+      });
+      const month = new Date().toISOString().slice(0, 7);
+      await db
+        .insert(schema.user_monthly_quota)
+        .values({ user_id: params.userId, month, used_tokens: tokenCount })
+        .onConflictDoUpdate({
+          target: [
+            schema.user_monthly_quota.user_id,
+            schema.user_monthly_quota.month,
+          ],
+          set: {
+            used_tokens: sql`${schema.user_monthly_quota.used_tokens} + ${tokenCount}`,
+          },
+        });
+    } catch (e: any) {
+      console.error('[usage] record failed:', e.message);
+    }
+  }
+
   // 构建引导模式 system prompt
   static buildGuideSystemPrompt(context?: string, type?: string): string {
     const isShort = type === 'short';
@@ -330,6 +383,11 @@ ${context ? `\n【用户的初始想法】\n${context}` : ''}`;
           8192,
           resolved.apiKey,
           resolved.baseUrl,
+          {
+            userId: params.user_id,
+            bookId: params.book_id || undefined,
+            usageType: resolved.source === 'user' ? 'user_key' : 'platform_key',
+          },
         );
       } catch (e: any) {
         console.error('[guide_mode] stream error:', e.message ?? e);
@@ -342,38 +400,42 @@ ${context ? `\n【用户的初始想法】\n${context}` : ''}`;
       return;
     }
 
-    // 校验所有权
-    if (params.user_id) {
+    // 校验所有权（空 book_id = 作品外临时请求，如随机灵感，跳过）
+    if (params.user_id && params.book_id) {
       await this.checkBookOwnership(params.book_id, params.user_id);
     }
 
-    // 查作品类型
-    const [book] = await db
-      .select({ type: schema.books.type })
-      .from(schema.books)
-      .where(eq(schema.books.book_id, params.book_id))
-      .limit(1);
-    const bookType = book?.type ?? 'novel';
+    // 查作品类型（空 book_id 跳过查询，按长篇默认）
+    let bookType = 'novel';
+    if (params.book_id) {
+      const [book] = await db
+        .select({ type: schema.books.type })
+        .from(schema.books)
+        .where(eq(schema.books.book_id, params.book_id))
+        .limit(1);
+      bookType = book?.type ?? 'novel';
+    }
 
     // 短篇跳过上下文加载（不需要世界观/大纲/角色）
     const isShort = bookType === 'short';
 
-    // 通用上下文：角色（完整字段）、世界观、大纲（长篇才加载）
-    const chars = isShort
+    // 通用上下文：角色（完整字段）、世界观、大纲（长篇才加载；空 book_id 全跳过）
+    const skipCtx = isShort || !params.book_id;
+    const chars = skipCtx
       ? []
       : await db
           .select()
           .from(schema.characters)
           .where(eq(schema.characters.book_id, params.book_id));
 
-    const [world] = isShort
+    const [world] = skipCtx
       ? [null]
       : await db
           .select()
           .from(schema.world_settings)
           .where(eq(schema.world_settings.book_id, params.book_id));
 
-    const [outline] = isShort
+    const [outline] = skipCtx
       ? [null]
       : await db
           .select()
@@ -414,6 +476,7 @@ ${context ? `\n【用户的初始想法】\n${context}` : ''}`;
         .select({
           title: schema.chapters.title,
           content: schema.chapters.content,
+          sort_order: schema.chapters.sort_order,
           bound_outline_node_id: schema.chapters.bound_outline_node_id,
         })
         .from(schema.chapters)
@@ -425,6 +488,28 @@ ${context ? `\n【用户的初始想法】\n${context}` : ''}`;
         );
 
       if (ch) {
+        // 前情提要：长篇 AI 记忆——取当前章之前最近 10 章的标题+开头，
+        // 避免长篇越写 AI 越"失忆"（零 AI 成本，纯查询）
+        let recapBlock = '';
+        if (!isShort) {
+          const prevChapters = await db
+            .select({
+              title: schema.chapters.title,
+              content: schema.chapters.content,
+            })
+            .from(schema.chapters)
+            .where(
+              and(
+                eq(schema.chapters.book_id, params.book_id),
+                sql`${schema.chapters.sort_order} < ${ch.sort_order}`,
+              ),
+            )
+            .orderBy(desc(schema.chapters.sort_order))
+            .limit(10);
+          if (prevChapters.length > 0) {
+            recapBlock = AiService.buildRecap(prevChapters.reverse());
+          }
+        }
         // 章节文本上下文
         const cursorPos = params.cursor_position ?? 0;
         const before = ch.content.slice(
@@ -432,7 +517,7 @@ ${context ? `\n【用户的初始想法】\n${context}` : ''}`;
           cursorPos,
         );
         const after = ch.content.slice(cursorPos, cursorPos + 500);
-        chapterContext = `【当前章节】
+        chapterContext = `${recapBlock}【当前章节】
 标题：${ch.title}
 总字数：${ch.content.length}
 
@@ -736,6 +821,11 @@ ${extra.guide_full_log ? `\n【引导讨论原始记录——参考细节】\n${
         isShort ? 24576 : 8192,
         resolved.apiKey,
         resolved.baseUrl,
+        {
+          userId: params.user_id,
+          bookId: params.book_id || undefined,
+          usageType: resolved.source === 'user' ? 'user_key' : 'platform_key',
+        },
       );
     } catch (e: any) {
       res.write(
@@ -753,6 +843,11 @@ ${extra.guide_full_log ? `\n【引导讨论原始记录——参考细节】\n${
     maxTokens = 8192,
     customApiKey?: string,
     customBaseUrl?: string,
+    usage?: {
+      userId?: string;
+      bookId?: string;
+      usageType: 'platform_key' | 'user_key';
+    },
   ) {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
@@ -855,6 +950,24 @@ ${extra.guide_full_log ? `\n【引导讨论原始记录——参考细节】\n${
             }
           }
         }
+      }
+
+      // 用量记录（估算 token：输入 + 输出；失败不阻断）
+      if (usage?.userId) {
+        const inChars =
+          systemPrompt.length +
+          messages.reduce(
+            (s: number, m: any) => s + (m.content?.length || 0),
+            0,
+          );
+        await this.recordUsage({
+          userId: usage.userId,
+          bookId: usage.bookId,
+          model,
+          inChars,
+          outChars: fullContent.length + fullReasoning.length,
+          usageType: usage.usageType,
+        });
       }
 
       // 多级回退提取 JSON action（对齐快捷创作解析器）
@@ -1748,6 +1861,7 @@ ${sample.slice(0, 5000)}`,
 
   // ============== 生成简介 ==============
 
+  /** 生成作品简介（blurb，展示在封面/平台用；命名沿用 synopsis 但语义是简介不是梗概） */
   async generateSynopsis(bookId: string, userId?: string, model?: string) {
     const db = getDb();
     const [book] = await db
@@ -1765,9 +1879,10 @@ ${sample.slice(0, 5000)}`,
       .select({ content: schema.chapters.content })
       .from(schema.chapters)
       .where(eq(schema.chapters.book_id, bookId))
-      .orderBy(schema.chapters.sort_order)
+      .orderBy(desc(schema.chapters.sort_order))
       .limit(5);
     const chapterSamples = chapters
+      .reverse() // 恢复时间顺序
       .map((c) => c.content?.slice(0, 1000))
       .join('\n');
     const chars = await db
@@ -1795,7 +1910,18 @@ ${sample.slice(0, 5000)}`,
       : [];
     const nodeBrief = nodes.map((n) => n.title).join(' → ');
 
-    const prompt = `根据以下信息，为小说《${book.title}》写一段简介（200-400字），吸引读者。概况主线、主要冲突和看点。只输出简介文本。`;
+    const prompt = `你是网文平台的爆款编辑。为小说《${book.title}》写一段简介（150-250字），用于封面/平台展示吸引读者。
+
+要求：
+1. 第一句就是钩子：悬念/反差/信息差式，让人想点开
+2. 只给钩子和看点，绝不剧透结局和高潮反转
+3. 知乎体文风：短句有力，不写"这是一部关于……的小说"式套话
+
+参考调性：
+"我替仇人养了十年孩子，直到他亲爹找上门。"
+"全班都以为我死了，直到我出现在高考考场。"
+
+只输出简介文本。`;
 
     const summary = [
       chapterSamples ? `内容节选：${chapterSamples.slice(0, 2000)}` : '',
@@ -1824,6 +1950,15 @@ ${sample.slice(0, 5000)}`,
       });
       const data = await res.json();
       const synopsis = (data.choices?.[0]?.message?.content || '').trim();
+      // 用量记录
+      await this.recordUsage({
+        userId,
+        bookId,
+        model: resolved.model,
+        inChars: prompt.length + summary.length,
+        outChars: synopsis.length,
+        usageType: resolved.source === 'user' ? 'user_key' : 'platform_key',
+      });
       if (synopsis) {
         const [settings] = await db
           .select({ extra: schema.book_settings.extra })
@@ -1842,7 +1977,164 @@ ${sample.slice(0, 5000)}`,
     }
   }
 
+  // ============== 知乎体包装 ==============
+
+  /**
+   * 知乎体包装：基于章节开头生成 5 个标题候选 + 2 个开篇改写版本
+   * 非流式，一次返回
+   */
+  async generateZhihuPack(
+    content: string,
+    userId?: string,
+    bookId?: string,
+  ): Promise<{ titles: string[]; openings: string[] }> {
+    const resolved = await this.resolveApiKey(userId, 'chat');
+    if (!resolved.apiKey) throw new Error('AI 服务未配置');
+
+    const sample = sanitizePrompt(content).slice(0, 500);
+    const prompt = `你是知乎盐选爆款短篇的金牌编辑。根据下面的短篇小说开头，完成两件事：
+
+1. 生成 5 个知乎体标题：信息差/反差/悬念式，15 字以内，让人一眼想点开
+2. 改写 2 个开篇版本：三句内直给冲突或悬念，第一人称「我」叙述，保留原文核心情节和文风，每个版本 100-200 字
+
+严格只输出 JSON（不要 markdown 代码块，不要任何解释）：
+{"titles":["标题1","标题2","标题3","标题4","标题5"],"openings":["开篇版本1","开篇版本2"]}
+
+小说开头：
+${sample}`;
+
+    try {
+      const res = await fetch(`${resolved.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${resolved.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: resolved.model,
+          messages: [
+            { role: 'system', content: prompt },
+            { role: 'user', content: sample },
+          ],
+          max_tokens: 1500,
+        }),
+        signal: AbortSignal.timeout(60000),
+      });
+      const data = await res.json();
+      const text = (data.choices?.[0]?.message?.content || '').trim();
+      // 容错：剥离可能出现的 markdown 代码块包裹
+      const jsonText = text
+        .replace(/^```(?:json)?\s*/i, '')
+        .replace(/```\s*$/, '')
+        .trim();
+      const parsed = JSON.parse(jsonText);
+      const titles = Array.isArray(parsed.titles)
+        ? parsed.titles
+            .slice(0, 5)
+            .map((t: any) => String(t).trim())
+            .filter(Boolean)
+        : [];
+      const openings = Array.isArray(parsed.openings)
+        ? parsed.openings
+            .slice(0, 3)
+            .map((o: any) => String(o).trim())
+            .filter(Boolean)
+        : [];
+      if (titles.length === 0 && openings.length === 0) {
+        throw new Error('AI 返回为空');
+      }
+      // 用量记录
+      await this.recordUsage({
+        userId,
+        bookId: bookId || undefined,
+        model: resolved.model,
+        inChars: prompt.length,
+        outChars: text.length,
+        usageType: resolved.source === 'user' ? 'user_key' : 'platform_key',
+      });
+      return { titles, openings };
+    } catch (e: any) {
+      throw new Error(`知乎体包装生成失败：${e.message?.slice(0, 200)}`);
+    }
+  }
+
   // ============== 快捷创作 ==============
+
+  /**
+   * 条件规则：根据用户想法中的题材意图，动态生成创作规则段（纯函数，可单测）
+   * 复仇/悬疑类注入"信息差不摊牌"；甜宠/治愈类注入"允许坦白"；有加害者题材注入"代价铁律"
+   */
+  static buildConditionalRules(premise: string): string {
+    const p = premise || '';
+    const hasRevenge =
+      /复仇|打脸|虐渣|报复|逆袭|重生|穿越|穿书|预知|怪谈|悬疑|惊悚|反转/.test(
+        p,
+      );
+    const hasSweet = /甜宠|治愈|温馨|亲情|友情|温暖|救赎|双向奔赴/.test(p);
+    const hasVillain = /复仇|打脸|虐渣|背叛|欺负|霸凌|害死|陷害/.test(p);
+
+    if (!hasRevenge && !hasSweet) return ''; // 中性题材不加条件规则
+
+    const rules: string[] = [];
+    if (hasRevenge && !hasSweet) {
+      rules.push(
+        '信息差是命根子：主角的秘密（重生/穿越/预知）是核心筹码，不主动向任何人摊牌；对方也是重生者时双方各自隐藏、互相试探、话里有话，禁止直接说出底牌',
+      );
+    }
+    if (hasSweet) {
+      rules.push(
+        '允许在情感高潮处坦白（"我重生回来就是为了你"），坦白本身就是甜点',
+      );
+    }
+    if (hasVillain) {
+      rules.push(
+        '加害者必须付出代价：伤害过主角的人要有对应惩罚或赎罪，禁止"杀妻两世最后相安无事"式轻轻放下；若和解必须先有足够的代价铺垫',
+      );
+    }
+    return `【本作题材约束——优先于通用规则】\n${rules.map((r) => `- ${r}`).join('\n')}`;
+  }
+
+  /**
+   * 前情提要文本构建（纯函数，可单测）：
+   * 每章一行「标题：开头 150 字」，注入续写 prompt 保持长篇连贯
+   */
+  static buildRecap(
+    chapters: Array<{ title: string; content: string }>,
+  ): string {
+    if (chapters.length === 0) return '';
+    return (
+      '【前情提要——之前章节的梗概，续写时保持连贯】\n' +
+      chapters
+        .map(
+          (c) =>
+            `《${c.title}》：${(c.content || '').slice(0, 150).replace(/\n/g, ' ')}`,
+        )
+        .join('\n') +
+      '\n\n'
+    );
+  }
+
+  /**
+   * 书名候选兜底：AI 多次失败时，用题材词拼 3 个变体，保证候选区有得选
+   * 纯函数，可单测
+   */
+  static buildTitleFallback(premise: string): string[] {
+    const base = premise.slice(0, 15).trim() || '短篇故事';
+    const topicMatch = premise.match(/写一个(.+?)短篇/);
+    const topic = (topicMatch?.[1] || base).slice(0, 10);
+    return [base, `${topic}之后，我逆天改命`, `这一世，${topic}我要先手翻盘`];
+  }
+
+  /** 故事前中后三段节选（供书名生成等理解完整故事弧线的场景） */
+  private storySample(storyText: string): string {
+    const len = storyText.length;
+    if (len <= 1200) return storyText;
+    return [
+      storyText.slice(0, 500),
+      storyText.slice(Math.floor(len * 0.4), Math.floor(len * 0.4) + 300),
+      storyText.slice(Math.floor(len * 0.85), Math.floor(len * 0.85) + 300),
+    ].join('\n\n……\n\n');
+  }
 
   // 短篇快捷创作：输入脑洞 → AI 直接写完完整故事
   async quickCreateShort(
@@ -1868,6 +2160,12 @@ ${sample.slice(0, 5000)}`,
       res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 
     let bookId: string | undefined;
+    // 客户端断连检测：刷新/关闭页面时中止 AI 生成，避免继续烧钱
+    const abortCtrl = new AbortController();
+    const onClientClose = () => abortCtrl.abort();
+    res.on('close', onClientClose);
+    const genSignal = (timeoutMs: number) =>
+      AbortSignal.any([abortCtrl.signal, AbortSignal.timeout(timeoutMs)]);
     try {
       // Step 1: 创建短篇作品 + 唯一章节
       send('step', { step: 'book', status: 'generating', label: '创建作品' });
@@ -1881,10 +2179,9 @@ ${sample.slice(0, 5000)}`,
       await db
         .insert(schema.book_settings)
         .values({ book_id: bookId, preset_style: 'default' });
-      const [chapter] = await db
+      await db
         .insert(schema.chapters)
-        .values({ book_id: bookId, title: '正文', sort_order: 1 })
-        .returning({ chapter_id: schema.chapters.chapter_id });
+        .values({ book_id: bookId, title: '正文', sort_order: 1 });
       send('step', {
         step: 'book',
         status: 'done',
@@ -1892,46 +2189,225 @@ ${sample.slice(0, 5000)}`,
         book_id: bookId,
       });
 
-      // Step 2: AI 生成完整短篇
+      // Step 2: 生成故事梗概（含结局走向，供用户确认后再写正文）
       send('step', {
         step: 'story',
         status: 'generating',
-        label: '正在写故事...',
+        label: '正在构思故事梗概...',
       });
       const guideBlock = params.guide_summary
         ? `\n【创作方向——请严格遵循以下设定】\n${params.guide_summary}\n${params.guide_full_log ? `\n【引导讨论记录——参考细节】\n${params.guide_full_log}\n` : ''}`
         : '';
-      const storyPrompt = `${guideBlock}你是知乎盐选爆款短篇作家。参照以下风格：
+      const outlinePrompt = `${guideBlock}你是知乎盐选短篇的故事策划。根据脑洞，写一个 400-500 字的故事梗概，包含：
+1. 故事核心设定与开篇钩子
+2. 主角欲望与主要阻碍
+3. 冲突升级的关键节点（3-5 个）
+4. 高潮与结局走向（包括最终反转）
+5. 一句总结性主题（结尾金句方向）
 
-【节奏示范】
-结婚三年，顾景琛从没碰过我。直到我递上离婚协议那天，他却疯了。
+纯文本输出，不要编号、不要标题、不要解释。`;
+      const r1 = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: outlinePrompt },
+            {
+              role: 'user',
+              content: `脑洞/想法：${premise}\n\n请写故事梗概。`,
+            },
+          ],
+          max_tokens: 1500,
+          temperature: 0.7,
+        }),
+        signal: genSignal(60_000),
+      });
+      if (!r1.ok) {
+        send('error', { message: `AI 请求失败 (${r1.status})` });
+        res.end();
+        return;
+      }
+      const data1 = await r1.json();
+      const preview = (data1.choices?.[0]?.message?.content ?? '').trim();
 
-他站在暴雨里，浑身湿透，手里攥着被我改过的那份协议。我坐在暖烘烘的咖啡厅里，隔着落地窗看他。林薇戳了戳我胳膊："你就让他那么淋着？" "淋着吧。"我搅了搅咖啡，"淋不坏。"
+      if (!preview) {
+        throw new Error('梗概生成失败：AI 返回为空');
+      }
+      // 梗概存 book_settings.extra，供确认后写正文
+      {
+        const [s] = await db
+          .select({ extra: schema.book_settings.extra })
+          .from(schema.book_settings)
+          .where(eq(schema.book_settings.book_id, bookId))
+          .limit(1);
+        const extra = (s?.extra ?? {}) as Record<string, any>;
+        extra.outline_preview = preview;
+        if (params.guide_summary || params.guide_full_log) {
+          extra.guide_summary = params.guide_summary || '';
+          extra.guide_full_log = params.guide_full_log || '';
+        }
+        await db
+          .update(schema.book_settings)
+          .set({ extra: extra as any })
+          .where(eq(schema.book_settings.book_id, bookId));
+      }
+      send('step', {
+        step: 'story',
+        status: 'done',
+        label: '故事梗概已生成',
+        preview,
+      });
+      await this.recordUsage({
+        userId: params.user_id,
+        bookId,
+        model,
+        inChars: outlinePrompt.length + premise.length,
+        outChars: preview.length,
+        usageType: resolved.source === 'user' ? 'user_key' : 'platform_key',
+      });
+      send('done', { book_id: bookId, preview });
+    } catch (err: any) {
+      // 回滚：删除已创建的资源（断连也回滚，不留半成品空书）
+      if (bookId) {
+        try {
+          const db2 = getDb();
+          await db2
+            .delete(schema.chapters)
+            .where(eq(schema.chapters.book_id, bookId));
+          await db2
+            .delete(schema.book_settings)
+            .where(eq(schema.book_settings.book_id, bookId));
+          await db2
+            .delete(schema.books)
+            .where(eq(schema.books.book_id, bookId));
+        } catch {
+          /* 回滚失败不掩盖原始错误 */
+        }
+      }
+      // 客户端断连：不发 error（连接已断）；正常失败：通知前端
+      if (abortCtrl.signal.aborted) {
+        console.log(
+          '[quickCreateShort] client disconnected, generation aborted',
+        );
+      } else {
+        send('error', { message: err?.message ?? '生成失败' });
+      }
+    } finally {
+      res.off('close', onClientClose);
+      res.end();
+    }
+  }
 
-三小时。他在雨里站了三小时。我在咖啡厅里续了两杯拿铁。最后他推门进来，眼眶通红："协议上写的——房子归你，存款归你。我只要一个机会。"
+  /**
+   * 短篇正文生成：梗概确认后的第二步——按已确认的梗概写完整故事 + 书名候选
+   */
+  async generateStory(
+    res: Response,
+    params: {
+      user_id: string;
+      book_id: string;
+      premise: string;
+      model?: string;
+    },
+  ) {
+    const db = getDb();
+    const model = params.model || 'deepseek-v4-flash';
+    const resolved = await this.resolveApiKey(params.user_id, 'chat', model);
+    const apiKey = resolved.apiKey;
+    const baseUrl = resolved.baseUrl;
+    const premise = sanitizePrompt(params.premise);
+    const bookId = params.book_id;
 
-我放下杯子，看着他狼狈的样子，忽然觉得很平静。
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    const send = (event: string, data: Record<string, any>) =>
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 
-"顾景琛，"我说，"你要机会？三年前你跟实习生去三亚，我给过。两年前你把我的存款转走，我给过。一年前你妈上门骂我，我还是给过。现在——你问老天要去吧。"
+    // 客户端断连检测
+    const abortCtrl = new AbortController();
+    const onClientClose = () => abortCtrl.abort();
+    res.on('close', onClientClose);
+    const genSignal = (timeoutMs: number) =>
+      AbortSignal.any([abortCtrl.signal, AbortSignal.timeout(timeoutMs)]);
 
-我推门出去，雨停了。手机一震，律师发来消息："财产交割完成，恭喜。"
+    try {
+      // 读已确认的梗概 + 章节
+      const [settings] = await db
+        .select({ extra: schema.book_settings.extra })
+        .from(schema.book_settings)
+        .where(eq(schema.book_settings.book_id, bookId))
+        .limit(1);
+      const preview =
+        (settings?.extra as any)?.outline_preview ||
+        (settings?.extra as any)?.guide_summary ||
+        premise.slice(0, 200);
+      const [chapter] = await db
+        .select({ chapter_id: schema.chapters.chapter_id })
+        .from(schema.chapters)
+        .where(eq(schema.chapters.book_id, bookId))
+        .orderBy(schema.chapters.sort_order)
+        .limit(1);
+      if (!chapter) throw new Error('章节不存在');
 
-原来甩掉一个错的人，比遇见一个对的人，更让人快乐。
+      // Step 1: 写正文（两轮，梗概作为走向锚点）
+      send('step', {
+        step: 'story',
+        status: 'generating',
+        label: '正在写故事前半部分...',
+      });
+      const storyPrompt = `你是知乎盐选爆款短篇作家。以下铁律按重要性排序，全部必须遵守：
 
-【通用结构——所有短篇类型适用】
-1. 开篇第一句就是冲突/悬念——不铺垫、不写景、不交代背景
-2. 每段 1-3 句，段间空一行。对话占比 40%+，让人物自己推进剧情
-3. 段末钩子：每段最后一句让读者想问"然后呢？"
-4. 反差制造爽感：预期→意外→奖励，每 300-500 字循环一次
-5. 8000-12000 字，前 1/3 冲突堆到高点，后 2/3 展开+收束
-6. 主要角色 ≤5 个，配角不给名字避免混淆
+【已确认的故事梗概——严格按此走向写作，不偏离】
+${preview}
 
-【技术规则】
-纯文本输出，不用 Markdown。环境描写≤3 行。不写大段独白。角色名从头到尾不变。
+【一、钩子与结构】
+1. 开篇第一段直接放全故事最戏剧性的冲突场景（可倒叙），之后才补背景
+2. 四幕推进：钩子 → 冲突升级（每 500 字一个爽点/危机/反转）→ 高潮（线索汇聚、情绪顶到最高）→ 反转收束
+3. 主角有明确欲望和阻碍，主动行动推进剧情；8000-12000 字，主要角色 ≤5，配角不起名
+4. 分节用空行分隔，每节约 800-1500 字，节末留情绪钩子或悬念；禁止数字编号
+
+【二、行文节奏】
+1. 短句成段：大量一句话一段，长段不超 3 句
+2. 对话占比 50%+，对话每句一行，剧情靠对话推进；主角内心 OS 穿插吐槽（"造孽啊！"式）
+3. 环境描写≤3 行，不写大段独白；角色名从头到尾不变
+4. 一个具体道具（衣服/手链/信物）反复出现、多次回收
+
+【三、伏笔与结局】
+1. 重大反转揭晓前至少埋 3 处可回查伏笔，禁止无铺垫反转
+2. 结尾最多一个温情场景 + 一句总结性金句收住，禁止连续多段逐个角色报结局
+3. 类型一致：不出现题材外突兀元素（都市文不掏枪）
+
+【四、情绪】
+1. 情绪曲线：酸涩→憋屈→爆发→甜，爽虐交替
+
+【五、技术红线】
+1. 纯文本输出，不用 Markdown
+2. 语法必须通顺：主谓施受清晰，禁止为追求悬念写病句；"XX那天"式开篇先检查主语是谁
+
+${AiService.buildConditionalRules(premise)}
+
+【节奏示范】（仅示范行文节奏，不模仿题材）
+我是天生网恋圣体，拥有超绝甜妹音。
+姐姐托人要到谢家太子爷的微信后，逼迫我帮她聊。
+我夹着嗓子哄了谢寻小半年。
+把他调成了一个恋爱脑上头的忠犬乖狗。
+后来，他小心翼翼地跟我商量奔现。
+【宝宝，见面当天你就穿白色裙子好不好？】
+【我一定狠狠把你嘴亲烂。】
+我轻声答应。
+转头就把账号还给了我姐。
+开学那天，我一眼就看见了等在校门口的谢寻。
+他帅气的脸上满是紧张。
+直到，我姐一身白裙出现。
+谢寻眼神一动，目光牢牢锁定在她身上。
+耳朵瞬间就红了。
 
 **写 4000-5000 字作为故事前半部分，在剧情关键转折点停住，最后一行标注：【待续】。**`;
 
-      // 第一轮：生成前半部分
       const r1 = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
@@ -1950,7 +2426,7 @@ ${sample.slice(0, 5000)}`,
           max_tokens: 24576,
           temperature: 0.8,
         }),
-        signal: AbortSignal.timeout(300_000),
+        signal: genSignal(300_000),
       });
       if (!r1.ok) {
         send('error', { message: `AI 请求失败 (${r1.status})` });
@@ -1970,7 +2446,7 @@ ${sample.slice(0, 5000)}`,
         preview: part1.slice(0, 150),
       });
 
-      // 第二轮：续写后半部分
+      // 第二轮：续写后半部分（精简 system，风格已由前半部分确立，只需一致性）
       const r2 = await fetch(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
@@ -1980,16 +2456,20 @@ ${sample.slice(0, 5000)}`,
         body: JSON.stringify({
           model,
           messages: [
-            { role: 'system', content: storyPrompt },
+            {
+              role: 'system',
+              content:
+                '你是知乎盐选爆款短篇作家。严格按照前半部分的文风、人物性格和节奏续写，回收所有伏笔，结尾留一句总结性金句。',
+            },
             {
               role: 'user',
-              content: `脑洞/想法：${premise}\n\n已写的前半部分：\n${part1.slice(-1000)}\n\n请接着写后半部分（4000-5000字），展开高潮、揭示真相、给出完整结局。`,
+              content: `脑洞/想法：${premise}\n\n已写的前半部分（结尾部分）：\n${part1.slice(-1500)}\n\n请接着写后半部分（4000-5000字）：保持人物性格和文风一致，回收前半部分的伏笔，展开高潮、揭示真相、给出完整结局。这是故事结尾，不要标注【待续】。`,
             },
           ],
           max_tokens: 24576,
           temperature: 0.8,
         }),
-        signal: AbortSignal.timeout(300_000),
+        signal: genSignal(300_000),
       });
       if (!r2.ok) {
         send('error', { message: `AI 续写失败 (${r2.status})` });
@@ -1997,7 +2477,10 @@ ${sample.slice(0, 5000)}`,
         return;
       }
       const data2 = await r2.json();
-      const part2 = data2.choices?.[0]?.message?.content ?? '';
+      const part2 = (data2.choices?.[0]?.message?.content ?? '').replace(
+        /【待续】.*$/s,
+        '',
+      );
       const storyText = part1 + '\n\n' + part2;
 
       if (storyText.trim()) {
@@ -2021,79 +2504,117 @@ ${sample.slice(0, 5000)}`,
         });
       }
 
-      // Step 3: 生成书名
+      // Step 2: 生成书名候选（5 个知乎体标题），默认取第一个
       send('step', { step: 'title', status: 'generating', label: '生成书名' });
-      const titleR = await fetch(`${baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model,
-          messages: [
-            {
-              role: 'user',
-              content: `根据以下短篇故事，生成一个吸引人的标题（10字以内）。只输出标题，不要加引号。\n\n${storyText.slice(0, 500)}`,
-            },
-          ],
-          max_tokens: 50,
-          temperature: 0.7,
-        }),
-        signal: AbortSignal.timeout(15_000),
-      });
-      const titleData = await titleR.json();
-      const finalTitle =
-        (titleData.choices?.[0]?.message?.content ?? premise.slice(0, 15))
-          .trim()
-          .slice(0, 30) || '短篇故事';
+      const titleSystem =
+        '你是知乎盐选的金牌标题编辑。你的标题让人一眼就想点开，看三秒就想收藏。';
+      const titlePrompt = `参考这些爆款标题的调性：
+《我在闺蜜葬礼上笑了出来》
+《被赶出家门那天，我中了五百万》
+《我替仇人养了十年孩子》
+《老公的白月光住进了我家》
+《全班都以为我死了，直到我出现在高考考场》
+《我死后的第七天，全城都在找我》
+《婆婆要我的肾，我反手签了器官捐献》
+《前夫跪着求我复婚那天，我结婚了》
+
+根据下面的故事，生成 5 个标题（每个 15 字以内），五种类型各一个：悬念式、信息差式、反差式、爽点式、情感式。直接输出 5 行，每行一个，不要编号、不要引号、不要解释。\n\n${this.storySample(storyText)}`;
+      let titleText = '';
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const titleR = await fetch(`${baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            model,
+            messages: [
+              { role: 'system', content: titleSystem },
+              { role: 'user', content: titlePrompt },
+            ],
+            max_tokens: 500,
+            temperature: 0.6,
+          }),
+          signal: genSignal(15_000),
+        });
+        const titleData = await titleR.json();
+        titleText = (titleData.choices?.[0]?.message?.content ?? '').trim();
+        if (titleText) break;
+      }
+      const stripped = titleText
+        .replace(/^```(?:json)?\s*/i, '')
+        .replace(/```\s*$/, '')
+        .trim();
+      let titles: string[] = [];
+      try {
+        const parsed = JSON.parse(stripped);
+        if (Array.isArray(parsed)) {
+          titles = parsed
+            .map((t: any) => String(t).trim())
+            .filter(Boolean)
+            .slice(0, 5);
+        }
+      } catch {
+        const arrMatch = stripped.match(/\[[\s\S]*\]/);
+        if (arrMatch) {
+          try {
+            const parsed2 = JSON.parse(arrMatch[0]);
+            if (Array.isArray(parsed2)) {
+              titles = parsed2
+                .map((t: any) => String(t).trim())
+                .filter(Boolean)
+                .slice(0, 5);
+            }
+          } catch {
+            /* 继续降级 */
+          }
+        }
+        if (titles.length === 0) {
+          titles = stripped
+            .split('\n')
+            .map((l: string) => l.replace(/^\d+[.、]\s*/, '').trim())
+            .filter(Boolean)
+            .slice(0, 5);
+        }
+      }
+      if (titles.length === 0) titles = AiService.buildTitleFallback(premise);
+      if (titles.length <= 1) {
+        console.error(
+          `[generateStory] title candidates=${titles.length}, model=${model}, raw=${JSON.stringify(titleText).slice(0, 300)}`,
+        );
+      }
+      const finalTitle = titles[0].slice(0, 30);
       await db
         .update(schema.books)
         .set({ title: finalTitle, updated_at: new Date() })
         .where(eq(schema.books.book_id, bookId));
+
+      await this.recordUsage({
+        userId: params.user_id,
+        bookId,
+        model,
+        inChars:
+          storyPrompt.length * 2 + titlePrompt.length * 3 + premise.length * 2,
+        outChars: storyText.length + titleText.length,
+        usageType: resolved.source === 'user' ? 'user_key' : 'platform_key',
+      });
+
       send('step', {
         step: 'title',
         status: 'done',
         label: `书名：${finalTitle}`,
+        titles,
       });
-
-      // 保存引导讨论上下文，供后续 AI 对话使用
-      if (params.guide_summary || params.guide_full_log) {
-        const [s] = await db
-          .select({ extra: schema.book_settings.extra })
-          .from(schema.book_settings)
-          .where(eq(schema.book_settings.book_id, bookId))
-          .limit(1);
-        const extra = (s?.extra ?? {}) as Record<string, any>;
-        extra.guide_summary = params.guide_summary || '';
-        extra.guide_full_log = params.guide_full_log || '';
-        await db
-          .update(schema.book_settings)
-          .set({ extra: extra as any })
-          .where(eq(schema.book_settings.book_id, bookId));
-      }
-
-      send('done', { book_id: bookId, title: finalTitle });
+      send('done', { book_id: bookId, title: finalTitle, titles });
     } catch (err: any) {
-      // 回滚：删除已创建的资源
-      if (bookId) {
-        try {
-          const db2 = getDb();
-          await db2
-            .delete(schema.chapters)
-            .where(eq(schema.chapters.book_id, bookId));
-          await db2
-            .delete(schema.book_settings)
-            .where(eq(schema.book_settings.book_id, bookId));
-          await db2
-            .delete(schema.books)
-            .where(eq(schema.books.book_id, bookId));
-        } catch {
-          /* 回滚失败不掩盖原始错误 */
-        }
+      if (abortCtrl.signal.aborted) {
+        console.log('[generateStory] client disconnected, generation aborted');
+      } else {
+        send('error', { message: err?.message ?? '生成失败' });
       }
-      send('error', { message: err?.message ?? '生成失败' });
     } finally {
+      res.off('close', onClientClose);
       res.end();
     }
   }

@@ -69,6 +69,38 @@ export class BooksController {
     return { code: 200, message: '已彻底删除' };
   }
 
+  // 批量彻底删除（回收站批量操作，一次请求并发删除）
+  @Post('batch-permanent-delete')
+  async batchPermanentDelete(
+    @Body() body: { book_ids: string[] },
+    @Req() req: Request,
+  ) {
+    const ids = Array.isArray(body.book_ids)
+      ? body.book_ids.filter((id: any) => typeof id === 'string').slice(0, 100)
+      : [];
+    if (ids.length === 0) {
+      return { code: 400, message: '未选择作品' };
+    }
+    await this.books.permanentDeleteBatch((req as any).userId, ids);
+    return { code: 200, message: `已彻底删除 ${ids.length} 个作品` };
+  }
+
+  // 批量恢复（回收站批量操作，一次请求并发恢复）
+  @Post('batch-restore')
+  async batchRestore(
+    @Body() body: { book_ids: string[] },
+    @Req() req: Request,
+  ) {
+    const ids = Array.isArray(body.book_ids)
+      ? body.book_ids.filter((id: any) => typeof id === 'string').slice(0, 100)
+      : [];
+    if (ids.length === 0) {
+      return { code: 400, message: '未选择作品' };
+    }
+    await this.books.restoreBatch((req as any).userId, ids);
+    return { code: 200, message: `已恢复 ${ids.length} 个作品` };
+  }
+
   @Patch(':bookId')
   async update(
     @Param('bookId') bookId: string,

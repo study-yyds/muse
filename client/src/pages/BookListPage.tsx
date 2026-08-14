@@ -38,19 +38,24 @@ const STATUS_LABELS: Record<string, string> = {
   completed: "已完成",
 };
 
+// 知乎体公共体例：所有短篇模板统一注入（写法外壳，与题材正交）
+const SHORT_STYLE_SUFFIX =
+  "。体例要求：知乎体短篇——第一人称「我」叙述，开篇三句内直给冲突或悬念，段落短节奏快，反转密集，篇幅 1~3 万字，结尾留余味";
+
 const SHORT_TEMPLATES = [
   { key: "rebirth", label: "重生逆袭", prompt: "写一个女主重生回到过去、改变命运的短篇，第一人称「我」叙述，开篇即冲突，打脸虐渣爽感十足" },
-  { key: "face-slap", label: "打脸爽文", prompt: "写一个打脸爽文短篇——女主被轻视后一举翻盘，不靠男人只靠自己，让所有人刮目相看，第一人称" },
+  { key: "face-slap", label: "复仇打脸", prompt: "写一个复仇打脸短篇——女主被背叛/轻视/夺走一切后蛰伏反击，把伤害过她的人一个个送进深渊，不靠男人只靠自己，第一人称" },
   { key: "strong", label: "大女主", prompt: "写一个大女主短篇——女主能力强、有主见、不依附任何人，在自己的领域闪闪发光，爱情是锦上添花不是救命稻草" },
-  { key: "anti-trope", label: "反套路", prompt: "写一个反套路短篇——经典狗血开局（替身/契约/退婚），但女主不按常理出牌，剧情走向完全出乎意料，第一人称" },
-  { key: "reality", label: "现实情感", prompt: "写一个现实向短篇——离婚逆袭、职场PUA、育儿焦虑等真实社会议题，细节扎心、情绪共鸣强，女主从谷底爬起来活出自己，第一人称" },
-  { key: "sweet", label: "甜宠治愈", prompt: "写一个甜宠治愈短篇——男主温柔深情，女主被好好珍惜，全程轻松温暖没有虐点，让人读完嘴角上扬" },
-  { key: "knife-sugar", label: "刀糖文学", prompt: "写一个刀糖短篇——用悬疑/犯罪/惊悚的外壳包裹温情内核，表面细思极恐，内核实则催泪治愈，参考《杀人犯的生日蛋糕》风格" },
+  { key: "transmigration", label: "穿越穿书", prompt: "写一个穿越穿书短篇——主角穿进一本书里成为下场凄惨的配角（恶毒女配/炮灰/工具人），熟知剧情走向，靠信息差逆天改命，第一人称" },
+  { key: "ancient", label: "古言宫斗", prompt: "写一个古言宫斗短篇——深宫或宅院里，女主在嫡庶之争/宠妾算计/帝王猜忌中步步为营，从棋子变成执棋人，第一人称" },
+  { key: "rule-horror", label: "规则怪谈", prompt: "写一个规则怪谈短篇——主角进入一个规则诡异的场所（公司/学校/小区/医院），发现一条条不能违反的规则，违反规则的人一个接一个消失，主角在恐惧中找出规则真相并逃出生天，第一人称" },
+  { key: "horror", label: "恐怖惊悚", prompt: "写一个恐怖惊悚短篇——凶宅/噩梦/民俗禁忌类，氛围压抑细思极恐，主角逐渐发现最恐怖的不是鬼而是人，第一人称" },
   { key: "twist", label: "悬疑反转", prompt: "写一个结局出人意料的悬疑反转短篇，全程铺垫细节，最后一句话颠覆全部认知" },
-  { key: "work-fantasy", label: "社畜奇幻", prompt: "写一个轻奇幻短篇——把奇幻设定植入职场/校园/日常场景，比如公司洗手间通向异世界、能听懂猫狗说话，想象力+烟火气，温暖治愈" },
+  { key: "knife-sugar", label: "刀糖文学", prompt: "写一个刀糖短篇——用悬疑/犯罪/惊悚的外壳包裹温情内核，表面细思极恐，内核实则催泪治愈，参考《杀人犯的生日蛋糕》风格" },
+  { key: "reality", label: "现实情感", prompt: "写一个现实向短篇——离婚逆袭、职场PUA、育儿焦虑等真实社会议题，细节扎心、情绪共鸣强，女主从谷底爬起来活出自己，第一人称" },
   { key: "family", label: "亲情催泪", prompt: "写一个亲情短篇——母女/父子/兄妹/祖孙之间，细腻真实让人泪目，第一人称" },
-  { key: "friend", label: "友情岁月", prompt: "写一个友情短篇——闺蜜/兄弟从亲密到疏远再到和解，或至死不渝的陪伴" },
-  { key: "zhihu", label: "知乎体", prompt: "写一个以「我」的第一人称叙述的短篇故事，像在知乎分享亲身经历，开头有钩子，都市情感/悬疑奇遇/职场均可" },
+  { key: "sweet", label: "甜宠治愈", prompt: "写一个甜宠治愈短篇——男主温柔深情，女主被好好珍惜，全程轻松温暖没有虐点，让人读完嘴角上扬" },
+  { key: "work-fantasy", label: "社畜奇幻", prompt: "写一个轻奇幻短篇——把奇幻设定植入职场/校园/日常场景，比如公司洗手间通向异世界、能听懂猫狗说话，想象力+烟火气，温暖治愈" },
 ];
 
 export function BookListPage() {
@@ -70,6 +75,13 @@ export function BookListPage() {
   const [quickGenerating, setQuickGenerating] = useState(false);
   const [inspireLoading, setInspireLoading] = useState(false);
   const [quickSteps, setQuickSteps] = useState<Array<{ step: string; label: string; status: string; preview?: string }>>([]);
+  // 短篇生成完成后的书名候选
+  const [quickTitles, setQuickTitles] = useState<string[]>([]);
+  const [quickCreatedId, setQuickCreatedId] = useState("");
+  const [quickAppliedTitle, setQuickAppliedTitle] = useState("");
+  // 梗概确认流程
+  const [quickOutline, setQuickOutline] = useState("");
+  const [quickOutlineBookId, setQuickOutlineBookId] = useState("");
   // 引导模式
   const [quickGuiding, setQuickGuiding] = useState(false);
   const [quickGuideMsgs, setQuickGuideMsgs] = useState<Array<{ role: string; content: string }>>([]);
@@ -238,6 +250,8 @@ export function BookListPage() {
       const decoder = new TextDecoder();
       let buffer = "";
       let bookId = "";
+      let hasTitleCandidates = false;
+      let hasPreview = false;
       while (true) {
         const { done, value } = await reader.read();
         if (done) {
@@ -278,6 +292,18 @@ export function BookListPage() {
                   });
                 } else if (eventType === "done") {
                   bookId = data.book_id;
+                  if (data.preview) {
+                    // 新流程：展示梗概，等用户确认后写正文
+                    hasPreview = true;
+                    setQuickOutline(data.preview);
+                    setQuickOutlineBookId(data.book_id);
+                  } else if (data.titles?.length > 1) {
+                    // 正文写完：至少 2 个候选才展示选择区
+                    hasTitleCandidates = true;
+                    setQuickTitles(data.titles);
+                    setQuickCreatedId(data.book_id);
+                    setQuickAppliedTitle(data.title || data.titles[0]);
+                  }
                 } else if (eventType === "error") {
                   toast({ title: data.message || "生成失败", variant: "destructive" });
                 }
@@ -288,9 +314,12 @@ export function BookListPage() {
       }
       if (bookId) {
         queryClient.invalidateQueries({ queryKey: ["books"] });
-        resetQuickDialog();
-        toast({ title: "创作完成！" });
-        navigate(`/books/${bookId}`);
+        // 梗概确认中：停留在弹窗；有书名候选：停留挑选；否则直接进入作品
+        if (!hasPreview && !hasTitleCandidates) {
+          resetQuickDialog();
+          toast({ title: "创作完成！" });
+          navigate(`/books/${bookId}`);
+        }
       }
     } catch (err: any) {
       if (err?.name !== "AbortError") {
@@ -538,10 +567,119 @@ export function BookListPage() {
     }
   };
 
+  // 梗概确认后：调 generate-story 写正文（SSE 进度 + 书名候选）
+  const doGenerateStory = async () => {
+    if (!quickOutlineBookId) return;
+    setQuickGenerating(true);
+    setQuickSteps([]);
+    setQuickOutline("");
+    const controller = new AbortController();
+    quickAbortRef.current = controller;
+    const token = localStorage.getItem("token");
+    let hasCandidates = false;
+    const handleEvent = (eventType: string, data: any) => {
+      if (eventType === "step") {
+        setQuickSteps((prev) => {
+          const newStep = { step: data.step, label: data.label, status: data.status, preview: data.preview };
+          const idx = prev.findIndex((s) => s.step === data.step);
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = newStep;
+            return next;
+          }
+          return [...prev, newStep];
+        });
+      } else if (eventType === "done") {
+        if (data.titles?.length > 1) {
+          hasCandidates = true;
+          setQuickTitles(data.titles);
+          setQuickCreatedId(data.book_id);
+          setQuickAppliedTitle(data.title || data.titles[0]);
+        }
+      } else if (eventType === "error") {
+        toast({ title: data.message || "生成失败", variant: "destructive" });
+      }
+    };
+    const parseBuffer = (buf: string) => {
+      const lines = buf.split("\n").filter(Boolean);
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].startsWith("event: ") && lines[i + 1]?.startsWith("data: ")) {
+          try {
+            const data = JSON.parse(lines[i + 1].slice(6));
+            handleEvent(lines[i].slice(7).trim(), data);
+          } catch { /* parse error */ }
+        }
+      }
+    };
+    try {
+      const res = await fetch("/api/ai/generate-story", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ book_id: quickOutlineBookId, premise: quickPremise, model: quickModel }),
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new Error(`请求失败 (${res.status})`);
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error("No stream");
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          buffer += decoder.decode();
+          parseBuffer(buffer);
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        parseBuffer(lines.join("\n"));
+      }
+      queryClient.invalidateQueries({ queryKey: ["books"] });
+      if (!hasCandidates) {
+        resetQuickDialog();
+        toast({ title: "创作完成！" });
+        navigate(`/books/${quickOutlineBookId}`);
+      }
+    } catch (err: any) {
+      if (err?.name !== "AbortError") {
+        toast({ title: err?.message || "生成失败", variant: "destructive" });
+      }
+    } finally {
+      setQuickGenerating(false);
+      setQuickSteps([]);
+      quickAbortRef.current = null;
+    }
+  };
+
+  // 应用书名候选
+  const applyQuickTitle = async (title: string) => {
+    if (!quickCreatedId) return;
+    try {
+      const token = localStorage.getItem("token");
+      const res = await fetch(`/api/books/${quickCreatedId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ title }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setQuickAppliedTitle(title);
+      queryClient.invalidateQueries({ queryKey: ["books"] });
+      toast({ title: "书名已更新" });
+    } catch (e: any) {
+      toast({ title: e.message || "更新失败", variant: "destructive" });
+    }
+  };
+
   const resetQuickDialog = () => {
     setQuickOpen(false);
     setQuickPremise("");
     setQuickSteps([]);
+    setQuickTitles([]);
+    setQuickCreatedId("");
+    setQuickAppliedTitle("");
+    setQuickOutline("");
+    setQuickOutlineBookId("");
     setQuickGuiding(false);
     setQuickGuideMsgs([]);
     setQuickGuideInput("");
@@ -575,17 +713,45 @@ export function BookListPage() {
               }}>
                 {books.length === selectedIds.size ? "取消全选" : "全选"}
               </Button>
+              {showDeleted && (
+                <Button size="sm" disabled={selectedIds.size === 0}
+                  onClick={async () => {
+                    if (!confirm(`恢复选中的 ${selectedIds.size} 个作品？`)) return;
+                    const ids = [...selectedIds];
+                    try {
+                      await api.post(`/books/batch-restore`, { book_ids: ids });
+                      toast({ title: `已恢复 ${ids.length} 个作品` });
+                    } catch (e: any) {
+                      toast({ title: e.message || "恢复失败", variant: "destructive" });
+                      return;
+                    }
+                    setSelectedIds(new Set());
+                    setSelectMode(false);
+                    queryClient.invalidateQueries({ queryKey: ["books"] });
+                  }}
+                >
+                  恢复选中 ({selectedIds.size})
+                </Button>
+              )}
               <Button variant="destructive" size="sm" disabled={selectedIds.size === 0}
                 onClick={async () => {
                   if (!confirm(`确定删除选中的 ${selectedIds.size} 个作品？`)) return;
-                  for (const id of selectedIds) {
-                    if (showDeleted) await api.delete(`/books/${id}/permanent`);
-                    else await api.delete(`/books/${id}`);
+                  const ids = [...selectedIds];
+                  try {
+                    if (showDeleted) {
+                      // 回收站：一次请求批量彻底删除（并发，速度快）
+                      await api.post(`/books/batch-permanent-delete`, { book_ids: ids });
+                    } else {
+                      for (const id of ids) await api.delete(`/books/${id}`);
+                    }
+                    toast({ title: `已${showDeleted ? "彻底删除" : "删除"} ${ids.length} 个作品` });
+                  } catch (e: any) {
+                    toast({ title: e.message || "删除失败", variant: "destructive" });
+                    return;
                   }
                   setSelectedIds(new Set());
                   setSelectMode(false);
                   queryClient.invalidateQueries({ queryKey: ["books"] });
-                  toast({ title: `已${showDeleted ? "彻底删除" : "删除"} ${selectedIds.size} 个作品` });
                 }}
               >
                 删除选中 ({selectedIds.size})
@@ -711,7 +877,7 @@ export function BookListPage() {
                         {SHORT_TEMPLATES.map((tpl) => (
                           <Button key={tpl.key} size="xs" variant="outline"
                             disabled={quickGenerating}
-                            onClick={() => setQuickPremise(tpl.prompt)}>
+                            onClick={() => setQuickPremise(tpl.prompt + SHORT_STYLE_SUFFIX)}>
                             {tpl.label}
                           </Button>
                         ))}
@@ -764,6 +930,72 @@ export function BookListPage() {
                     </div>
                   )}
 
+                  {/* 梗概确认：展示梗概 + 开始写正文 / 换个梗概 */}
+                  {quickOutline && !quickGenerating && (
+                    <div className="space-y-2">
+                      <Label className="text-xs">故事梗概（确认走向后开始写正文）</Label>
+                      <div className="max-h-44 overflow-y-auto rounded border border-border bg-muted/20 p-3 text-sm leading-relaxed whitespace-pre-wrap">
+                        {quickOutline}
+                      </div>
+                      <div className="flex gap-2">
+                        <Button className="flex-1" onClick={doGenerateStory}>
+                          <Sparkles className="size-3.5 mr-1" />
+                          开始写正文
+                        </Button>
+                        <Button
+                          variant="outline"
+                          disabled={quickGenerating}
+                          onClick={async () => {
+                            // 删掉旧书，重新生成梗概
+                            try {
+                              await api.delete(`/books/${quickOutlineBookId}/permanent`);
+                            } catch { /* 忽略 */ }
+                            setQuickOutline("");
+                            setQuickOutlineBookId("");
+                            doQuickCreate(quickPremise, quickType);
+                          }}
+                        >
+                          换个梗概
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 生成完成：书名候选 */}
+                  {quickCreatedId && quickTitles.length > 0 && (
+                    <div className="space-y-2">
+                      <Label className="text-xs">书名候选（点击使用）</Label>
+                      <div className="space-y-1.5">
+                        {quickTitles.map((t, i) => (
+                          <button
+                            key={i}
+                            type="button"
+                            onClick={() => applyQuickTitle(t)}
+                            className={cn(
+                              "w-full text-left rounded border px-3 py-2 text-sm transition-colors",
+                              quickAppliedTitle === t
+                                ? "border-primary bg-primary/10 text-foreground"
+                                : "border-border bg-background hover:bg-muted/50",
+                            )}
+                          >
+                            {t}
+                          </button>
+                        ))}
+                      </div>
+                      <Button
+                        className="w-full"
+                        onClick={() => {
+                          navigate(`/books/${quickCreatedId}`);
+                          resetQuickDialog();
+                        }}
+                      >
+                        打开作品
+                      </Button>
+                    </div>
+                  )}
+
+                  {/* 生成完成后隐藏操作区，只留书名候选和打开作品 */}
+                  {!quickCreatedId && (
                   <div className="flex justify-end gap-2">
                     <Button
                       variant="outline"
@@ -777,6 +1009,10 @@ export function BookListPage() {
                         onClick={async () => {
                           setInspireLoading(true);
                           const token = localStorage.getItem("token");
+                          // 题材随机化，避免每次都出悬疑向创意
+                          const topics = ["重生逆袭", "都市情感", "脑洞奇幻", "规则怪谈", "穿越穿书", "甜宠治愈", "亲情催泪", "悬疑反转", "职场现实", "古风古言"];
+                          const topic = topics[Math.floor(Math.random() * topics.length)];
+                          const ideaMsg = `生成一个「${topic}」题材的短篇小说创意，一句话描述，20-40字，要具体有画面感。直接输出创意本身，不要解释、不要分析、不要反问。`;
                           try {
                             const res = await fetch("/api/ai/chat", {
                               method: "POST",
@@ -785,10 +1021,8 @@ export function BookListPage() {
                                 book_id: "",
                                 context_type: "write",
                                 model: quickModel,
-                                message: "生成一个有趣的短篇小说创意，一句话描述，要有悬念或反转，不要套模板。只输出创意本身，不加解释。",
-                                messages: [{ role: "user", content: "生成一个有趣的短篇小说创意，一句话描述，要有悬念或反转。" }],
-                                guide_mode: true,
-                                guide_type: quickType,
+                                message: ideaMsg,
+                                messages: [{ role: "user", content: ideaMsg }],
                               }),
                               signal: AbortSignal.timeout(30000),
                             });
@@ -810,7 +1044,13 @@ export function BookListPage() {
                                     }
                                   }
                                 }
-                                if (ac.trim()) setQuickPremise(ac.trim());
+                                if (ac.trim()) {
+                                  // 剥掉 AI 附带的 JSON action（write 上下文的结构化输出残留），提取纯创意
+                                  const jsonContent = ac.match(/"content"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+                                  const noJson = ac.replace(/\{[\s\S]*"action"[\s\S]*\}/g, "").trim();
+                                  const idea = (jsonContent?.[1]?.replace(/\\n/g, "\n").trim() || noJson).trim();
+                                  if (idea) setQuickPremise(idea);
+                                }
                               }
                             }
                           } catch { /* 忽略 */ }
@@ -936,6 +1176,7 @@ export function BookListPage() {
                       {quickGenerating ? "生成中..." : "直接生成"}
                     </Button>
                   </div>
+                  )}
                 </div>
               )}
 

@@ -19,7 +19,7 @@ import { AuthGuard } from '../auth/auth.guard';
 import { BookOwnerGuard } from '../auth/book-owner.guard';
 import { RateLimitGuard } from '../auth/rate-limit.guard';
 
-const promoRateLimit = new RateLimitGuard(3, 300_000); // 每5分钟3次
+const promoRateLimit = new RateLimitGuard(10, 300_000); // 每5分钟10次（素材包不调外部API，放宽）
 
 @UseGuards(AuthGuard, BookOwnerGuard)
 @Controller('api/books/:bookId/promo')
@@ -48,7 +48,7 @@ export class PromoController {
     body: {
       script_text: string;
       voice_type?: string;
-      mode?: 'cards' | 'background' | 'pack';
+      mode?: 'background' | 'pack';
       background_url?: string;
     },
     @Res() res: Response,
@@ -59,7 +59,7 @@ export class PromoController {
       voiceType: body.voice_type || 'zh_female_xiaohe_uranus_bigtts',
       userId: (req as any).userId,
       bookId,
-      mode: body.mode || 'cards',
+      mode: body.mode || 'background',
       backgroundUrl: body.background_url,
     });
   }
@@ -108,6 +108,11 @@ export class PromoController {
     }
     if (fileBuffer.length > 100 * 1024 * 1024) {
       throw new BadRequestException('背景视频不能超过 100MB');
+    }
+    // 文件头校验：MP4 必须含 ftyp box（防改后缀的任意文件）
+    const header = fileBuffer.subarray(4, 8).toString('ascii');
+    if (header !== 'ftyp') {
+      throw new BadRequestException('仅支持 MP4 视频文件');
     }
 
     const uploadsDir = path.join(
