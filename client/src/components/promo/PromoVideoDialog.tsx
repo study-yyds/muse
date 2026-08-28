@@ -1,3 +1,4 @@
+import { authFetch } from "@/services/api";
 import { useState, useRef, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -184,7 +185,7 @@ export function PromoVideoDialog({ bookId, open, onOpenChange }: Props) {
 
     const token = localStorage.getItem('token');
     try {
-      const res = await fetch('/api/ai/chat', {
+      const res = await authFetch('/api/ai/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({
@@ -246,7 +247,7 @@ export function PromoVideoDialog({ bookId, open, onOpenChange }: Props) {
 
     try {
       const text = editableScript || scriptLines.join('\n');
-      const res = await fetch(`/api/books/${bookId}/promo/generate`, {
+      const res = await authFetch(`/api/books/${bookId}/promo/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({
@@ -331,7 +332,7 @@ export function PromoVideoDialog({ bookId, open, onOpenChange }: Props) {
     setPreviewLoading(true);
     try {
       const token = localStorage.getItem('token');
-      const res = await fetch(
+      const res = await authFetch(
         `/api/books/${bookId}/promo/preview-voice?voice_type=${encodeURIComponent(voiceType)}`,
         { headers: { Authorization: `Bearer ${token}` } },
       );
@@ -363,7 +364,7 @@ export function PromoVideoDialog({ bookId, open, onOpenChange }: Props) {
     try {
       const form = new FormData();
       form.append('video', file);
-      const res = await fetch(`/api/books/${bookId}/promo/upload-background`, {
+      const res = await authFetch(`/api/books/${bookId}/promo/upload-background`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
         body: form,

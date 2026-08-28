@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/services/api";
+import { api, authFetch } from "@/services/api";
 import type { CharacterData, CreateCharacterRequest } from "@muse/shared";
 import { CharacterForm, type CharacterFormData } from "./CharacterForm";
 import { CharacterTestDialog } from "./CharacterTestDialog";
@@ -15,7 +15,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { ModelSelector } from "@/components/settings/ModelSelector";
+import { ModelSelector, customKeyValue } from "@/components/settings/ModelSelector";
 import {
   Plus,
   UserRound,
@@ -43,6 +43,7 @@ export function CharacterList({ bookId }: Props) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [generatingCharId, setGeneratingCharId] = useState<string | null>(null);
   const [imageModel, setImageModel] = useState("doubao-seedream-5-0-260128");
+  const [imageKeyId, setImageKeyId] = useState<string | undefined>(undefined);
   const [imageResolution, setImageResolution] = useState("2K");
   const [imageRatio, setImageRatio] = useState("9:16");
   const imageSize = imageRatio === "1:1" ? imageResolution : `${imageResolution}:${imageRatio}`;
@@ -101,7 +102,6 @@ export function CharacterList({ bookId }: Props) {
     createMutation.mutate({
       name: data.name,
       gender: data.gender,
-      age: data.age,
       appearance: data.appearance,
       personality: data.personality,
       catchphrase: data.catchphrase,
@@ -150,8 +150,8 @@ export function CharacterList({ bookId }: Props) {
           </select>
           <ModelSelector
             usage="image"
-            value={imageModel}
-            onChange={setImageModel}
+            value={imageKeyId ? customKeyValue(imageKeyId) : imageModel}
+            onChange={(m, keyId) => { setImageModel(m); setImageKeyId(keyId); }}
             className="text-xs rounded border border-border bg-background px-2 py-1"
           />
           <Button size="sm" onClick={() => setCreateStep("picker")}>
@@ -256,10 +256,10 @@ export function CharacterList({ bookId }: Props) {
                     style = sRes?.data?.extra?.visual_style || "";
                   } catch { /* ignore */ }
                   try {
-                    const res = await fetch(`/api/ai/generate-char-image`, {
+                    const res = await authFetch(`/api/ai/generate-char-image`, {
                       method: "POST",
                       headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
-                      body: JSON.stringify({ book_id: bookId, char_id: char.char_id, size: imageSize, style, model: imageModel }),
+                      body: JSON.stringify({ book_id: bookId, char_id: char.char_id, size: imageSize, style, model: imageModel, key_id: imageKeyId }),
                     });
                     if (res.ok) {
                       const json = await res.json();

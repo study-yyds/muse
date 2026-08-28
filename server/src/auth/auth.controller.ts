@@ -6,10 +6,11 @@ import {
   Delete,
   Body,
   Req,
+  Res,
   Param,
   UseGuards,
 } from '@nestjs/common';
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
 import { AuthService } from './auth.service';
 import { AuthGuard } from './auth.guard';
 
@@ -19,18 +20,38 @@ export class AuthController {
 
   @Post('auth/send-code')
   async sendCode(@Body('phone_number') phone: string) {
+    // 校验类错误（格式/频率）由 service 抛 BadRequestException → 400；
+    // DB 等错误直接 500
     const result = await this.auth.sendCode(phone);
     return { code: 200, message: '验证码已发送', data: result };
   }
 
   @Post('auth/login')
-  async login(@Body('phone_number') phone: string, @Body('code') code: string) {
+  async login(
+    @Body('phone_number') phone: string,
+    @Body('code') code: string,
+    @Res({ passthrough: true }) res: Response,
+  ) {
     try {
       const result = await this.auth.login(phone, code);
+      // 种 httpOnly Cookie 供 /uploads 静态资源鉴权使用（<img> 无法携带 Authorization 头）
+      res.cookie('muse_token', result.access_token, {
+        httpOnly: true,
+        sameSite: 'lax',
+        path: '/',
+        maxAge: 12 * 60 * 60 * 1000, // 与 JWT 有效期一致
+      });
       return { code: 200, data: result };
-    } catch {
-      return { code: 401, message: '验证码错误或已过期' };
+    } catch (e: any) {
+      return { code: 401, message: e.message ?? '验证码错误或已过期' };
     }
+  }
+
+  @Post('auth/logout')
+  logout(@Res({ passthrough: true }) res: Response) {
+    // 清除 Cookie（客户端 localStorage 的 token 由前端登出逻辑清理）
+    res.clearCookie('muse_token', { path: '/' });
+    return { code: 200, message: '已退出登录' };
   }
 
   @UseGuards(AuthGuard)
@@ -54,7 +75,14 @@ export class AuthController {
   @UseGuards(AuthGuard)
   @Post('user/api-keys')
   async createKey(
-    @Body() body: { name: string; api_key: string; base_url: string; model_name: string; usage: string },
+    @Body()
+    body: {
+      name: string;
+      api_key: string;
+      base_url: string;
+      model_name: string;
+      usage: string;
+    },
     @Req() req: Request,
   ) {
     const data = await this.auth.createApiKey((req as any).userId, body);
@@ -65,7 +93,15 @@ export class AuthController {
   @Put('user/api-keys/:id')
   async updateKey(
     @Param('id') id: string,
-    @Body() body: { name?: string; api_key?: string; base_url?: string; model_name?: string; usage?: string; is_active?: boolean },
+    @Body()
+    body: {
+      name?: string;
+      api_key?: string;
+      base_url?: string;
+      model_name?: string;
+      usage?: string;
+      is_active?: boolean;
+    },
     @Req() req: Request,
   ) {
     await this.auth.updateApiKey(id, (req as any).userId, body);

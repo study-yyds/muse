@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { eq, asc, desc, sql } from 'drizzle-orm';
+import { eq, asc, sql } from 'drizzle-orm';
 import { getDb, schema } from '../database/connection';
 
 @Injectable()
@@ -45,7 +45,12 @@ export class OutlineService {
     };
   }
 
-  async addChapter(bookId: string, title: string, summary: string, actName?: string) {
+  async addChapter(
+    bookId: string,
+    title: string,
+    summary: string,
+    actName?: string,
+  ) {
     const db = getDb();
     // 确保大纲存在
     let [outline] = await db
@@ -84,9 +89,7 @@ export class OutlineService {
           max: sql<number>`coalesce(max(${schema.outline_act_chapters.sort_order}), 0)`,
         })
         .from(schema.outline_act_chapters)
-        .where(
-          eq(schema.outline_act_chapters.outline_id, outline.outline_id),
-        );
+        .where(eq(schema.outline_act_chapters.outline_id, outline.outline_id));
       await db.insert(schema.outline_act_chapters).values({
         outline_id: outline.outline_id,
         act_name: actName,
@@ -117,36 +120,34 @@ export class OutlineService {
 
   async updateChapter(
     chapterId: string,
-    data: { title?: string; summary?: string },
+    data: { title?: string; summary?: string; status?: string },
     bookId?: string,
   ) {
     if (bookId) await this.#verifyNodeOwnership(chapterId, bookId);
     const db = getDb();
     await db
       .update(schema.outline_chapters)
-      .set(data)
+      .set({ ...data, updated_at: sql`NOW()` })
       .where(eq(schema.outline_chapters.id, chapterId));
   }
 
   async deleteChapter(chapterId: string, bookId?: string) {
     if (bookId) await this.#verifyNodeOwnership(chapterId, bookId);
     const db = getDb();
+    // 清理章节侧的反向绑定，避免悬空引用导致 AI 续写丢失大纲上下文
+    await db
+      .update(schema.chapters)
+      .set({ bound_outline_node_id: null })
+      .where(eq(schema.chapters.bound_outline_node_id, chapterId));
+    // 显式清理分幕关系（DB FK 级联为保底）
+    await db
+      .delete(schema.outline_act_chapters)
+      .where(eq(schema.outline_act_chapters.chapter_id, chapterId));
     await db
       .delete(schema.outline_chapters)
       .where(eq(schema.outline_chapters.id, chapterId));
   }
 
-  // 绑定大纲节点到正文章节
-  async bind(chapterId: string, boundChapterId: string | null, bookId?: string) {
-    if (bookId) await this.#verifyNodeOwnership(chapterId, bookId);
-    const db = getDb();
-    await db
-      .update(schema.outline_chapters)
-      .set({
-        bound_chapter_id: boundChapterId,
-        status: boundChapterId ? 'writing' : 'planned',
-        updated_at: sql`NOW()`,
-      })
-      .where(eq(schema.outline_chapters.id, chapterId));
-  }
+  // 注：绑定为单向（章节侧 bound_outline_node_id），节点侧 bind 已移除。
+  // 节点状态由章节保存（planned→writing）与删除（回退 planned）驱动
 }

@@ -22,7 +22,10 @@ async function request<T>(
 
     // 登录态过期 → 清除 token 并跳转登录页
     if (res.status === 401) {
+      // 同时清除裸 token 与 zustand persist 的登录态，
+      // 否则跳转登录页后 isAuthenticated 仍为 true，会被 AppLayout 放行造成死循环
       localStorage.removeItem("token");
+      localStorage.removeItem("muse-auth");
       if (!window.location.pathname.startsWith("/login")) {
         window.location.href = "/login";
       }
@@ -57,6 +60,48 @@ export class ApiError extends Error {
     this.name = "ApiError";
     this.status = status;
   }
+}
+
+/**
+ * 统一带鉴权的 fetch：注入 Authorization 头，401 时清理登录态并跳登录页。
+ * 用于 SSE 流、文件下载等无法走 api.* 的请求（path 为完整路径，如 "/api/ai/chat"）。
+ * 默认 5 分钟超时（SSE 长生成场景），调用方传入 signal 时与其组合；
+ * 三轮正文生成需要 10-30 分钟，调用方传更大的 timeoutMs（传 null 则不设超时）
+ */
+const AUTH_FETCH_TIMEOUT_MS = 5 * 60_000;
+
+export async function authFetch(
+  path: string,
+  init: RequestInit = {},
+  timeoutMs: number | null = AUTH_FETCH_TIMEOUT_MS,
+): Promise<Response> {
+  const token = localStorage.getItem("token");
+  const timeoutSignal =
+    timeoutMs === null ? null : AbortSignal.timeout(timeoutMs);
+  const signal = timeoutSignal
+    ? init.signal
+      ? AbortSignal.any([init.signal, timeoutSignal])
+      : timeoutSignal
+    : init.signal;
+  const res = await fetch(path, {
+    ...init,
+    signal,
+    headers: {
+      ...(init.body ? { "Content-Type": "application/json" } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...init.headers,
+    },
+  });
+
+  if (res.status === 401) {
+    // 同时清除裸 token 与 zustand persist 的登录态，避免跳转后残留假登录
+    localStorage.removeItem("token");
+    localStorage.removeItem("muse-auth");
+    if (!window.location.pathname.startsWith("/login")) {
+      window.location.href = "/login";
+    }
+  }
+  return res;
 }
 
 export const api = {

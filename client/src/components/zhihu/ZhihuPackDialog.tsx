@@ -1,3 +1,4 @@
+import { authFetch } from "@/services/api";
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import {
@@ -42,7 +43,7 @@ export function ZhihuPackDialog({
       setOpenings([]);
       try {
         const token = localStorage.getItem('token');
-        const res = await fetch('/api/ai/zhihu-pack', {
+        const res = await authFetch('/api/ai/zhihu-pack', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',

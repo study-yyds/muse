@@ -3,7 +3,9 @@ import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { AppModule } from './app.module';
 
-jest.mock('marked', () => ({ marked: { parse: jest.fn((s: string) => `<p>${s}</p>`) } }));
+jest.mock('marked', () => ({
+  marked: { parse: jest.fn((s: string) => `<p>${s}</p>`) },
+}));
 jest.mock('@neondatabase/serverless', () => ({}));
 jest.mock('archiver', () => () => ({
   pipe: jest.fn(),
@@ -17,7 +19,9 @@ describe('API — 四层覆盖（正常/校验/权限/边界）', () => {
   let bookId: string | null = null;
 
   beforeAll(async () => {
-    const m: TestingModule = await Test.createTestingModule({ imports: [AppModule] }).compile();
+    const m: TestingModule = await Test.createTestingModule({
+      imports: [AppModule],
+    }).compile();
     app = m.createNestApplication();
     await app.init();
 
@@ -42,23 +46,28 @@ describe('API — 四层覆盖（正常/校验/权限/边界）', () => {
     }
   }, 30000);
 
-  afterAll(async () => { await app.close(); });
+  afterAll(async () => {
+    await app.close();
+  });
 
   // ===== 辅助方法 =====
-  const auth = () => token ? { Authorization: `Bearer ${token}` } : {};
+  const auth = () => (token ? { Authorization: `Bearer ${token}` } : {});
 
   // ===== 1. Auth =====
   describe('Auth — 认证', () => {
     it('正常 — 发送验证码', async () => {
       const r = await request(app.getHttpServer())
-        .post('/api/auth/send-code').send({ phone_number: '13800138000' });
-      // 公开接口 — DB 可用时 200/201，DB 不可用时 500
-      expect([200, 201, 500]).toContain(r.status);
+        .post('/api/auth/send-code')
+        .send({ phone_number: '13800138000' });
+      // 公开接口 — DB 可用时 200/201；DB 不可用时 500；
+      // beforeAll 刚用同一手机号发过，60 秒冷却内会返回 400
+      expect([200, 201, 400, 500]).toContain(r.status);
     });
 
     it('校验 — 缺少 phone_number', async () => {
       const r = await request(app.getHttpServer())
-        .post('/api/auth/send-code').send({});
+        .post('/api/auth/send-code')
+        .send({});
       expect(r.status).toBeGreaterThanOrEqual(400);
     });
 
@@ -69,7 +78,8 @@ describe('API — 四层覆盖（正常/校验/权限/边界）', () => {
 
     it('边界 — 空手机号', async () => {
       const r = await request(app.getHttpServer())
-        .post('/api/auth/send-code').send({ phone_number: '' });
+        .post('/api/auth/send-code')
+        .send({ phone_number: '' });
       expect([200, 201, 400, 500]).toContain(r.status);
     });
   });
@@ -78,34 +88,42 @@ describe('API — 四层覆盖（正常/校验/权限/边界）', () => {
   describe('Books — 作品', () => {
     it('正常 — 获取作品列表（已登录）', async () => {
       if (!token) return;
-      const r = await request(app.getHttpServer()).get('/api/books').set(auth());
+      const r = await request(app.getHttpServer())
+        .get('/api/books')
+        .set(auth());
       expect(r.status).toBe(200);
     });
 
     it('校验 — 创建作品缺少 title', async () => {
       if (!token) return;
       const r = await request(app.getHttpServer())
-        .post('/api/books').set(auth()).send({});
+        .post('/api/books')
+        .set(auth())
+        .send({});
       expect(r.status).toBeGreaterThanOrEqual(400);
     });
 
     it('权限 — 无 Token 创建作品', async () => {
       const r = await request(app.getHttpServer())
-        .post('/api/books').send({ title: 'hack' });
+        .post('/api/books')
+        .send({ title: 'hack' });
       expect([401, 403]).toContain(r.status);
     });
 
     it('边界 — 超长标题', async () => {
       if (!token) return;
       const r = await request(app.getHttpServer())
-        .post('/api/books').set(auth()).send({ title: 'x'.repeat(300) });
+        .post('/api/books')
+        .set(auth())
+        .send({ title: 'x'.repeat(300) });
       expect([201, 400, 500]).toContain(r.status);
     });
 
     it('正常 — 获取作品详情', async () => {
       if (!token || !bookId) return;
       const r = await request(app.getHttpServer())
-        .get(`/api/books/${bookId}`).set(auth());
+        .get(`/api/books/${bookId}`)
+        .set(auth());
       expect(r.status).toBe(200);
     });
   });
@@ -117,34 +135,39 @@ describe('API — 四层覆盖（正常/校验/权限/边界）', () => {
     beforeAll(async () => {
       if (!token || !bookId) return;
       const r = await request(app.getHttpServer())
-        .post(`/api/books/${bookId}/chapters`).set(auth()).send({ title: '测试章节' });
+        .post(`/api/books/${bookId}/chapters`)
+        .set(auth())
+        .send({ title: '测试章节' });
       chapterId = r.body?.data?.chapter_id ?? null;
     });
 
     it('正常 — 获取章节列表', async () => {
       if (!token || !bookId) return;
       const r = await request(app.getHttpServer())
-        .get(`/api/books/${bookId}/chapters`).set(auth());
+        .get(`/api/books/${bookId}/chapters`)
+        .set(auth());
       expect(r.status).toBe(200);
     });
 
     it('校验 — 创建章节缺少 title', async () => {
       if (!token || !bookId) return;
       const r = await request(app.getHttpServer())
-        .post(`/api/books/${bookId}/chapters`).set(auth()).send({});
+        .post(`/api/books/${bookId}/chapters`)
+        .set(auth())
+        .send({});
       expect(r.status).toBeGreaterThanOrEqual(400);
     });
 
     it('权限 — 无 Token 获取章节', async () => {
-      const r = await request(app.getHttpServer())
-        .get('/api/books/x/chapters');
+      const r = await request(app.getHttpServer()).get('/api/books/x/chapters');
       expect([401, 403]).toContain(r.status);
     });
 
     it('边界 — 保存负数 word_count', async () => {
       if (!token || !bookId || !chapterId) return;
       const r = await request(app.getHttpServer())
-        .put(`/api/books/${bookId}/chapters/${chapterId}`).set(auth())
+        .put(`/api/books/${bookId}/chapters/${chapterId}`)
+        .set(auth())
         .send({ content: 'test', word_count: -1 });
       expect([200, 400, 500]).toContain(r.status);
     });
@@ -152,7 +175,8 @@ describe('API — 四层覆盖（正常/校验/权限/边界）', () => {
     it('正常 — 保存章节内容', async () => {
       if (!token || !bookId || !chapterId) return;
       const r = await request(app.getHttpServer())
-        .put(`/api/books/${bookId}/chapters/${chapterId}`).set(auth())
+        .put(`/api/books/${bookId}/chapters/${chapterId}`)
+        .set(auth())
         .send({ content: '章节正文内容', word_count: 6 });
       expect(r.status).toBe(200);
     });
@@ -163,27 +187,32 @@ describe('API — 四层覆盖（正常/校验/权限/边界）', () => {
     it('正常 — 获取角色列表', async () => {
       if (!token || !bookId) return;
       const r = await request(app.getHttpServer())
-        .get(`/api/books/${bookId}/characters`).set(auth());
+        .get(`/api/books/${bookId}/characters`)
+        .set(auth());
       expect(r.status).toBe(200);
     });
 
     it('校验 — 创建角色缺少 name', async () => {
       if (!token || !bookId) return;
       const r = await request(app.getHttpServer())
-        .post(`/api/books/${bookId}/characters`).set(auth()).send({});
+        .post(`/api/books/${bookId}/characters`)
+        .set(auth())
+        .send({});
       expect(r.status).toBeGreaterThanOrEqual(400);
     });
 
     it('权限 — 无 Token 创建角色', async () => {
       const r = await request(app.getHttpServer())
-        .post('/api/books/x/characters').send({ name: 'hack' });
+        .post('/api/books/x/characters')
+        .send({ name: 'hack' });
       expect([401, 403]).toContain(r.status);
     });
 
     it('边界 — 超长角色名', async () => {
       if (!token || !bookId) return;
       const r = await request(app.getHttpServer())
-        .post(`/api/books/${bookId}/characters`).set(auth())
+        .post(`/api/books/${bookId}/characters`)
+        .set(auth())
         .send({ name: 'x'.repeat(200) });
       expect([201, 400, 500]).toContain(r.status);
     });
@@ -193,20 +222,24 @@ describe('API — 四层覆盖（正常/校验/权限/边界）', () => {
   describe('AI — 人工智能', () => {
     it('权限 — 无 Token 调用 chat', async () => {
       const r = await request(app.getHttpServer())
-        .post('/api/ai/chat').send({ book_id: 'x', message: 'hi' });
+        .post('/api/ai/chat')
+        .send({ book_id: 'x', message: 'hi' });
       expect([401, 403]).toContain(r.status);
     });
 
     it('校验 — 缺少 message', async () => {
       if (!token) return;
       const r = await request(app.getHttpServer())
-        .post('/api/ai/chat').set(auth()).send({ book_id: bookId || 'x' });
+        .post('/api/ai/chat')
+        .set(auth())
+        .send({ book_id: bookId || 'x' });
       expect(r.status).toBeGreaterThanOrEqual(400);
     });
 
     it('权限 — 无 Token 调用 mimic-style', async () => {
       const r = await request(app.getHttpServer())
-        .post('/api/ai/mimic-style').send({ book_id: 'x' });
+        .post('/api/ai/mimic-style')
+        .send({ book_id: 'x' });
       expect([401, 403]).toContain(r.status);
     });
   });
@@ -216,13 +249,15 @@ describe('API — 四层覆盖（正常/校验/权限/边界）', () => {
     it('正常 — 获取设置', async () => {
       if (!token || !bookId) return;
       const r = await request(app.getHttpServer())
-        .get(`/api/books/${bookId}/settings`).set(auth());
+        .get(`/api/books/${bookId}/settings`)
+        .set(auth());
       expect(r.status).toBe(200);
     });
 
     it('权限 — 无 Token 修改设置', async () => {
       const r = await request(app.getHttpServer())
-        .put('/api/books/x/settings').send({});
+        .put('/api/books/x/settings')
+        .send({});
       expect([401, 403]).toContain(r.status);
     });
   });
@@ -237,18 +272,23 @@ describe('API — 四层覆盖（正常/校验/权限/边界）', () => {
     it('校验 — 创建模板缺少必填字段', async () => {
       if (!token) return;
       const r = await request(app.getHttpServer())
-        .post('/api/templates').set(auth()).send({});
+        .post('/api/templates')
+        .set(auth())
+        .send({});
       expect(r.status).toBeGreaterThanOrEqual(400);
     });
 
     it('权限 — 无 Token 删除模板', async () => {
-      const r = await request(app.getHttpServer())
-        .delete('/api/templates/some-id');
+      const r = await request(app.getHttpServer()).delete(
+        '/api/templates/some-id',
+      );
       expect([401, 403]).toContain(r.status);
     });
 
     it('权限 — 无 Token 访问 admin 端点', async () => {
-      const r = await request(app.getHttpServer()).get('/api/templates/admin/all');
+      const r = await request(app.getHttpServer()).get(
+        '/api/templates/admin/all',
+      );
       expect([401, 403]).toContain(r.status);
     });
   });
@@ -263,13 +303,15 @@ describe('API — 四层覆盖（正常/校验/权限/边界）', () => {
     it('权限 — 非 admin Token', async () => {
       if (!token) return;
       const r = await request(app.getHttpServer())
-        .get('/api/admin/users').set(auth());
+        .get('/api/admin/users')
+        .set(auth());
       expect([403]).toContain(r.status);
     });
 
     it('权限 — 无 Token 修改用户', async () => {
       const r = await request(app.getHttpServer())
-        .patch('/api/admin/users/x').send({ status: 'banned' });
+        .patch('/api/admin/users/x')
+        .send({ status: 'banned' });
       expect([401, 403]).toContain(r.status);
     });
   });
@@ -277,26 +319,28 @@ describe('API — 四层覆盖（正常/校验/权限/边界）', () => {
   // ===== 9. Other Routes =====
   describe('Other — 世界观/大纲/导出', () => {
     it('权限 — 无 Token 访问世界观', async () => {
-      const r = await request(app.getHttpServer())
-        .get('/api/books/x/world-setting');
+      const r = await request(app.getHttpServer()).get(
+        '/api/books/x/world-setting',
+      );
       expect([401, 403]).toContain(r.status);
     });
 
     it('权限 — 无 Token 访问大纲', async () => {
-      const r = await request(app.getHttpServer())
-        .get('/api/books/x/outline');
+      const r = await request(app.getHttpServer()).get('/api/books/x/outline');
       expect([401, 403]).toContain(r.status);
     });
 
     it('权限 — 无 Token 导出', async () => {
-      const r = await request(app.getHttpServer())
-        .get('/api/books/x/export?format=txt');
+      const r = await request(app.getHttpServer()).get(
+        '/api/books/x/export?format=txt',
+      );
       expect([401, 403]).toContain(r.status);
     });
 
     it('权限 — 无 Token 角色测试', async () => {
-      const r = await request(app.getHttpServer())
-        .post('/api/books/x/characters/x/test');
+      const r = await request(app.getHttpServer()).post(
+        '/api/books/x/characters/x/test',
+      );
       expect([401, 403]).toContain(r.status);
     });
   });

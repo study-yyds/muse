@@ -1,6 +1,6 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/services/api";
+import { api, authFetch } from "@/services/api";
 import type { ChapterDetail } from "@muse/shared";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -19,6 +19,7 @@ import {
   Target,
   Sparkles,
   Video,
+  ChevronDown,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { PromoVideoDialog } from "@/components/promo/PromoVideoDialog";
@@ -41,7 +42,15 @@ export function WritingEditor({ bookId, bookType }: Props) {
   });
 
   const chapters = chapterList?.data ?? [];
+  // 短篇无章节概念：自动选中唯一章节，隐藏章节列表侧栏
+  const isShort = bookType === "short";
   const [activeChapterId, setActiveChapterId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isShort && !activeChapterId && chapters.length === 1) {
+      setActiveChapterId(chapters[0].chapter_id);
+    }
+  }, [isShort, activeChapterId, chapters]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     typeof window !== 'undefined' && window.innerWidth < 768,
   );
@@ -62,6 +71,17 @@ export function WritingEditor({ bookId, bookType }: Props) {
   const [isDirty, setIsDirty] = useState(false);
   const [boundNodeId, setBoundNodeId] = useState<string | null>(null);
 
+  // 最新值 ref：供卸载/页面隐藏兜底保存与同步守卫读取，避免闭包过期
+  const editorContentRef = useRef(editorContent);
+  editorContentRef.current = editorContent;
+  const isDirtyRef = useRef(isDirty);
+  isDirtyRef.current = isDirty;
+  const boundNodeIdRef = useRef(boundNodeId);
+  boundNodeIdRef.current = boundNodeId;
+  const activeChapterIdRef = useRef(activeChapterId);
+  activeChapterIdRef.current = activeChapterId;
+  const savePendingRef = useRef(false);
+
   // 今日码字进度
   const { data: statsData } = useQuery({
     queryKey: ["stats", bookId],
@@ -75,6 +95,11 @@ export function WritingEditor({ bookId, bookType }: Props) {
   const todayWords = statsData?.data?.todayWords ?? 0;
   const dailyGoal = settingsData?.data?.daily_word_goal ?? (settingsData?.data?.extra as any)?.daily_word_goal ?? 0;
   const goalProgress = dailyGoal > 0 ? Math.min(todayWords / dailyGoal, 1) : 0;
+  // 短篇"故事走向"卡片:选中的梗概(写作对照)
+  const outlinePreview = (settingsData?.data?.extra as any)?.outline_preview as
+    | string
+    | undefined;
+  const [outlineExpanded, setOutlineExpanded] = useState(false);
 
   // 大纲节点列表（用于绑定选择）
   const { data: outlineData } = useQuery({
@@ -90,6 +115,8 @@ export function WritingEditor({ bookId, bookType }: Props) {
   // 章节数据到达后同步到编辑器
   useEffect(() => {
     if (chapterData?.data && chapterData.data.chapter_id === activeChapterId) {
+      // 有未保存的本地修改时不覆盖：自动保存后的 refetch 可能带回旧内容
+      if (isDirtyRef.current) return;
       setEditorContent(chapterData.data.content);
       setBoundNodeId(chapterData.data.bound_outline_node_id ?? null);
       setIsDirty(false);
@@ -107,13 +134,20 @@ export function WritingEditor({ bookId, bookType }: Props) {
         word_count: editorContent.length,
         bound_outline_node_id: boundNodeId,
       }),
+    onMutate: () => {
+      savePendingRef.current = true;
+    },
     onSuccess: () => {
       setIsDirty(false);
       queryClient.invalidateQueries({ queryKey: ["chapters", bookId] });
-      toast({ title: "已保存" });
+      // 失效本章节缓存：否则切走后 5 分钟内切回会读到保存前的旧内容
+      queryClient.invalidateQueries({ queryKey: ["chapter", bookId, activeChapterId] });
     },
     onError: () => {
       toast({ title: "保存失败", variant: "destructive" });
+    },
+    onSettled: () => {
+      savePendingRef.current = false;
     },
   });
 
@@ -127,21 +161,82 @@ export function WritingEditor({ bookId, bookType }: Props) {
     },
   });
 
-  const newChapter = useThrottle(() => {
+  // 自动保存：内容变化停止 2 秒后静默保存
+  const AUTOSAVE_DEBOUNCE_MS = 2000;
+  useEffect(() => {
+    if (!isDirty || !activeChapterId) return;
+    const timer = setTimeout(() => {
+      if (!savePendingRef.current) saveMutation.mutate();
+    }, AUTOSAVE_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editorContent, isDirty, activeChapterId]);
+
+  // 页面隐藏/关闭/组件卸载时兜底保存（切 tab、刷新、关页均覆盖）
+  useEffect(() => {
+    const flush = () => {
+      const id = activeChapterIdRef.current;
+      if (!id || !isDirtyRef.current) return;
+      const token = localStorage.getItem("token");
+      // keepalive：页面卸载时请求仍能发出；注意浏览器对 keepalive body 有
+      // 64KB 限制，超大章节关页时可能被丢弃（2 秒防抖自动保存已兜底绝大部分）
+      authFetch(`/api/books/${bookId}/chapters/${id}`, {
+        method: "PUT",
+        keepalive: true,
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          content: editorContentRef.current,
+          word_count: editorContentRef.current.length,
+          bound_outline_node_id: boundNodeIdRef.current,
+        }),
+      }).catch(() => {});
+      setIsDirty(false);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pagehide", flush);
+    return () => {
+      flush(); // 组件卸载（切 tab/返回列表）时最后保存一次
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pagehide", flush);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bookId]);
+
+  const newChapter = useThrottle(async () => {
     if (createChapterMutation.isPending) return;
     if (isDirty && activeChapterId) {
       if (!confirm("有未保存的内容，是否保存？")) return;
-      saveMutation.mutate();
+      try {
+        await saveMutation.mutateAsync();
+      } catch {
+        toast({ title: "保存失败，已取消新建章节", variant: "destructive" });
+        return;
+      }
     }
     createChapterMutation.mutate(`第${chapters.length + 1}章`);
   });
 
-  const selectChapter = (id: string) => {
+  const selectChapter = async (id: string) => {
     if (id === activeChapterId) return;
     if (isDirty && activeChapterId) {
       const ok = confirm("有未保存的内容，是否保存？");
-      if (ok) saveMutation.mutate();
-      else return;
+      if (ok) {
+        try {
+          // 等待保存完成再切换，失败则停留在当前章节，避免内容丢失
+          await saveMutation.mutateAsync();
+        } catch {
+          toast({ title: "保存失败，已取消切换章节", variant: "destructive" });
+          return;
+        }
+      } else {
+        return;
+      }
     }
     setEditorContent("");
     setActiveChapterId(id);
@@ -149,8 +244,8 @@ export function WritingEditor({ bookId, bookType }: Props) {
 
   return (
     <div className="flex h-full min-h-0 gap-0 min-w-0 overflow-hidden">
-      {/* 左侧章节列表 */}
-      <div
+      {/* 左侧章节列表（短篇无章节概念，不渲染） */}
+      {!isShort && <div
         className={cn(
           "border-r border-border bg-card flex flex-col transition-all z-10",
           "max-md:fixed max-md:left-0 max-md:top-0 max-md:h-full max-md:shadow-xl",
@@ -221,7 +316,7 @@ export function WritingEditor({ bookId, bookType }: Props) {
             </ScrollArea>
           </>
         )}
-      </div>
+      </div>}
 
       {/* 中间编辑器 + AI 面板 */}
       <div className="flex-1 flex flex-col min-w-0">
@@ -230,9 +325,11 @@ export function WritingEditor({ bookId, bookType }: Props) {
           <div className="flex items-center gap-3">
             {chapter ? (
               <div className="flex items-center gap-2">
-                <button className="p-0.5 -ml-1" onClick={() => setSidebarCollapsed(!sidebarCollapsed)} title="章节列表">
-                  {sidebarCollapsed ? <PanelLeftOpen className="size-4" /> : <PanelLeftClose className="size-4" />}
-                </button>
+                {!isShort && (
+                  <button className="p-0.5 -ml-1" onClick={() => setSidebarCollapsed(!sidebarCollapsed)} title="章节列表">
+                    {sidebarCollapsed ? <PanelLeftOpen className="size-4" /> : <PanelLeftClose className="size-4" />}
+                  </button>
+                )}
                 <FileText className="size-4 text-muted-foreground hidden sm:block" />
                 <span className="text-sm font-medium text-foreground">{chapter.title}</span>
                 <Badge variant="secondary" className="text-xs">
@@ -241,9 +338,11 @@ export function WritingEditor({ bookId, bookType }: Props) {
               </div>
             ) : (
               <div className="flex items-center gap-2">
-                <button className="p-0.5 -ml-1" onClick={() => setSidebarCollapsed(!sidebarCollapsed)} title="章节列表">
-                  {sidebarCollapsed ? <PanelLeftOpen className="size-4" /> : <PanelLeftClose className="size-4" />}
-                </button>
+                {!isShort && (
+                  <button className="p-0.5 -ml-1" onClick={() => setSidebarCollapsed(!sidebarCollapsed)} title="章节列表">
+                    {sidebarCollapsed ? <PanelLeftOpen className="size-4" /> : <PanelLeftClose className="size-4" />}
+                  </button>
+                )}
                 <p className="text-sm text-muted-foreground">选择一个章节开始写作</p>
               </div>
             )}
@@ -302,6 +401,29 @@ export function WritingEditor({ bookId, bookType }: Props) {
             </Button>
           </div>
         </div>
+
+        {/* 短篇"故事走向"卡片:梗概对照,默认折叠(写作时抬眼即可对照) */}
+        {isShort && outlinePreview && (
+          <div className="border-b border-border">
+            <button
+              className="w-full flex items-center justify-between px-4 py-2 text-left hover:bg-muted/50"
+              onClick={() => setOutlineExpanded(!outlineExpanded)}
+            >
+              <span className="text-xs font-medium text-muted-foreground">故事走向</span>
+              <ChevronDown
+                className={cn(
+                  "size-4 text-muted-foreground transition-transform",
+                  outlineExpanded && "rotate-180",
+                )}
+              />
+            </button>
+            {outlineExpanded && (
+              <p className="px-4 pb-3 text-xs leading-relaxed text-muted-foreground whitespace-pre-wrap">
+                {outlinePreview}
+              </p>
+            )}
+          </div>
+        )}
 
         {/* 编辑器 */}
         {!activeChapterId ? (

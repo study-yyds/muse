@@ -1,18 +1,22 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, BadRequestException } from '@nestjs/common';
 import { Response } from 'express';
 import path from 'path';
 import { writeFile, mkdir, unlink, access } from 'fs/promises';
 import crypto from 'crypto';
+import { execSync } from 'child_process';
+import ffmpegStatic from 'ffmpeg-static';
+import { createCanvas, GlobalFonts } from '@napi-rs/canvas';
+import JSZip from 'jszip';
 import { AiService } from '../ai/ai.service';
 
 const W = 1080;
 const H = 1920;
 const FONT_SIZE = 52;
 const MAX_CHARS_PER_LINE = 14;
-const MAX_ROWS = 3;
-const XFADE_SEC = 0.4;
 const LINE_HEIGHT = 70; // 行距
 const PARA_GAP = 100; // 基础段距（行距 70 + 段间额外 30）
+const MAX_SCRIPT_LINES = 200; // 脚本行数上限（每行一次 TTS/一张卡片，防资源耗尽）
+const MAX_CARD_PAGES = 100; // 素材包页数上限（每页约 8MB 画布，防内存耗尽）
 
 @Injectable()
 export class PromoService {
@@ -91,6 +95,11 @@ export class PromoService {
         send('error', { message: '脚本内容为空' });
         res.end();
         return;
+      }
+
+      // 行数上限：每行一次 TTS 调用 + 渲染资源，超限直接拒绝
+      if (scriptLines.length > MAX_SCRIPT_LINES) {
+        throw new Error(`脚本过长（最多 ${MAX_SCRIPT_LINES} 句），请分段生成`);
       }
 
       send('step', {
@@ -173,10 +182,7 @@ export class PromoService {
   // ============ 共用工具 ============
 
   private getFfmpegPath(): string {
-    const ffmpegMod = require('ffmpeg-static');
-    return typeof ffmpegMod === 'string'
-      ? ffmpegMod
-      : ffmpegMod?.default || ffmpegMod?.path || 'ffmpeg';
+    return ffmpegStatic || 'ffmpeg';
   }
 
   private getFontPath(): string {
@@ -188,7 +194,6 @@ export class PromoService {
 
   /** 检测视频文件是否带音轨（ffmpeg -i 的 stderr 流信息） */
   private hasAudioTrack(filePath: string): boolean {
-    const { execSync } = require('child_process');
     const ffmpegPath = this.getFfmpegPath();
     try {
       execSync(`"${ffmpegPath}" -i "${filePath.replace(/\\/g, '/')}"`, {
@@ -209,15 +214,6 @@ export class PromoService {
       .replace(/:/g, '\\:')
       .replace(/,/g, '\\,')
       .replace(/;/g, '\\;');
-  }
-
-  /** 长句按 14 字拆行（字幕用：逐句拆行） */
-  private splitIntoRows(line: string): string[] {
-    const chunks: string[] = [];
-    for (let c = 0; c < line.length; c += MAX_CHARS_PER_LINE) {
-      chunks.push(line.slice(c, c + MAX_CHARS_PER_LINE));
-    }
-    return chunks;
   }
 
   /**
@@ -354,7 +350,6 @@ export class PromoService {
   private async concatAudios(
     lineAudios: Array<{ url: string; durationSec: number }>,
   ): Promise<string> {
-    const { execSync } = require('child_process');
     const ffmpegPath = this.getFfmpegPath();
     const dir = await this.ensureOutputDir();
 
@@ -382,6 +377,26 @@ export class PromoService {
 
   // ============ 模式 C：解压视频背景 ============
 
+  /**
+   * 校验并解析背景视频路径（防路径穿越）
+   * 只允许 public/uploads/videos 下的文件，解析后必须仍位于 public 目录内
+   */
+  private resolveBackgroundPath(backgroundUrl: string): string {
+    const rel = backgroundUrl.replace(/^[\\/]+/, '');
+    if (
+      !rel.startsWith('uploads/videos/') &&
+      !rel.startsWith('uploads\\videos\\')
+    ) {
+      throw new BadRequestException('背景视频路径无效');
+    }
+    const publicDir = path.resolve(__dirname, '..', '..', 'public');
+    const target = path.resolve(publicDir, rel);
+    if (target !== publicDir && !target.startsWith(publicDir + path.sep)) {
+      throw new BadRequestException('背景视频路径无效');
+    }
+    return target;
+  }
+
   private async renderBackgroundVideo(
     scriptLines: string[],
     lineAudios: Array<{ url: string; durationSec: number }>,
@@ -390,10 +405,9 @@ export class PromoService {
   ): Promise<string> {
     const ffmpegPath = this.getFfmpegPath();
     const fontPath = this.getFontPath();
-    const { execSync } = require('child_process');
     const dir = await this.ensureOutputDir();
     const videoId = crypto.randomUUID();
-    const bgPath = path.join(__dirname, '..', '..', 'public', backgroundUrl);
+    const bgPath = this.resolveBackgroundPath(backgroundUrl);
     const outputPath = path.join(dir, `promo-${videoId}.mp4`);
 
     const lines = scriptLines.filter((l) => l.trim());
@@ -501,8 +515,6 @@ export class PromoService {
     scriptLines: string[],
     blankBefore: number[],
   ): Promise<string> {
-    const { createCanvas, GlobalFonts } = require('@napi-rs/canvas');
-    const JSZip = require('jszip');
     const dir = await this.ensureOutputDir();
     const packId = crypto.randomUUID();
 
@@ -519,6 +531,9 @@ export class PromoService {
 
     // 小说阅读式分页：每页一张卡片，多句垂直排列
     const pages = this.paginateLines(lines, blankBefore);
+    if (pages.length > MAX_CARD_PAGES) {
+      throw new Error(`脚本过长（最多 ${MAX_CARD_PAGES} 页），请分段生成`);
+    }
     for (let p = 0; p < pages.length; p++) {
       const canvas = createCanvas(W, H);
       const ctx = canvas.getContext('2d');

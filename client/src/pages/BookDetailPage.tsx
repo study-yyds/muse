@@ -1,7 +1,9 @@
 import { useState, useRef, useEffect } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/services/api";
+import { api, authFetch } from "@/services/api";
+import { WRITING_STYLES } from "@/lib/writing-styles";
+import { ModelSelector, customKeyValue } from "@/components/settings/ModelSelector";
 import type { BookDetail } from "@muse/shared";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -342,9 +344,53 @@ export function BookDetailPage() {
   );
 }
 
+/**
+ * 合并世界观分区：按分区名覆盖/追加。
+ * AI 采纳 update_section(s) 时后端是全量替换语义，若只回传单个分区会清空
+ * 其余分区，因此必须先读取现有分区做合并再提交。
+ */
+async function mergeWorldSections(
+  bookId: string,
+  token: string | null,
+  incoming: Array<{ name: string; content: string }>,
+): Promise<Array<{ name: string; content: string; sort_order?: number }>> {
+  const res = await fetch(`/api/books/${bookId}/world-setting`, {
+    headers: token ? { Authorization: "Bearer " + token } : {},
+  });
+  const json = await res.json().catch(() => null);
+  const existing: Array<{ name: string; content: string; sort_order?: number }> =
+    json?.data?.sections ?? [];
+  const merged = [...existing];
+  for (const sec of incoming) {
+    if (!sec?.name) continue;
+    const idx = merged.findIndex((s) => s.name === sec.name);
+    if (idx >= 0) {
+      merged[idx] = { ...merged[idx], content: sec.content };
+    } else {
+      merged.push({ name: sec.name, content: sec.content, sort_order: merged.length + 1 });
+    }
+  }
+  return merged;
+}
+
 function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
   type Ver = { content: string; action?: any; reasoning?: string };
-  type Msg = { role: string; content: string; action?: any; adoptedVer?: number; reasoning?: string; versions?: Ver[] };
+  type Msg = { role: string; content: string; action?: any; adoptedVer?: number; reasoning?: string; versions?: Ver[]; quality?: { count: number; types: string[] } };
+  // AI 味检测类型 → 中文提示（与 text-quality-checks.ts 的 issue.type 对应）
+  const QUALITY_LABELS: Record<string, string> = {
+    "dash-overuse": "破折号过密",
+    "binary-shell": '"不是…而是"句式',
+    "epiphany-ending": "句尾顿悟式总结",
+    "env-opening": "开篇环境描写",
+    "uniform-sentence-length": "句长过均匀",
+    "summary-ending": "段末总结句",
+    "parallel-triad": "三元排比",
+    "subject-repetition": "主语重复",
+    "subject-action-chain": "主语短动作连发",
+    "name-variants": "称谓待核对",
+    "fantasy-overuse": '"仿佛/宛如"过密',
+    "mind-reporting": "解释腔",
+  };
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [sessions, setSessions] = useState<any[]>([]);
@@ -353,12 +399,17 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [model, setModel] = useState("deepseek-v4-flash");
+  const [modelKeyId, setModelKeyId] = useState<string | undefined>(undefined);
+  const [modelKeyId, setModelKeyId] = useState<string | undefined>(undefined);
   const [chatStyle, setChatStyle] = useState("default");
   const [guideMode, setGuideMode] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [expandedReasoning, setExpandedReasoning] = useState<Set<number>>(new Set());
   const [streamReasonCollapsed, setStreamReasonCollapsed] = useState(false);
   const [activeVer, setActiveVer] = useState<Record<number, number>>({});
+  // 反馈重新生成：按消息索引展开输入框
+  const [feedbackOpen, setFeedbackOpen] = useState<number | null>(null);
+  const [feedbackText, setFeedbackText] = useState("");
   const abortRef = useRef<AbortController | null>(null);
   const scrollBottomRef = useRef<HTMLDivElement | null>(null);
   const msgsRef = useRef<Msg[]>([]);
@@ -368,15 +419,29 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
   const adoptingRef = useRef(false);
   const streamingRef = useRef("");
   const reasoningRef = useRef("");
+  // 会话 ID ref：卸载保存时读取最新值（此前闭包捕获的是首次渲染的 null，导致保存逻辑从未生效）
+  const sessionIdRef = useRef<string | null>(null);
   useEffect(() => { msgsRef.current = msgs; }, [msgs]);
   useEffect(() => { streamingRef.current = streaming; }, [streaming]);
   useEffect(() => { reasoningRef.current = reasoning; }, [reasoning]);
+  useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
   const saveTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const rewriteCtx = useEditorStore((s) => s.aiRewriteContext);
   const clearRewrite = useEditorStore((s) => s.clearAiRewrite);
-  const editor = useEditorStore();
+  // 不要用 useEditorStore() 整体订阅：编辑器每次按键都会更新 store，
+  // 会导致整个 AI 面板重渲染。事件处理里按需 getState() 读取即可
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  // 笔风分析结果：存在时风格下拉出现"我的笔风"选项
+  const { data: settingsData } = useQuery({
+    queryKey: ["book-settings", bookId],
+    queryFn: () =>
+      api.get<{ data: { extra?: { mimic_style_analysis?: string } } }>(
+        `/books/${bookId}/settings`,
+      ),
+    enabled: !!bookId,
+  });
+  const mimicAnalysis = settingsData?.data?.extra?.mimic_style_analysis ?? null;
   const token = localStorage.getItem("token");
 
   // 从后端加载会话
@@ -413,14 +478,15 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
       const curMsgs = msgsRef.current;
       const curStream = streamingRef.current;
       const curReasoning = reasoningRef.current;
-      if ((curStream || curReasoning) && sessionId && curMsgs.length > 0) {
+      const sid = sessionIdRef.current;
+      if ((curStream || curReasoning) && sid && curMsgs.length > 0) {
         const lastMsg = curMsgs[curMsgs.length - 1];
         const partialContent = curStream || (lastMsg?.role === 'assistant' ? lastMsg.content : '（生成中...）');
         const partialMsgs =
           lastMsg?.role === 'user'
             ? [...curMsgs, { role: 'assistant' as const, content: partialContent, reasoning: curReasoning || undefined }]
             : [...curMsgs.slice(0, -1), { ...curMsgs[curMsgs.length - 1], content: partialContent, reasoning: curReasoning || undefined }];
-        fetch(`/api/ai/chat-sessions/${sessionId}/messages`, {
+        fetch(`/api/ai/chat-sessions/${sid}/messages`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
           body: JSON.stringify({ messages: partialMsgs }),
@@ -428,7 +494,12 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
       }
       clearTimeout(saveTimer.current);
       if (autoSaveIntervalRef.current) clearInterval(autoSaveIntervalRef.current);
-      if (abortRef.current) { abortRef.current.abort(); abortRef.current = null; }
+      if (abortRef.current) {
+        // 标记为用户主动中断（切 tab），doSend 的 catch 不再用错误消息覆盖已保存的生成内容
+        stoppedByUserRef.current = true;
+        abortRef.current.abort();
+        abortRef.current = null;
+      }
     };
   }, [bookId, section]);
 
@@ -620,7 +691,7 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
     msg: string, prevMsgs: { role: string; content: string }[],
     bodyExtra?: Record<string, any>, signal?: AbortSignal,
     onStream?: (ac: string, ar: string) => void,
-  ): Promise<{ content: string; action?: any; reasoning: string }> => {
+  ): Promise<{ content: string; action?: any; reasoning: string; quality?: { count: number; types: string[] } }> => {
     const r = await fetch("/api/ai/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
@@ -628,6 +699,7 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
         book_id: bookId,
         context_type: section,
         model,
+        key_id: modelKeyId,
         message: msg,
         messages: prevMsgs,
         // 带当前章节和光标位置，让 AI 知道正在写的内容
@@ -639,7 +711,7 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
     });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const reader = r.body?.getReader(); if (!reader) throw new Error("无响应");
-    const decoder = new TextDecoder(); let buf = ""; let ac = ""; let ar = ""; let action: any = undefined;
+    const decoder = new TextDecoder(); let buf = ""; let ac = ""; let ar = ""; let action: any = undefined; let quality: { count: number; types: string[] } | undefined = undefined;
     while (true) {
       const { done, value } = await reader.read(); if (done) break;
       buf += decoder.decode(value, { stream: true }); const lines = buf.split("\n"); buf = lines.pop() ?? "";
@@ -655,6 +727,7 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
             try { ar += JSON.parse(payload); } catch { ar += payload; }
           }
           if (ev === "action") { try { action = JSON.parse(payload); } catch { /* ignore */ } }
+          if (ev === "quality") { try { quality = JSON.parse(payload); } catch { /* ignore */ } }
           if (ev === "error") {
             try { const err = JSON.parse(payload); toast({ title: err.message || "AI 错误", variant: "destructive" }); } catch { toast({ title: "AI 请求失败", variant: "destructive" }); }
           }
@@ -668,7 +741,7 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
         if (ac) setStreaming(extractDisplayText(ac));
       }
     }
-    return { content: ac ? extractDisplayText(ac) : "", action, reasoning: ar };
+    return { content: ac ? extractDisplayText(ac) : "", action, reasoning: ar, quality };
   };
 
   const doSend = async (userMsg: string) => {
@@ -682,10 +755,18 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
     const controller = new AbortController();
     abortRef.current = controller;
     const bodyExtra: Record<string, any> = {};
-    if (section === "write" && editor.activeChapterId) {
-      bodyExtra.chapter_id = editor.activeChapterId;
-      bodyExtra.cursor_position = rewriteCtx ? rewriteCtx.start : editor.cursorPosition;
+    const activeCh = useEditorStore.getState().activeChapterId;
+    if (section === "write" && activeCh) {
+      bodyExtra.chapter_id = activeCh;
+      bodyExtra.cursor_position = rewriteCtx ? rewriteCtx.start : useEditorStore.getState().cursorPosition;
       bodyExtra.style = chatStyle;
+      // 选中改写标记：服务端据此切换改写指引（保事实换形式，不推进剧情）
+      bodyExtra.rewrite = !!rewriteCtx;
+      // 记录请求时的章节与光标位置，采纳时精确插入（防止插入到错误章节/位置）
+      useEditorStore.getState().setPendingRequest({
+        chapterId: activeCh,
+        cursorPosition: rewriteCtx ? rewriteCtx.start : useEditorStore.getState().cursorPosition,
+      });
     }
     bodyExtra.guide_mode = guideMode;
     // 确保有活跃会话
@@ -704,7 +785,7 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
       const result = await streamOnce(userMsg, prevMsgs, bodyExtra, controller.signal);
       clearInterval(autoSaveIntervalRef.current);
       setStreaming(""); setReasoning("");
-      const finalMsgs = [...newMsgs, { role: "assistant", content: result.content, action: result.action, reasoning: result.reasoning || undefined }];
+      const finalMsgs = [...newMsgs, { role: "assistant", content: result.content, action: result.action, reasoning: result.reasoning || undefined, quality: result.quality }];
       setMsgs(finalMsgs);
       if (sid) flushSave(sid, finalMsgs);
     } catch (e: any) {
@@ -729,7 +810,7 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
     doSend(msg);
   };
 
-  const regenerate = () => {
+  const regenerate = (feedback?: string) => {
     if (loading) return;
     const curMsgs = msgsRef.current;
     let lastUserIdx = -1;
@@ -740,7 +821,10 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
     const lastAiIdx = curMsgs.length - 1;
     if (lastAiIdx <= lastUserIdx) return;
 
-    const userMsg = curMsgs[lastUserIdx].content;
+    // 反馈方向只注入本次请求，不写回消息历史
+    const userMsg = feedback?.trim()
+      ? `${curMsgs[lastUserIdx].content}\n\n【重写方向】${feedback.trim()}`
+      : curMsgs[lastUserIdx].content;
     const prevMsgs = curMsgs.slice(0, lastUserIdx + 1).map((m) => ({ role: m.role, content: m.content }));
 
     setLoading(true); setStreamReasonCollapsed(false); isRegeneratingRef.current = true;
@@ -753,10 +837,18 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
     abortRef.current = controller;
 
     const bodyExtra: Record<string, any> = {};
-    if (section === "write" && editor.activeChapterId) {
-      bodyExtra.chapter_id = editor.activeChapterId;
-      bodyExtra.cursor_position = rewriteCtx ? rewriteCtx.start : editor.cursorPosition;
+    const activeCh = useEditorStore.getState().activeChapterId;
+    if (section === "write" && activeCh) {
+      bodyExtra.chapter_id = activeCh;
+      bodyExtra.cursor_position = rewriteCtx ? rewriteCtx.start : useEditorStore.getState().cursorPosition;
       bodyExtra.style = chatStyle;
+      // 选中改写标记：服务端据此切换改写指引（保事实换形式，不推进剧情）
+      bodyExtra.rewrite = !!rewriteCtx;
+      // 记录请求时的章节与光标位置，采纳时精确插入（防止插入到错误章节/位置）
+      useEditorStore.getState().setPendingRequest({
+        chapterId: activeCh,
+        cursorPosition: rewriteCtx ? rewriteCtx.start : useEditorStore.getState().cursorPosition,
+      });
     }
     bodyExtra.guide_mode = guideMode;
 
@@ -831,6 +923,7 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
             m.content = result.content;
             m.reasoning = result.reasoning || undefined;
             m.action = result.action;
+            m.quality = result.quality;
           }
           updated[lastAiIdx] = m;
           return updated;
@@ -968,28 +1061,35 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
         queryClient.invalidateQueries({ queryKey: ["outline", bookId] });
         toast({ title: "大纲节点已更新" });
       } else if (a.action === "update_sections" && a.sections) {
+        // 合并而非覆盖：AI 只回部分分区时不能清掉未列出的分区
+        const merged = await mergeWorldSections(bookId, token, a.sections);
         await fetch("/api/books/" + bookId + "/world-setting", {
           method: "PUT",
           headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
-          body: JSON.stringify({ sections: a.sections }),
+          body: JSON.stringify({ sections: merged }),
         });
         queryClient.invalidateQueries({ queryKey: ["world-setting", bookId] });
         toast({ title: "世界观已更新" });
       } else if (a.action === "update_section") {
+        // 合并而非覆盖：按分区名 upsert，其余分区保持不变
+        const merged = await mergeWorldSections(bookId, token, [{ name: a.name, content: a.content }]);
         await fetch("/api/books/" + bookId + "/world-setting", {
           method: "PUT",
           headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
-          body: JSON.stringify({ sections: [{ name: a.name, content: a.content }] }),
+          body: JSON.stringify({ sections: merged }),
         });
         queryClient.invalidateQueries({ queryKey: ["world-setting", bookId] });
         toast({ title: "世界观已更新" });
       } else {
+        const pendingReq = useEditorStore.getState().pendingRequest;
+        const reqChapter =
+          pendingReq?.chapterId ?? useEditorStore.getState().activeChapterId ?? null;
         const oldCtx = useEditorStore.getState().aiRewriteContext;
         if (oldCtx) {
-          useEditorStore.getState().requestReplace(oldCtx.text, a.content, oldCtx.start, oldCtx.end, oldCtx.tiptapFrom, oldCtx.tiptapTo);
+          useEditorStore.getState().requestReplace(oldCtx.text, a.content, oldCtx.start, oldCtx.end, oldCtx.tiptapFrom, oldCtx.tiptapTo, reqChapter);
           useEditorStore.getState().clearAiRewrite();
         } else {
-          useEditorStore.getState().requestInsert(a.content);
+          useEditorStore.getState().requestInsert(a.content, reqChapter, pendingReq?.cursorPosition ?? 0);
         }
         toast({ title: "已插入编辑器" });
       }
@@ -1134,6 +1234,11 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
                         {curVer.content ? (
                           <div className="whitespace-pre-wrap">{stripActionJson(curVer.content)}</div>
                         ) : null}
+                        {m.quality && !isAdopted && (
+                          <div className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                            ⚠ AI 味提示（{m.quality.count} 处）：{m.quality.types.slice(0, 3).map((t) => QUALITY_LABELS[t] ?? t).join("、")}
+                          </div>
+                        )}
                         {isAdopted ? (
                           <div className="mt-2 pt-2 border-t border-border text-xs text-muted-foreground text-center">
                             已采纳
@@ -1145,9 +1250,52 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
                                 {adoptingRef.current ? "采纳中..." : "采纳"}
                               </Button>
                             )}
-                            <Button size="xs" variant="ghost" onClick={regenerate}>
-                              重新生成
-                            </Button>
+                            {feedbackOpen === i ? (
+                              <div className="w-full flex items-center gap-2">
+                                <Textarea
+                                  autoFocus
+                                  value={feedbackText}
+                                  onChange={(e) => setFeedbackText(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                                      e.preventDefault();
+                                      regenerate(feedbackText);
+                                      setFeedbackOpen(null);
+                                      setFeedbackText("");
+                                    }
+                                  }}
+                                  placeholder="不满意？告诉 AI 重写方向（可选），如：太啰嗦了，精简一点"
+                                  rows={2}
+                                  className="flex-1 text-xs min-h-0"
+                                />
+                                <Button
+                                  size="xs"
+                                  onClick={() => {
+                                    regenerate(feedbackText);
+                                    setFeedbackOpen(null);
+                                    setFeedbackText("");
+                                  }}
+                                >
+                                  生成
+                                </Button>
+                                <Button
+                                  size="xs"
+                                  variant="ghost"
+                                  onClick={() => { setFeedbackOpen(null); setFeedbackText(""); }}
+                                >
+                                  取消
+                                </Button>
+                              </div>
+                            ) : (
+                              <Button
+                                size="xs"
+                                variant="ghost"
+                                disabled={loading}
+                                onClick={() => { setFeedbackOpen(i); setFeedbackText(""); }}
+                              >
+                                重新生成
+                              </Button>
+                            )}
                             {hasVersions && m.versions!.length > 1 && (
                               <span className="text-xs text-muted-foreground ml-auto flex items-center gap-1">
                                 <button
@@ -1259,22 +1407,21 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
                   onChange={(e) => setChatStyle(e.target.value)}
                   className="text-[11px] text-muted-foreground bg-muted/50 rounded-full px-2.5 py-1 border-0 outline-none cursor-pointer"
                 >
-                  <option value="default">风格</option>
-                  <option value="light-novel">轻小说</option>
-                  <option value="serious">严肃文学</option>
-                  <option value="ancient">古风</option>
-                  <option value="plain">小白文</option>
-                  <option value="colloquial">口语化</option>
+                  {WRITING_STYLES.map((s) => (
+                    <option key={s.value} value={s.value}>
+                      {s.value === "default" ? "风格" : s.label}
+                    </option>
+                  ))}
+                  {/* 做过笔风分析后才出现 */}
+                  {mimicAnalysis && <option value="mimic">我的笔风</option>}
                 </select>
               )}
-              <select
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
+              <ModelSelector
+                usage="chat"
+                value={modelKeyId ? customKeyValue(modelKeyId) : model}
+                onChange={(m, keyId) => { setModel(m); setModelKeyId(keyId); }}
                 className="text-[11px] text-muted-foreground bg-muted/50 rounded-full px-2.5 py-1 border-0 outline-none cursor-pointer"
-              >
-                <option value="deepseek-v4-flash">V4 Flash</option>
-                <option value="deepseek-v4-pro">V4 Pro</option>
-              </select>
+              />
               <label className="flex items-center gap-1 cursor-pointer" title={guideMode ? "关闭引导模式" : "开启引导模式"}>
                 <button
                   onClick={(e) => { e.preventDefault(); setGuideMode(!guideMode); }}

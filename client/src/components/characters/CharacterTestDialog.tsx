@@ -1,3 +1,4 @@
+import { authFetch } from "@/services/api";
 import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -31,7 +32,7 @@ export function CharacterTestDialog({ char, bookId }: Props) {
   useEffect(() => {
     (async () => {
       try {
-        const r = await fetch(
+        const r = await authFetch(
           `/api/books/${bookId}/characters/${char.char_id}/test`,
           {
             method: "POST",
@@ -61,7 +62,7 @@ export function CharacterTestDialog({ char, bookId }: Props) {
     setStreaming("");
 
     try {
-      const r = await fetch(
+      const r = await authFetch(
         `/api/books/${bookId}/characters/${char.char_id}/test/${sessionRef.current}/message`,
         {
           method: "POST",

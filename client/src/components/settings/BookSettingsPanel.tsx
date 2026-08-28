@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/services/api";
+import { api, authFetch } from "@/services/api";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
@@ -9,8 +9,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { Settings, Loader2, Check, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { ModelSelector } from "@/components/settings/ModelSelector";
+import { ModelSelector, customKeyValue } from "@/components/settings/ModelSelector";
 import { SynopsisSection } from "@/components/settings/SynopsisSection";
+import { WRITING_STYLES } from "@/lib/writing-styles";
 
 interface BookSettings {
   preset_style: string;
@@ -24,15 +25,6 @@ interface Props {
   onCoverChange?: (url: string) => void;
   onCoverHistory?: (history: string[]) => void;
 }
-
-const WRITING_STYLES = [
-  { value: "default", label: "默认" },
-  { value: "light-novel", label: "轻小说" },
-  { value: "serious", label: "严肃文学" },
-  { value: "ancient", label: "古风" },
-  { value: "plain", label: "小白文" },
-  { value: "colloquial", label: "口语化" },
-];
 
 export function BookSettingsPanel({ bookId, book, coverUrl, onCoverChange }: Props) {
   const queryClient = useQueryClient();
@@ -58,7 +50,7 @@ export function BookSettingsPanel({ bookId, book, coverUrl, onCoverChange }: Pro
     setIsMimicking(true);
     try {
       const t = localStorage.getItem("token");
-      const r = await fetch("/api/ai/mimic-style", {
+      const r = await authFetch("/api/ai/mimic-style", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
         body: JSON.stringify(body),
@@ -80,12 +72,16 @@ export function BookSettingsPanel({ bookId, book, coverUrl, onCoverChange }: Pro
   };
 
   const [mimicModel, setMimicModel] = useState("deepseek-v4-flash");
-  const doMimicBook = () => doMimic({ book_id: bookId, model: mimicModel });
-  const doMimicCustom = () => doMimic({ text: customStyleText, model: mimicModel });
+  const [mimicKeyId, setMimicKeyId] = useState<string | undefined>(undefined);
+  const doMimicBook = () => doMimic({ book_id: bookId, model: mimicModel, key_id: mimicKeyId });
+  const doMimicCustom = () => doMimic({ text: customStyleText, model: mimicModel, key_id: mimicKeyId });
 
   useEffect(() => {
     if (settings) {
-      setPresetStyle(settings.preset_style ?? "default");
+      // 旧值 plain（小白文）已从预设中移除，归一为默认
+      setPresetStyle(
+        settings.preset_style === "plain" ? "default" : (settings.preset_style ?? "default"),
+      );
       setWordGoal(settings.daily_word_goal ?? 0);
       setMimicResult((settings as any).extra?.mimic_style_analysis ?? null);
       const h = (settings as any).extra?.cover_history;
@@ -160,7 +156,7 @@ export function BookSettingsPanel({ bookId, book, coverUrl, onCoverChange }: Pro
                 onClick={async () => {
                   onCoverChange?.(h);
                   const t = localStorage.getItem("token");
-                  await fetch(`/api/books/${bookId}`, {
+                  await authFetch(`/api/books/${bookId}`, {
                     method: "PATCH",
                     headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
                     body: JSON.stringify({ cover_url: h }),
@@ -214,7 +210,12 @@ export function BookSettingsPanel({ bookId, book, coverUrl, onCoverChange }: Pro
           分析已有正文或手动输入样本，提取写作风格特征。
         </p>
         <div className="flex items-center gap-2">
-          <ModelSelector usage="chat" value={mimicModel} onChange={setMimicModel} className="text-xs rounded border border-border bg-background px-2 py-1" />
+          <ModelSelector
+            usage="chat"
+            value={mimicKeyId ? customKeyValue(mimicKeyId) : mimicModel}
+            onChange={(m, keyId) => { setMimicModel(m); setMimicKeyId(keyId); }}
+            className="text-xs rounded border border-border bg-background px-2 py-1"
+          />
           <Button
           variant="outline"
           size="sm"
@@ -338,7 +339,7 @@ function VisualStyleSetting({
     setLoading(true);
     try {
       const token = localStorage.getItem("token");
-      const res = await fetch("/api/ai/recommend-style", {
+      const res = await authFetch("/api/ai/recommend-style", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ book_id: bookId }),
@@ -399,6 +400,7 @@ function CoverGenerateButton({
   const [prompt, setPrompt] = useState("");
   const [showPrompt, setShowPrompt] = useState(false);
   const [model, setModel] = useState("doubao-seedream-5-0-260128");
+  const [coverKeyId, setCoverKeyId] = useState<string | undefined>(undefined);
   const [imageResolution, setImageResolution] = useState("2K");
   const [imageRatio, setImageRatio] = useState("1:1");
   const { toast } = useToast();
@@ -409,10 +411,10 @@ function CoverGenerateButton({
     setGenerating(true);
     try {
       const token = localStorage.getItem("token");
-      const res = await fetch("/api/ai/generate-cover", {
+      const res = await authFetch("/api/ai/generate-cover", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ book_id: bookId, prompt: prompt || undefined, size: imageSize, style, model }),
+        body: JSON.stringify({ book_id: bookId, prompt: prompt || undefined, size: imageSize, style, model, key_id: coverKeyId }),
       });
       if (!res.ok) throw new Error("生成失败");
       const json = await res.json();
@@ -438,10 +440,10 @@ function CoverGenerateButton({
           setGenerating(true);
           try {
             const token = localStorage.getItem("token");
-            const res = await fetch("/api/ai/generate-cover", {
+            const res = await authFetch("/api/ai/generate-cover", {
               method: "POST",
               headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-              body: JSON.stringify({ book_id: bookId, size: imageSize, style, model }),
+              body: JSON.stringify({ book_id: bookId, size: imageSize, style, model, key_id: coverKeyId }),
             });
             if (res.ok) {
               const json = await res.json();
@@ -486,8 +488,8 @@ function CoverGenerateButton({
       </select>
       <ModelSelector
         usage="image"
-        value={model}
-        onChange={setModel}
+        value={coverKeyId ? customKeyValue(coverKeyId) : model}
+        onChange={(m, keyId) => { setModel(m); setCoverKeyId(keyId); }}
         className="text-xs rounded border border-border bg-background px-2 py-1"
       />
 
@@ -530,7 +532,7 @@ function ApiKeyForm({ bookId: _ }: { bookId: string }) {
   const loadKeys = async () => {
     const token = localStorage.getItem("token");
     try {
-      const res = await fetch("/api/user/api-keys", {
+      const res = await authFetch("/api/user/api-keys", {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) {
@@ -546,7 +548,7 @@ function ApiKeyForm({ bookId: _ }: { bookId: string }) {
     if (!name.trim() || !key.trim()) return;
     const token = localStorage.getItem("token");
     try {
-      const res = await fetch("/api/user/api-keys", {
+      const res = await authFetch("/api/user/api-keys", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ name, api_key: key, base_url: baseUrl, model_name: modelName, usage }),
@@ -565,7 +567,7 @@ function ApiKeyForm({ bookId: _ }: { bookId: string }) {
   const deleteKey = async (id: string) => {
     const token = localStorage.getItem("token");
     try {
-      await fetch(`/api/user/api-keys/${id}`, {
+      await authFetch(`/api/user/api-keys/${id}`, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` },
       });

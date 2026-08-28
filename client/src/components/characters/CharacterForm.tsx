@@ -7,21 +7,42 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Plus, Trash2 } from "lucide-react";
 
-const characterSchema = z.object({
-  name: z.string().min(1, "角色名不能为空"),
-  gender: z.string().optional(),
-  age: z.coerce.number().optional(),
-  identity: z.string().optional(),
-  catchphrase: z.string().optional(),
-  speech_style: z.string().optional(),
-  aliases: z.string().optional(),
-  is_main: z.boolean().optional(),
-  appearance: z.string().optional(),
-  personality: z.string().optional(),
-  backstory: z.string().optional(),
-  motivation: z.string().optional(),
-  custom_fields: z.array(z.object({ key: z.string(), value: z.string() })).optional(),
-});
+// 注：年龄不是固定字段——成长线（如"外表20实际500"、"15→200随境界成长"）
+// 用自定义字段表达，自由文本不受数字约束
+const FIXED_FIELD_NAMES = [
+  "name", "gender", "identity", "catchphrase", "speech_style",
+  "aliases", "is_main", "appearance", "personality", "backstory", "motivation",
+];
+
+const characterSchema = z
+  .object({
+    name: z.string().min(1, "角色名不能为空"),
+    gender: z.string().optional(),
+    identity: z.string().optional(),
+    catchphrase: z.string().optional(),
+    speech_style: z.string().optional(),
+    aliases: z.string().optional(),
+    is_main: z.boolean().optional(),
+    appearance: z.string().optional(),
+    personality: z.string().optional(),
+    backstory: z.string().optional(),
+    motivation: z.string().optional(),
+    custom_fields: z
+      .array(z.object({ key: z.string(), value: z.string() }))
+      .optional(),
+  })
+  .superRefine((data, ctx) => {
+    // 自定义字段名不允许与固定字段重名
+    (data.custom_fields ?? []).forEach((f, i) => {
+      if (FIXED_FIELD_NAMES.includes(f.key.trim())) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["custom_fields", i, "key"],
+          message: "与固定字段重名",
+        });
+      }
+    });
+  });
 
 export type CharacterFormData = z.infer<typeof characterSchema>;
 
@@ -35,7 +56,6 @@ interface Props {
 const FIXED_FIELDS = [
   { name: "name" as const, label: "角色名", required: true, component: "input" },
   { name: "gender" as const, label: "性别", component: "input" },
-  { name: "age" as const, label: "年龄", component: "input", type: "number" },
   { name: "identity" as const, label: "身份/职业", component: "input" },
   { name: "catchphrase" as const, label: "口头禅", component: "input" },
   { name: "speech_style" as const, label: "说话风格", component: "input" },
@@ -52,7 +72,6 @@ export function CharacterForm({ defaultValues, onSubmit, onCancel, isPending }: 
     defaultValues: {
       name: "",
       gender: "",
-      age: undefined,
       appearance: "",
       personality: "",
       catchphrase: "",
@@ -132,11 +151,18 @@ export function CharacterForm({ defaultValues, onSubmit, onCancel, isPending }: 
           </Button>
         </div>
         {customFields.fields.map((cf, i) => (
-          <div key={cf.id} className="flex gap-2">
-            <Input
-              placeholder="字段名"
-              {...form.register(`custom_fields.${i}.key`)}
-            />
+          <div key={cf.id} className="flex gap-2 items-start">
+            <div className="flex-1">
+              <Input
+                placeholder="字段名"
+                {...form.register(`custom_fields.${i}.key`)}
+              />
+              {form.formState.errors.custom_fields?.[i]?.key && (
+                <p className="text-xs text-destructive mt-1">
+                  {form.formState.errors.custom_fields[i]?.key?.message as string}
+                </p>
+              )}
+            </div>
             <Input
               placeholder="字段值"
               {...form.register(`custom_fields.${i}.value`)}

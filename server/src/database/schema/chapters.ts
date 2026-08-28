@@ -1,7 +1,7 @@
 /**
  * 章节 — 作品的正文内容单元
  * 按 sort_order 顺序排列，每章独立存储 content（Markdown 格式）
- * 支持合并/拆分操作，通过 UNIQUE(book_id, sort_order) 保证序号不冲突
+ * 通过 UNIQUE(book_id, sort_order) 保证序号不冲突
  */
 import {
   pgTable,
@@ -33,7 +33,7 @@ export const chapters = pgTable(
     // 正文内容，Markdown 格式存储，最大依赖 TOAST 自动外存
     content: text('content').notNull().default(''),
 
-    // 排序序号：同一作品内唯一，拆分/合并时用 ORDER BY sort_order DESC 更新避免冲突
+    // 排序序号：同一作品内唯一
     sort_order: integer('sort_order').notNull(),
 
     // 绑定的大纲节点（一个节点可对应多章，一章只对应一个节点）
@@ -41,6 +41,11 @@ export const chapters = pgTable(
 
     // 字数统计：内容编辑后应用层计算
     word_count: integer('word_count').notNull().default(0),
+
+    // 章节摘要链(长篇):内容增长 ≥1500 字时异步生成 100 字摘要,供后续章节 AI 上下文注入
+    summary: text('summary'),
+    // 生成摘要时的字数(阈值判断用)
+    summary_at_words: integer('summary_at_words').notNull().default(0),
 
     // 创建时间
     created_at: timestamp('created_at', { withTimezone: true })

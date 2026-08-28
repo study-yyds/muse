@@ -3,6 +3,7 @@ import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
 import { useEditorStore } from "@/stores/editor";
+import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
@@ -33,12 +34,40 @@ function getCursorTextOffset(editor: ReturnType<typeof useEditor>): number {
   return editor.state.doc.textBetween(0, from, '\n').length;
 }
 
+/** 文本偏移 → Tiptap 文档位置（与 getCursorTextOffset 相同分隔符约定，二分查找保证一致） */
+function textOffsetToDocPos(editor: ReturnType<typeof useEditor>, offset: number): number {
+  if (!editor) return 0;
+  const doc = editor.state.doc;
+  if (offset <= 0) return 0;
+  const size = doc.content.size;
+  if (offset >= doc.textBetween(0, size, '\n').length) return size;
+  let lo = 0;
+  let hi = size;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (doc.textBetween(0, mid, '\n').length < offset) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
 export function TiptapEditor({ content, onChange, placeholder }: Props) {
   const isInternalChange = useRef(false);
+  const { toast } = useToast();
 
-  // 将纯文本转为 HTML 段落（每个 \n 分隔的块 → <p>）
+  // 将纯文本转为 HTML 段落（每个 \n 分隔的块 → <p>）。
+  // 保存侧 getText() 段落间是 "\n\n"，若按 \n 直拆会生成空 <p>（刷新后多空行）；
+  // 这里折叠连续空行：单个空行保留（短篇分节），双空行折叠（消除多余空行）
   const escapeHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const textToHtml = (text: string) => text.split('\n').map(p => `<p>${escapeHtml(p)}</p>`).join('');
+  const textToHtml = (text: string) => {
+    const parts = text.split('\n');
+    const out: string[] = [];
+    for (const p of parts) {
+      if (p === '' && out[out.length - 1] === '') continue; // 连续空行折叠为单个
+      out.push(p);
+    }
+    return out.map(p => `<p>${escapeHtml(p)}</p>`).join('');
+  };
 
   const isStructured = (content || '').trimStart().startsWith('{"type"') || (content || '').trimStart().startsWith('<p');
   const initialContent = isStructured ? content : textToHtml(content);
@@ -55,6 +84,32 @@ export function TiptapEditor({ content, onChange, placeholder }: Props) {
         class:
           "outline-none min-h-[300px] px-4 py-3 text-base leading-relaxed text-foreground max-w-full overflow-x-auto break-words",
       },
+      // 粘贴格式清理：只保留纯文本（Word/网页带来的颜色、字体、加粗等全部丢弃），
+      // 按行拆分为段落，与编辑器纯文本 + 段落模型保持一致
+      handlePaste: (view, event) => {
+        const text = event.clipboardData?.getData("text/plain");
+        if (text == null) return false;
+        event.preventDefault();
+        const lines = text.replace(/\r\n?/g, "\n").split("\n");
+        const tr = view.state.tr;
+        const sel = view.state.selection;
+        let pos = sel.from;
+        if (!sel.empty) {
+          tr.delete(sel.from, sel.to);
+          pos = sel.from;
+        }
+        for (let i = 0; i < lines.length; i++) {
+          tr.insertText(lines[i], pos);
+          pos += lines[i].length;
+          if (i < lines.length - 1) {
+            // 换行：拆分为新段落，mapping 映射新文档位置
+            tr.split(pos);
+            pos = tr.mapping.map(pos);
+          }
+        }
+        view.dispatch(tr);
+        return true;
+      },
     },
     onUpdate: ({ editor }) => {
       const text = getPlainText(editor);
@@ -70,6 +125,10 @@ export function TiptapEditor({ content, onChange, placeholder }: Props) {
       if (selectedText) {
         useEditorStore.getState().setSelection(selectedText, textOffset);
         useEditorStore.getState().setAiRewrite(selectedText, textOffset, textOffset + selectedText.length, from, to);
+      } else {
+        // 选区折叠（点击别处）时清除改写上下文，防止误替换旧选中文本
+        useEditorStore.getState().clearSelection();
+        useEditorStore.getState().clearAiRewrite();
       }
     },
   });
@@ -92,29 +151,30 @@ export function TiptapEditor({ content, onChange, placeholder }: Props) {
   const pendingInsert = useEditorStore((s) => s.pendingInsert);
   const pendingReplace = useEditorStore((s) => s.pendingReplace);
   const clearPendingInsert = useEditorStore((s) => s.clearPendingInsert);
+  const activeChapterId = useEditorStore((s) => s.activeChapterId);
 
   useEffect(() => {
     if (!editor) return;
+    // 章节校验：请求发起后用户可能切换了章节，此时不执行插入/替换
+    const chapterMismatch =
+      (pendingReplace && pendingReplace.chapterId != null && pendingReplace.chapterId !== activeChapterId) ||
+      (pendingInsert && pendingInsert.chapterId != null && pendingInsert.chapterId !== activeChapterId);
+    if (chapterMismatch) {
+      toast({ title: "该 AI 内容属于其他章节，已忽略", variant: "destructive" });
+      clearPendingInsert();
+      return;
+    }
     if (pendingReplace) {
       const { newText, tiptapFrom, tiptapTo, oldText } = pendingReplace;
       let from = tiptapFrom;
       let to = tiptapTo;
       if (from == null || to == null || editor.state.doc.textBetween(from, to, '\n') !== oldText) {
-        const docText = editor.state.doc.textBetween(0, editor.state.doc.content.size, '\n');
-        const idx = docText.indexOf(oldText);
+        // 坐标失效时按文本内容回退查找（与 getCursorTextOffset 相同的 \n 分隔约定）
+        const plainText = editor.state.doc.textBetween(0, editor.state.doc.content.size, '\n');
+        const idx = plainText.indexOf(oldText);
         if (idx === -1) { clearPendingInsert(); return; }
-        let pos = 0;
-        editor.state.doc.descendants((node, nodePos) => {
-          if (node.isText) {
-            const t = node.text ?? "";
-            if (pos + t.length > idx && pos <= idx) {
-              from = nodePos + (idx - pos);
-              to = from + oldText.length;
-              return false;
-            }
-            pos += t.length;
-          }
-        });
+        from = textOffsetToDocPos(editor, idx);
+        to = textOffsetToDocPos(editor, idx + oldText.length);
       }
       if (from != null && to != null) {
         editor.chain().focus().setTextSelection({ from, to }).insertContent(newText).run();
@@ -123,10 +183,12 @@ export function TiptapEditor({ content, onChange, placeholder }: Props) {
       return;
     }
     if (pendingInsert != null) {
-      editor.commands.insertContent(pendingInsert);
+      // 插入到请求发起时的光标位置，而不是当前光标
+      const pos = textOffsetToDocPos(editor, pendingInsert.textOffset);
+      editor.chain().focus().setTextSelection(pos).insertContent(pendingInsert.text).run();
       clearPendingInsert();
     }
-  }, [pendingInsert, pendingReplace, editor, clearPendingInsert]);
+  }, [pendingInsert, pendingReplace, editor, clearPendingInsert, activeChapterId, toast]);
 
   if (!editor) return null;
 

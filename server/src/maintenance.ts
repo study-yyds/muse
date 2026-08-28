@@ -57,12 +57,23 @@ export function startMaintenanceTasks(): NodeJS.Timeout {
         .where(
           sql`${schema.books.deleted_at} IS NOT NULL AND ${schema.books.deleted_at} < NOW() - INTERVAL '7 days'`,
         );
+      // 清理过期验证码（过期超过 1 天），防止表无限膨胀
+      const removedCodes = await db
+        .delete(schema.verification_codes)
+        .where(
+          sql`${schema.verification_codes.expires_at} < NOW() - INTERVAL '1 day'`,
+        );
       if (removedFiles > 0) {
         console.log(`[maintenance] removed ${removedFiles} temp files`);
       }
       if (removedBooks.rowCount > 0) {
         console.log(
           `[maintenance] removed ${removedBooks.rowCount} expired soft-deleted books`,
+        );
+      }
+      if (removedCodes.rowCount > 0) {
+        console.log(
+          `[maintenance] removed ${removedCodes.rowCount} expired verification codes`,
         );
       }
     } catch (e: any) {

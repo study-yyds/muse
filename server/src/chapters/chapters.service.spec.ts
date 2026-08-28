@@ -19,8 +19,26 @@ const mockDb = {
 jest.mock('../database/connection', () => ({
   getDb: () => mockDb,
   schema: {
-    chapters: { chapter_id: 'ch_id', book_id: 'ch_book_id', title: 'ch_title', content: 'ch_content', sort_order: 'ch_sort', word_count: 'ch_wc' },
-    books: { book_id: 'b_id', word_count: 'b_wc', updated_at: 'b_upd' },
+    chapters: {
+      chapter_id: 'ch_id',
+      book_id: 'ch_book_id',
+      title: 'ch_title',
+      content: 'ch_content',
+      sort_order: 'ch_sort',
+      word_count: 'ch_wc',
+    },
+    books: {
+      book_id: 'b_id',
+      word_count: 'b_wc',
+      updated_at: 'b_upd',
+      status: 'b_status',
+    },
+    book_settings: { book_id: 'bs_bid', extra: 'bs_extra' },
+    outline_chapters: {
+      id: 'oc_id',
+      status: 'oc_status',
+      updated_at: 'oc_upd',
+    },
   },
 }));
 
@@ -41,20 +59,26 @@ describe('ChaptersService', () => {
           from: () => ({
             where: () => {
               if (selectCallCount === 1) {
-                // 第一次：所有权校验 → 调用 .limit()
+                // 第一次：所有权 + 旧内容校验 → 调用 .limit()
                 return {
                   limit: () => Promise.resolve([{ book_id: 'book-123' }]),
                 };
               }
-              // 第二次：recalcBookWords 的 SELECT SUM → 直接返回结果
-              return Promise.resolve([{ total: 100 }]);
+              if (selectCallCount === 2) {
+                // 第二次：recalcBookWords 的 SELECT SUM → 直接返回结果
+                return Promise.resolve([{ total: 100 }]);
+              }
+              // 第三次：recordDailyWords 读取 book_settings
+              return {
+                limit: () => Promise.resolve([{ extra: {} }]),
+              };
             },
           }),
         } as any;
       });
 
       await expect(
-        service.save('chapter-1', 'content', 100, undefined, 'book-123')
+        service.save('chapter-1', 'content', 100, undefined, 'book-123'),
       ).resolves.not.toThrow();
     });
 
@@ -68,7 +92,7 @@ describe('ChaptersService', () => {
       } as any);
 
       await expect(
-        service.save('chapter-1', 'content', 100, undefined, 'book-123')
+        service.save('chapter-1', 'content', 100, undefined, 'book-123'),
       ).rejects.toThrow('章节不属于该作品');
     });
 
@@ -76,24 +100,8 @@ describe('ChaptersService', () => {
       mockDb.set.mockImplementation(() => mockDb);
       mockDb.where.mockImplementation(() => mockDb);
       await expect(
-        service.save('chapter-1', 'content', 100)
+        service.save('chapter-1', 'content', 100),
       ).resolves.not.toThrow();
     });
   });
-
-  describe('split', () => {
-    it('splitAt=0 产生空第一部分和完整第二部分', () => {
-      // 测试边界逻辑
-      const content = 'hello world';
-      expect(content.slice(0, 0)).toBe('');
-      expect(content.slice(0)).toBe('hello world');
-    });
-
-    it('splitAt=content.length 产生完整第一部分和空第二部分', () => {
-      const content = 'hello world';
-      expect(content.slice(0, content.length)).toBe('hello world');
-      expect(content.slice(content.length)).toBe('');
-    });
-  });
-
 });

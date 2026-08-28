@@ -20,6 +20,7 @@ import { BookOwnerGuard } from '../auth/book-owner.guard';
 import { RateLimitGuard } from '../auth/rate-limit.guard';
 
 const promoRateLimit = new RateLimitGuard(10, 300_000); // 每5分钟10次（素材包不调外部API，放宽）
+const MAX_SCRIPT_CHARS = 10000; // 脚本文本长度上限（防止分页/画布渲染耗尽内存）
 
 @UseGuards(AuthGuard, BookOwnerGuard)
 @Controller('api/books/:bookId/promo')
@@ -29,7 +30,6 @@ export class PromoController {
   // 音色试听：不占视频生成配额，按音色缓存（同一音色只消耗一次 API 调用）
   @Get('preview-voice')
   async previewVoice(
-    @Param('bookId') bookId: string,
     @Query('voice_type') voiceType: string,
     @Req() req: Request,
   ) {
@@ -54,6 +54,14 @@ export class PromoController {
     @Res() res: Response,
     @Req() req: Request,
   ) {
+    if (typeof body.script_text !== 'string' || !body.script_text.trim()) {
+      throw new BadRequestException('缺少脚本内容');
+    }
+    if (body.script_text.length > MAX_SCRIPT_CHARS) {
+      throw new BadRequestException(
+        `脚本文本过长（最多 ${MAX_SCRIPT_CHARS} 字），请分段生成`,
+      );
+    }
     await this.promo.generatePromoVideo(res, {
       scriptText: body.script_text,
       voiceType: body.voice_type || 'zh_female_xiaohe_uranus_bigtts',

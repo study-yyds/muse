@@ -6,12 +6,10 @@ import {
   pgTable,
   uuid,
   varchar,
-  text,
   jsonb,
   boolean,
   timestamp,
   index,
-  unique,
 } from 'drizzle-orm/pg-core';
 import { books } from './books';
 
@@ -20,8 +18,9 @@ export const ai_chat_sessions = pgTable(
   {
     id: uuid('id').defaultRandom().primaryKey(),
 
-    book_id: uuid('book_id')
-      .references(() => books.book_id, { onDelete: 'cascade' }),
+    book_id: uuid('book_id').references(() => books.book_id, {
+      onDelete: 'cascade',
+    }),
 
     // 会话所有者，book_id 为 null 时（引导模式）以此字段鉴权
     user_id: uuid('user_id').notNull(),
@@ -47,10 +46,7 @@ export const ai_chat_sessions = pgTable(
       .defaultNow(),
   },
   (table) => [
-    index('idx_chat_sessions_book_section').on(
-      table.book_id,
-      table.section,
-    ),
+    index('idx_chat_sessions_book_section').on(table.book_id, table.section),
     index('idx_chat_sessions_active').on(table.active),
   ],
 );

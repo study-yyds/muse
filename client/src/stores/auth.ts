@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { api } from "../services/api";
+import { queryClient } from "../lib/query-client";
 
 interface User {
   user_id: string;
@@ -32,12 +33,17 @@ export const useAuthStore = create<AuthState>()(
         );
         const token = res.data.access_token;
         localStorage.setItem("token", token);
+        // 清空上一个账号的查询缓存，防止跨账号看到他人数据
+        queryClient.clear();
         set({ token, isAuthenticated: true });
         await get().fetchProfile();
       },
 
       logout: () => {
         localStorage.removeItem("token");
+        // 清空查询缓存（作品列表等），并通知后端清除 /uploads 鉴权 Cookie
+        queryClient.clear();
+        fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
         set({ token: null, user: null, isAuthenticated: false });
       },
 

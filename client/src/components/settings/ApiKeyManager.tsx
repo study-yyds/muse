@@ -1,3 +1,4 @@
+import { authFetch } from "@/services/api";
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -16,7 +17,7 @@ export function ApiKeyManager() {
   const loadKeys = async () => {
     const token = localStorage.getItem("token");
     try {
-      const res = await fetch("/api/user/api-keys", {
+      const res = await authFetch("/api/user/api-keys", {
         headers: { Authorization: `Bearer ${token}` },
       });
       if (res.ok) {
@@ -32,7 +33,7 @@ export function ApiKeyManager() {
     if (!name.trim() || !key.trim()) return;
     const token = localStorage.getItem("token");
     try {
-      const res = await fetch("/api/user/api-keys", {
+      const res = await authFetch("/api/user/api-keys", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ name, api_key: key, base_url: baseUrl, model_name: modelName, usage }),
@@ -51,7 +52,7 @@ export function ApiKeyManager() {
   const deleteKey = async (id: string) => {
     const token = localStorage.getItem("token");
     try {
-      await fetch(`/api/user/api-keys/${id}`, {
+      await authFetch(`/api/user/api-keys/${id}`, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${token}` },
       });

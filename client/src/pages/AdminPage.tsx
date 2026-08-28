@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/services/api";
+import { useAuthStore } from "@/stores/auth";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
@@ -370,6 +371,30 @@ function TemplatesPanel() {
 export function AdminPage() {
   const navigate = useNavigate();
   const [tab, setTab] = useState<Tab>("users");
+  const user = useAuthStore((s) => s.user);
+
+  // 平台总用量
+  const { data: usageData } = useQuery({
+    queryKey: ["admin-usage"],
+    queryFn: () =>
+      api.get<{
+        data: {
+          total: { total_tokens: number; request_count: number };
+          by_model: Array<{ model_name: string; total_tokens: number; request_count: number }>;
+        };
+      }>("/admin/usage"),
+    enabled: user?.role === "admin",
+  });
+  const usage = usageData?.data;
+
+  // 前端角色守卫：非 admin 直接回首页（数据层仍有后端 AdminGuard 兜底）
+  useEffect(() => {
+    if (user && user.role !== "admin") {
+      navigate("/", { replace: true });
+    }
+  }, [user, navigate]);
+
+  if (!user || user.role !== "admin") return null;
 
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-4">
@@ -377,6 +402,34 @@ export function AdminPage() {
         <Button variant="ghost" size="icon-xs" onClick={() => navigate("/")}><ArrowLeft className="size-4" /></Button>
         <h1 className="text-lg font-semibold text-foreground flex items-center gap-2"><Shield className="size-5 text-primary" />管理后台</h1>
       </div>
+
+      {/* 平台总用量概览 */}
+      {usage && (
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="rounded-lg border border-border bg-card p-4">
+            <p className="text-xs text-muted-foreground">全站 Token 总消耗</p>
+            <p className="mt-1 text-2xl font-semibold text-foreground">
+              {(usage.total.total_tokens ?? 0).toLocaleString()}
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              共 {usage.total.request_count ?? 0} 次请求
+            </p>
+          </div>
+          <div className="rounded-lg border border-border bg-card p-4">
+            <p className="text-xs text-muted-foreground">按模型分布</p>
+            <div className="mt-1 space-y-1">
+              {(usage.by_model ?? []).slice(0, 6).map((m) => (
+                <div key={m.model_name} className="flex justify-between text-xs">
+                  <span className="text-foreground truncate">{m.model_name}</span>
+                  <span className="text-muted-foreground ml-2 shrink-0">
+                    {m.total_tokens.toLocaleString()} tokens
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="flex gap-2 border-b border-border">
         {(["users", "templates"] as Tab[]).map((t) => (

@@ -76,4 +76,25 @@ export class AdminService {
       .limit(months);
     return records;
   }
+
+  /** 平台总用量：全站 token 总量 + 请求数 + 按模型聚合 */
+  async getPlatformUsage() {
+    const db = getDb();
+    const [total] = await db
+      .select({
+        total_tokens: sql<number>`coalesce(sum(${schema.token_usage_records.token_count}), 0)::int`,
+        request_count: sql<number>`count(${schema.token_usage_records.id})::int`,
+      })
+      .from(schema.token_usage_records);
+    const byModel = await db
+      .select({
+        model_name: schema.token_usage_records.model_name,
+        total_tokens: sql<number>`sum(${schema.token_usage_records.token_count})::int`,
+        request_count: sql<number>`count(${schema.token_usage_records.id})::int`,
+      })
+      .from(schema.token_usage_records)
+      .groupBy(schema.token_usage_records.model_name)
+      .orderBy(desc(sql`sum(${schema.token_usage_records.token_count})`));
+    return { total, by_model: byModel };
+  }
 }

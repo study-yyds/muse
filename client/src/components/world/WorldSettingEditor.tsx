@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/services/api";
 import type { WorldSettingData, WorldSection } from "@muse/shared";
@@ -40,19 +40,35 @@ export function WorldSettingEditor({ bookId }: Props) {
     : DEFAULT_SECTIONS.map((s) => ({ ...s }));
 
   const [editing, setEditing] = useState<WorldSection[]>(sections);
+  // 上次与服务端同步的快照：有未保存的本地修改时不覆盖
+  const lastSyncedRef = useRef<string>("");
+  const editingRef = useRef(editing);
+  editingRef.current = editing;
 
   useEffect(() => {
-    if (data?.data?.sections?.length) {
-      setEditing(data.data.sections);
-    } else {
-      setEditing(DEFAULT_SECTIONS.map((s) => ({ ...s })));
+    const incoming = data?.data?.sections?.length
+      ? data.data.sections
+      : DEFAULT_SECTIONS.map((s) => ({ ...s }));
+    const incomingJson = JSON.stringify(incoming);
+    // 正在编辑（与服务端快照不一致）时跳过同步，
+    // 防止采纳 AI 建议/refetch 覆盖用户正在输入的内容
+    if (
+      lastSyncedRef.current &&
+      JSON.stringify(editingRef.current) !== lastSyncedRef.current
+    ) {
+      return;
     }
+    setEditing(incoming);
+    lastSyncedRef.current = incomingJson;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
 
   const saveMutation = useMutation({
     mutationFn: (sections: WorldSection[]) =>
       api.put(`/books/${bookId}/world-setting`, { sections }),
     onSuccess: () => {
+      // 保存的内容即新的同步快照，之后 refetch 不再触发覆盖
+      lastSyncedRef.current = JSON.stringify(editingRef.current);
       queryClient.invalidateQueries({ queryKey: ["world-setting", bookId] });
       toast({ title: "世界观已保存" });
     },

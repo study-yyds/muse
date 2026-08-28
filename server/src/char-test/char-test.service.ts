@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
 import { getDb, schema } from '../database/connection';
+import { sanitizePrompt } from '../ai/ai.service';
 import { Response } from 'express';
 
 @Injectable()
@@ -63,10 +64,22 @@ export class CharTestService {
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
+    // 用户消息清洗：防 prompt 注入 + 长度限制
+    message = sanitizePrompt(message);
+    if (!message.trim()) {
+      res.write(
+        `event: error\ndata: ${JSON.stringify({ message: '消息为空' })}\n\n`,
+      );
+      res.end();
+      return;
+    }
+
     const db = getDb();
     const apiKey = customApiKey || process.env.AI_PLATFORM_KEY;
     if (!apiKey) {
-      res.write(`event: error\ndata: ${JSON.stringify({ message: 'AI 未配置' })}\n\n`);
+      res.write(
+        `event: error\ndata: ${JSON.stringify({ message: 'AI 未配置' })}\n\n`,
+      );
       res.end();
       return;
     }
@@ -78,16 +91,26 @@ export class CharTestService {
       .where(eq(schema.characters.char_id, charId));
 
     if (!char) {
-      res.write(`event: error\ndata: ${JSON.stringify({ message: '角色不存在' })}\n\n`);
+      res.write(
+        `event: error\ndata: ${JSON.stringify({ message: '角色不存在' })}\n\n`,
+      );
       res.end();
       return;
     }
 
-    // 获取历史对话
+    // 获取历史对话（必须属于当前角色，防止跨角色会话串用）
     const [session] = await db
       .select()
       .from(schema.char_test_dialog_sessions)
       .where(eq(schema.char_test_dialog_sessions.session_id, sessionId));
+
+    if (!session || session.char_id !== charId) {
+      res.write(
+        `event: error\ndata: ${JSON.stringify({ message: '会话不存在或不属于该角色' })}\n\n`,
+      );
+      res.end();
+      return;
+    }
 
     const history: any[] = Array.isArray(session?.messages)
       ? (session.messages as any[])
@@ -127,21 +150,36 @@ export class CharTestService {
     ];
 
     // 保存用户消息
-    history.push({ role: 'user', content: message, timestamp: new Date().toISOString() });
+    history.push({
+      role: 'user',
+      content: message,
+      timestamp: new Date().toISOString(),
+    });
 
-    const baseUrl = customBaseUrl || process.env.AI_PLATFORM_BASE_URL || 'https://api.deepseek.com/v1';
+    const baseUrl =
+      customBaseUrl ||
+      process.env.AI_PLATFORM_BASE_URL ||
+      'https://api.deepseek.com/v1';
     // SSRF 防护：只允许白名单域名
-    const allowedHosts = ['api.deepseek.com', 'api.openai.com', 'dashscope.aliyuncs.com'];
+    const allowedHosts = [
+      'api.deepseek.com',
+      'api.openai.com',
+      'dashscope.aliyuncs.com',
+    ];
     try {
       const host = new URL(baseUrl).hostname;
       if (!allowedHosts.some((h) => host === h || host.endsWith('.' + h))) {
         console.warn('[char-test] blocked SSRF attempt to:', host);
-        res.write(`event: error\ndata: ${JSON.stringify({ message: '不允许的 API 端点' })}\n\n`);
+        res.write(
+          `event: error\ndata: ${JSON.stringify({ message: '不允许的 API 端点' })}\n\n`,
+        );
         res.end();
         return;
       }
     } catch {
-      res.write(`event: error\ndata: ${JSON.stringify({ message: '无效的 API 地址' })}\n\n`);
+      res.write(
+        `event: error\ndata: ${JSON.stringify({ message: '无效的 API 地址' })}\n\n`,
+      );
       res.end();
       return;
     }
@@ -154,23 +192,36 @@ export class CharTestService {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${apiKey}`,
         },
-        body: JSON.stringify({ model, messages, stream: true, max_tokens: 2048 }),
+        body: JSON.stringify({
+          model,
+          messages,
+          stream: true,
+          max_tokens: 2048,
+        }),
         signal: AbortSignal.timeout(60000),
       });
 
       if (!response.ok) {
-        res.write(`event: error\ndata: ${JSON.stringify({ message: 'AI 请求失败' })}\n\n`);
+        // 携带上游状态码：前端可区分 401/403（Key 失效）与 429（限流）
+        res.write(
+          `event: error\ndata: ${JSON.stringify({ message: 'AI 请求失败', status: response.status })}\n\n`,
+        );
         res.end();
         return;
       }
 
       const reader = response.body?.getReader();
-      if (!reader) { res.end(); return; }
+      if (!reader) {
+        res.end();
+        return;
+      }
 
       const decoder = new TextDecoder();
       let buffer = '';
 
-      res.on('close', () => { reader.cancel().catch(() => {}); });
+      res.on('close', () => {
+        reader.cancel().catch(() => {});
+      });
 
       while (true) {
         const { done, value } = await reader.read();
@@ -187,9 +238,12 @@ export class CharTestService {
               const content = delta?.content || delta?.reasoning_content;
               if (content) {
                 fullContent += content;
-                res.write(`event: chunk\ndata: ${content}\n\n`);
+                // JSON.stringify：chunk 含换行时按 SSE 规范编码，客户端解析不丢换行
+                res.write(`event: chunk\ndata: ${JSON.stringify(content)}\n\n`);
               }
-            } catch { /* empty */ }
+            } catch {
+              /* empty */
+            }
           }
         }
       }
@@ -209,7 +263,9 @@ export class CharTestService {
 
       res.write('event: done\ndata: {}\n\n');
     } catch (e: any) {
-      res.write(`event: error\ndata: ${JSON.stringify({ message: e.message })}\n\n`);
+      res.write(
+        `event: error\ndata: ${JSON.stringify({ message: e.message })}\n\n`,
+      );
     }
     res.end();
   }

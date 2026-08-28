@@ -41,25 +41,21 @@ export class OutlineController {
   async updateChapter(
     @Param('bookId') bookId: string,
     @Param('chapterId') chapterId: string,
-    @Body() body: { title?: string; summary?: string },
+    @Body() body: { title?: string; summary?: string; status?: string },
   ) {
     await this.outline.updateChapter(chapterId, body, bookId);
     return { code: 200, message: '已更新' };
   }
 
   @Delete('chapters/:chapterId')
-  async deleteChapter(@Param('bookId') bookId: string, @Param('chapterId') chapterId: string) {
+  async deleteChapter(
+    @Param('bookId') bookId: string,
+    @Param('chapterId') chapterId: string,
+  ) {
     await this.outline.deleteChapter(chapterId, bookId);
     return { code: 200, message: '已删除' };
   }
 
-  @Patch('chapters/:chapterId/bind')
-  async bind(
-    @Param('bookId') bookId: string,
-    @Param('chapterId') chapterId: string,
-    @Body('bound_chapter_id') boundChapterId: string | null,
-  ) {
-    await this.outline.bind(chapterId, boundChapterId, bookId);
-    return { code: 200, message: '已绑定' };
-  }
+  // 注：绑定只保留单向（章节侧 bound_outline_node_id），
+  // 大纲节点侧 bind 接口已移除，避免双向同步负担
 }

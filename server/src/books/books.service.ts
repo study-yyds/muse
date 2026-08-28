@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { eq, and, isNull, desc, sql } from 'drizzle-orm';
 import { getDb, schema } from '../database/connection';
+import { abortBookRequests } from '../ai/abort-registry';
 
 @Injectable()
 export class BooksService {
@@ -130,6 +131,8 @@ export class BooksService {
   // 软删除
   async softDelete(bookId: string) {
     const db = getDb();
+    // 取消该作品进行中的 AI 生成，停止继续消耗 token（PRD 3.2.2）
+    abortBookRequests(bookId);
     await db
       .update(schema.books)
       .set({ deleted_at: sql`NOW()` })
@@ -137,8 +140,15 @@ export class BooksService {
   }
 
   // 永久删除（显式清理子表，保底 DB FK 可能未配置）
-  async permanentDelete(bookId: string) {
+  // 仅允许删除已软删除（回收站中）的作品，防止绕过 7 天恢复窗口
+  async permanentDelete(bookId: string): Promise<boolean> {
     const db = getDb();
+    const [book] = await db
+      .select({ deleted_at: schema.books.deleted_at })
+      .from(schema.books)
+      .where(eq(schema.books.book_id, bookId))
+      .limit(1);
+    if (!book || !book.deleted_at) return false;
     await db
       .delete(schema.characters)
       .where(eq(schema.characters.book_id, bookId));
@@ -154,19 +164,21 @@ export class BooksService {
       .delete(schema.ai_chat_sessions)
       .where(eq(schema.ai_chat_sessions.book_id, bookId));
     await db.delete(schema.books).where(eq(schema.books.book_id, bookId));
+    return true;
   }
 
   /** 批量彻底删除：子表并发删除，书本间也并发，大幅提速 */
   async permanentDeleteBatch(userId: string, bookIds: string[]) {
     const db = getDb();
     if (bookIds.length === 0) return;
-    // 所有权过滤：只删属于当前用户的
+    // 所有权过滤：只删属于当前用户且已软删除（回收站中）的
     const owned = await db
       .select({ book_id: schema.books.book_id })
       .from(schema.books)
       .where(
         and(
           eq(schema.books.user_id, userId),
+          sql`${schema.books.deleted_at} IS NOT NULL`,
           sql`${schema.books.book_id} IN (${sql.join(
             bookIds.map((id) => sql`${id}`),
             sql`,`,
@@ -221,10 +233,10 @@ export class BooksService {
     );
   }
 
-  // 恢复
-  async restore(bookId: string) {
+  // 恢复（7 天窗口内），返回是否成功
+  async restore(bookId: string): Promise<boolean> {
     const db = getDb();
-    await db
+    const res = await db
       .update(schema.books)
       .set({ deleted_at: null })
       .where(
@@ -234,6 +246,7 @@ export class BooksService {
           sql`${schema.books.deleted_at} > NOW() - INTERVAL '7 days'`,
         ),
       );
+    return (res as any)?.rowCount > 0;
   }
 
   // 更新设置

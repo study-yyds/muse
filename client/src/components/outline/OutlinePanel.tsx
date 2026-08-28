@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/services/api";
+import { api, authFetch } from "@/services/api";
 import type { OutlineData, OutlineChapterData, ActStructure } from "@muse/shared";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -10,6 +10,7 @@ import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/hooks/use-toast";
 import { useThrottle } from "@/hooks/use-throttle";
 import { SaveAsTemplateDialog } from "@/components/templates/SaveAsTemplateDialog";
+import { cn } from "@/lib/utils";
 import { Plus, Pencil, Trash2, Circle, CircleCheck, ListTree, BookmarkPlus } from "lucide-react";
 interface Props {
   bookId: string;
@@ -50,12 +51,21 @@ export function OutlinePanel({ bookId }: Props) {
       body,
     }: {
       chapterId: string;
-      body: { title?: string; summary?: string };
+      body: { title?: string; summary?: string; status?: string };
     }) => api.patch(`/books/${bookId}/outline/chapters/${chapterId}`, body),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["outline", bookId] });
       setEditingChapter(null);
       toast({ title: "已更新" });
+    },
+  });
+
+  // 标记完成/重新打开：为大纲节点提供 completed 状态写入口
+  const toggleStatusMutation = useMutation({
+    mutationFn: ({ chapterId, status }: { chapterId: string; status: string }) =>
+      api.patch(`/books/${bookId}/outline/chapters/${chapterId}`, { status }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["outline", bookId] });
     },
   });
 
@@ -101,7 +111,7 @@ export function OutlinePanel({ bookId }: Props) {
     let deleted = 0;
     for (const id of selectedIds) {
       try {
-        await fetch(`/api/books/${bookId}/outline/chapters/${id}`, {
+        await authFetch(`/api/books/${bookId}/outline/chapters/${id}`, {
           method: "DELETE",
           headers: { Authorization: `Bearer ${token}` },
         });
@@ -208,6 +218,7 @@ export function OutlinePanel({ bookId }: Props) {
                         startEdit,
                         saveEdit,
                         deleteChapterMutation,
+                        toggleStatusMutation,
                         selectedIds,
                         toggleSelect,
                       )
@@ -235,6 +246,7 @@ export function OutlinePanel({ bookId }: Props) {
                   startEdit,
                   saveEdit,
                   deleteChapterMutation,
+                  toggleStatusMutation,
                   selectedIds,
                   toggleSelect,
                 )
@@ -264,6 +276,7 @@ function renderChapter(
   startEdit: (ch: OutlineChapterData) => void,
   saveEdit: () => void,
   deleteMutation: { mutate: (id: string) => void },
+  toggleStatusMutation: { mutate: (p: { chapterId: string; status: string }) => void },
   selectedIds?: Set<string>,
   toggleSelect?: (id: string) => void,
 ) {
@@ -316,6 +329,24 @@ function renderChapter(
         <p className="text-xs text-muted-foreground line-clamp-2">{ch.summary}</p>
       </div>
       <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          title={ch.status === "completed" ? "标记为未完成" : "标记为已完成"}
+          onClick={() =>
+            toggleStatusMutation.mutate({
+              chapterId: ch.id,
+              status: ch.status === "completed" ? "planned" : "completed",
+            })
+          }
+        >
+          <CircleCheck
+            className={cn(
+              "size-3",
+              ch.status === "completed" ? "text-primary" : "text-muted-foreground",
+            )}
+          />
+        </Button>
         <Button variant="ghost" size="icon-xs" onClick={() => startEdit(ch)}>
           <Pencil className="size-3" />
         </Button>

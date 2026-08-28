@@ -14,7 +14,7 @@ import {
 import type { Request } from 'express';
 import { BooksService } from './books.service';
 import { AuthGuard } from '../auth/auth.guard';
-import { BookOwnerGuard } from '../auth/book-owner.guard';
+import { BookOwnerGuard, AllowDeleted } from '../auth/book-owner.guard';
 
 @UseGuards(AuthGuard, BookOwnerGuard)
 @Controller('api/books')
@@ -57,15 +57,19 @@ export class BooksController {
     return { code: 200, message: '已删除' };
   }
 
+  @AllowDeleted()
   @Post(':bookId/restore')
   async restore(@Param('bookId') bookId: string) {
-    await this.books.restore(bookId);
+    const ok = await this.books.restore(bookId);
+    if (!ok) return { code: 400, message: '已超过 7 天恢复窗口，无法恢复' };
     return { code: 200, message: '已恢复' };
   }
 
+  @AllowDeleted()
   @Delete(':bookId/permanent')
   async permanentDelete(@Param('bookId') bookId: string) {
-    await this.books.permanentDelete(bookId);
+    const ok = await this.books.permanentDelete(bookId);
+    if (!ok) return { code: 400, message: '仅可彻底删除回收站中的作品' };
     return { code: 200, message: '已彻底删除' };
   }
 

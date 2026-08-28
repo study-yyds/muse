@@ -1,5 +1,12 @@
 import { sanitizePrompt, AiService } from './ai.service';
 
+// Mock DNS：所有域名解析为公网 IP，使 base_url 安全校验不依赖真实网络
+jest.mock('node:dns/promises', () => ({
+  lookup: jest
+    .fn()
+    .mockResolvedValue([{ address: '93.184.216.34', family: 4 }]),
+}));
+
 // Mock DB
 const mockDb = {
   select: jest.fn().mockReturnThis(),
@@ -254,26 +261,17 @@ describe('AiService.resolveApiKey', () => {
 // ============ buildGuideSystemPrompt — 纯函数测试 ============
 
 describe('buildTitleFallback', () => {
-  it('模板 premise 提取题材词生成 3 个候选', () => {
+  it('返回单条：脑洞前 20 字切片（干净降级，不再拼接网文梗）', () => {
     const result = AiService.buildTitleFallback(
       '写一个穿越穿书短篇——主角穿进一本书里成为下场凄惨的配角',
     );
-    expect(result).toHaveLength(3);
-    expect(result[1]).toContain('穿越穿书');
-    expect(result[2]).toContain('穿越穿书');
+    expect(result).toHaveLength(1);
+    expect(result[0]).toBe('写一个穿越穿书短篇——主角穿进一本书里成');
   });
 
-  it('非模板 premise 用前 15 字兜底', () => {
-    const result =
-      AiService.buildTitleFallback('我想写一个关于灯塔守望者的故事');
-    expect(result).toHaveLength(3);
-    expect(result[0]).toBe('我想写一个关于灯塔守望者的故事');
-    expect(result[1]).toContain('之后，我逆天改命');
-  });
-
-  it('空 premise 不抛错', () => {
+  it('空 premise 兜底为"短篇故事"', () => {
     const result = AiService.buildTitleFallback('');
-    expect(result).toHaveLength(3);
+    expect(result).toHaveLength(1);
     expect(result[0]).toBe('短篇故事');
   });
 });
@@ -307,6 +305,51 @@ describe('buildConditionalRules', () => {
   });
 });
 
+describe('parseSkeletonize', () => {
+  it('解析骨架/梗概/风险三行', () => {
+    const text = [
+      '骨架：基调=悬疑追凶；起因=……；行动=……；连锁=……；结局=……；物证=录音带',
+      '梗概：女主在整理遗物时发现了一盘录音带……',
+      '风险：物证归属前后不一：前文说录音带在档案室，后文又在女主手里',
+    ].join('\n');
+    const r = AiService.parseSkeletonize(text);
+    expect(r.skeleton).toContain('基调=悬疑追凶');
+    expect(r.preview).toBe('女主在整理遗物时发现了一盘录音带……');
+    expect(r.risks).toEqual([
+      '物证归属前后不一：前文说录音带在档案室，后文又在女主手里',
+    ]);
+  });
+
+  it('风险：无 → 空风险列表', () => {
+    const text = ['骨架：基调=治愈温情；……', '梗概：……', '风险：无'].join('\n');
+    const r = AiService.parseSkeletonize(text);
+    expect(r.risks).toEqual([]);
+  });
+
+  it('骨架行用 = 分隔也能识别（模型偶发少写冒号）', () => {
+    const r = AiService.parseSkeletonize('骨架=基调=爽文；……\n梗概：……');
+    expect(r.skeleton).toContain('基调=爽文');
+  });
+
+  it('模型多输出一行风险时全部收集', () => {
+    const text = [
+      '骨架：……',
+      '梗概：……',
+      '风险：时间线矛盾：三年和八年对不上',
+      '风险：施恩方向写反：挡刀后不该说"欠你的那一刀我还过了"',
+    ].join('\n');
+    const r = AiService.parseSkeletonize(text);
+    expect(r.risks).toHaveLength(2);
+  });
+
+  it('空输出兜底：skeleton/preview 为空字符串', () => {
+    const r = AiService.parseSkeletonize('');
+    expect(r.skeleton).toBe('');
+    expect(r.preview).toBe('');
+    expect(r.risks).toEqual([]);
+  });
+});
+
 describe('buildRecap', () => {
   it('空章节数组返回空字符串', () => {
     expect(AiService.buildRecap([])).toBe('');
@@ -327,6 +370,111 @@ describe('buildRecap', () => {
   it('内容为空的章节不抛错', () => {
     const result = AiService.buildRecap([{ title: '第一章', content: '' }]);
     expect(result).toContain('《第一章》：');
+  });
+
+  it('有摘要时优先用摘要（剧情梗概优于章节开头）', () => {
+    const result = AiService.buildRecap([
+      {
+        title: '第一章',
+        content: 'x'.repeat(300),
+        summary: '本章讲林越觉醒灵根',
+      },
+    ]);
+    expect(result).toContain('本章讲林越觉醒灵根');
+    expect(result).not.toContain('x'.repeat(150));
+  });
+});
+
+describe('extractFactors', () => {
+  it('提取汉字双字滑窗并去重', () => {
+    const f = AiService.extractFactors('重生回生');
+    expect(f).toContain('重生');
+    expect(f).toContain('生回');
+    expect(f).toContain('回生');
+  });
+
+  it('过滤非汉字字符', () => {
+    const f = AiService.extractFactors('a b重生');
+    expect(f).toEqual(['重生']);
+  });
+});
+
+describe('selectWorldSections', () => {
+  const secs = [
+    { name: '时代与背景', content: '灵力枯竭，末法时代'.repeat(20) },
+    { name: '力量体系', content: '练气筑基金丹元婴'.repeat(20) },
+  ];
+
+  it('无分区返回空', () => {
+    expect(AiService.selectWorldSections([], ['练气'])).toBe('');
+  });
+
+  it('无要素时全量拼接并截断（旧行为回退）', () => {
+    const r = AiService.selectWorldSections(secs, [], 100);
+    expect(r.length).toBeLessThanOrEqual(100);
+    expect(r).toContain('时代与背景');
+  });
+
+  it('命中要素的分区优先注入', () => {
+    const r = AiService.selectWorldSections(secs, ['筑基'], 2000);
+    expect(r.indexOf('力量体系')).toBeLessThan(r.indexOf('时代与背景'));
+  });
+
+  it('总量超过上限时截断，但至少保留最高命中分区', () => {
+    const big = [
+      { name: '分区A', content: 'a'.repeat(100) },
+      { name: '分区B', content: 'b'.repeat(100) },
+    ];
+    const r = AiService.selectWorldSections(big, ['z'], 150);
+    expect(r).toContain('分区A');
+    expect(r).not.toContain('分区B');
+  });
+});
+
+describe('parseChapterOutlines', () => {
+  it('解析第N章行并过滤噪声', () => {
+    const text = `第1章 | 目标=A | 阻碍=B | 爽点=C | 钩子=D
+这是说明文字
+第2章 | 目标=E
+第十章 | 目标=F`;
+    const r = AiService.parseChapterOutlines(text);
+    expect(r).toHaveLength(3);
+    expect(r[0]).toContain('第1章');
+  });
+
+  it('最多保留 10 章', () => {
+    const text = Array.from(
+      { length: 12 },
+      (_, i) => `第${i + 1}章 | 目标=X`,
+    ).join('\n');
+    expect(AiService.parseChapterOutlines(text)).toHaveLength(10);
+  });
+
+  it('空输入返回空数组', () => {
+    expect(AiService.parseChapterOutlines('')).toEqual([]);
+  });
+});
+
+describe('parseProtagonist', () => {
+  it('解析单个 JSON 对象', () => {
+    const r = AiService.parseProtagonist(
+      '{"name":"林越","gender":"男","custom_fields":[{"key":"金手指","value":"x"}]}',
+    );
+    expect(r?.name).toBe('林越');
+  });
+
+  it('代码块包裹也能解析', () => {
+    const r = AiService.parseProtagonist('```json\n{"name":"林越"}\n```');
+    expect(r?.name).toBe('林越');
+  });
+
+  it('数组形式取第一个', () => {
+    const r = AiService.parseProtagonist('[{"name":"林越"}]');
+    expect(r?.name).toBe('林越');
+  });
+
+  it('无名字返回 null', () => {
+    expect(AiService.parseProtagonist('{"gender":"男"}')).toBeNull();
   });
 });
 
@@ -675,121 +823,6 @@ function mockSSEResponse() {
   return res as any;
 }
 
-describe('streamToClient', () => {
-  let service: AiService;
-
-  beforeEach(() => {
-    service = new AiService();
-    process.env.AI_PLATFORM_KEY = 'sk-test-key';
-    process.env.AI_PLATFORM_BASE_URL = 'https://api.test.com/v1';
-    jest.clearAllMocks();
-  });
-
-  it('成功推送 SSE chunk 事件', async () => {
-    const mockFetch = jest.fn().mockResolvedValue({
-      ok: true,
-      body: {
-        getReader: () => {
-          const stream = fakeSSEStream([
-            'data: {"choices":[{"delta":{"content":"你"}}]}\n\n',
-            'data: {"choices":[{"delta":{"content":"好"}}]}\n\n',
-            'data: [DONE]\n\n',
-          ]);
-          return stream.getReader();
-        },
-      },
-    });
-    (globalThis as any).fetch = mockFetch;
-    const res = mockSSEResponse();
-
-    await (service as any).streamToClient(
-      res,
-      'system',
-      'user',
-      'deepseek-v4-flash',
-      true,
-    );
-
-    expect(res._headers['Content-Type']).toBe('text/event-stream');
-    const chunkEvents = res._events.filter((e: any) => e.event === 'chunk');
-    expect(chunkEvents.length).toBeGreaterThanOrEqual(2);
-    expect(res._events.some((e: any) => e.event === 'done')).toBe(true);
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-    const fetchBody = JSON.parse(mockFetch.mock.calls[0][1].body);
-    expect(fetchBody.messages).toHaveLength(2);
-    expect(fetchBody.stream).toBe(true);
-  });
-
-  it('无 API Key 返回 error 事件', async () => {
-    delete process.env.AI_PLATFORM_KEY;
-    const res = mockSSEResponse();
-
-    await (service as any).streamToClient(res, 'system', 'user', 'model', true);
-
-    const errorEvents = res._events.filter((e: any) => e.event === 'error');
-    expect(errorEvents.length).toBe(1);
-    expect(errorEvents[0].data).toHaveProperty('message');
-    expect(res._ended).toBe(true);
-  });
-
-  it('usePlatformKey=false 返回 error 事件', async () => {
-    const res = mockSSEResponse();
-
-    await (service as any).streamToClient(
-      res,
-      'system',
-      'user',
-      'model',
-      false,
-    );
-
-    const errorEvents = res._events.filter((e: any) => e.event === 'error');
-    expect(errorEvents.length).toBe(1);
-    expect(errorEvents[0].data.message).toContain('自定义 Key');
-  });
-
-  it('AI API 返回非 200 时发送 error 事件', async () => {
-    const mockFetch = jest.fn().mockResolvedValue({
-      ok: false,
-      text: () => Promise.resolve('Internal Server Error'),
-    });
-    (globalThis as any).fetch = mockFetch;
-    const res = mockSSEResponse();
-
-    await (service as any).streamToClient(res, 'system', 'user', 'model', true);
-
-    const errorEvents = res._events.filter((e: any) => e.event === 'error');
-    expect(errorEvents.length).toBe(1);
-  });
-
-  it('客户端断开连接时取消读取', async () => {
-    const cancelSpy = jest.fn();
-    const mockFetch = jest.fn().mockResolvedValue({
-      ok: true,
-      body: {
-        getReader: () => {
-          const stream = fakeSSEStream([
-            'data: {"choices":[{"delta":{"content":"..."}}]}\n\n',
-          ]);
-          const reader = stream.getReader();
-          reader.cancel = cancelSpy;
-          return reader;
-        },
-      },
-    });
-    (globalThis as any).fetch = mockFetch;
-    const res = mockSSEResponse();
-
-    // 在 write 被调用后触发 close
-    res.write.mockImplementation(() => {
-      res._triggerClose();
-    });
-
-    await (service as any).streamToClient(res, 'system', 'user', 'model', true);
-    expect(cancelSpy).toHaveBeenCalled();
-  });
-});
-
 describe('streamChatToClient', () => {
   let service: AiService;
 
@@ -839,6 +872,71 @@ describe('streamChatToClient', () => {
     expect(errorEvents.length).toBe(1);
     expect(res._ended).toBe(true);
   });
+
+  it('qualityCheck 开启且命中 AI 味特征时下发 quality 事件', async () => {
+    // 连续同主语短动作句（"她走进去。她看向前方。她停下脚步。"）×30，
+    // 命中 subject-action-chain 检测，总长 ≥500 字
+    const body = ('她走进去。她看向前方。她停下脚步。' + 'x'.repeat(10)).repeat(30);
+    const mockFetch = jest.fn().mockResolvedValue({
+      ok: true,
+      body: {
+        getReader: () => {
+          const stream = fakeSSEStream([
+            `data: {"choices":[{"delta":{"content":${JSON.stringify(body)}}}]}\n\n`,
+            'data: [DONE]\n\n',
+          ]);
+          return stream.getReader();
+        },
+      },
+    });
+    (globalThis as any).fetch = mockFetch;
+    const res = mockSSEResponse();
+
+    await (service as any).streamChatToClient(
+      res,
+      'system',
+      [{ role: 'user', content: 'hi' }],
+      'deepseek-v4-flash',
+      8192,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      true,
+    );
+
+    const qualityEvents = res._events.filter((e: any) => e.event === 'quality');
+    expect(qualityEvents.length).toBe(1);
+    expect(qualityEvents[0].data.count).toBeGreaterThan(0);
+    expect(qualityEvents[0].data.types).toContain('subject-action-chain');
+  });
+
+  it('qualityCheck 关闭时不发 quality 事件', async () => {
+    const body = ('她走进去。她看向前方。她停下脚步。' + 'x'.repeat(10)).repeat(30);
+    const mockFetch = jest.fn().mockResolvedValue({
+      ok: true,
+      body: {
+        getReader: () => {
+          const stream = fakeSSEStream([
+            `data: {"choices":[{"delta":{"content":${JSON.stringify(body)}}}]}\n\n`,
+            'data: [DONE]\n\n',
+          ]);
+          return stream.getReader();
+        },
+      },
+    });
+    (globalThis as any).fetch = mockFetch;
+    const res = mockSSEResponse();
+
+    await (service as any).streamChatToClient(
+      res,
+      'system',
+      [{ role: 'user', content: 'hi' }],
+      'deepseek-v4-flash',
+    );
+
+    expect(res._events.some((e: any) => e.event === 'quality')).toBe(false);
+  });
 });
 
 // ============ quickCreateShort 回滚 ============
@@ -885,7 +983,7 @@ describe('quickCreateShort rollback', () => {
     expect(res._events.some((e: any) => e.event === 'error')).toBe(true);
   });
 
-  it('生成梗概成功：存 extra 并返回 preview，不回滚', async () => {
+  it('生成梗概成功：存 extra 并返回 previews 候选，不回滚', async () => {
     jest.spyOn(service as any, 'resolveApiKey').mockResolvedValue({
       apiKey: 'sk-test',
       baseUrl: 'https://api.test.com',
@@ -909,10 +1007,12 @@ describe('quickCreateShort rollback', () => {
     await service.quickCreateShort(res, { user_id: 'u1', premise: '脑洞' });
 
     expect(mockDb.delete).not.toHaveBeenCalled();
-    expect(mockDb.update).toHaveBeenCalled(); // 存 extra.outline_preview
+    expect(mockDb.update).toHaveBeenCalled(); // 存 extra.outline_previews
     const doneEvent = res._events.find((e: any) => e.event === 'done');
     expect(doneEvent).toBeTruthy();
-    expect(doneEvent.data.preview).toContain('故事梗概');
+    // 无 "---" 分隔时退化为单候选数组
+    expect(Array.isArray(doneEvent.data.previews)).toBe(true);
+    expect(doneEvent.data.previews[0]).toContain('故事梗概');
   });
 
   it('客户端断开连接时中止梗概生成并回滚，不发送 error 事件', async () => {
@@ -1338,10 +1438,14 @@ describe('quickCreate rollback', () => {
     jest.spyOn(service as any, 'parseAndSaveCharacters').mockResolvedValue(0);
 
     const worldText = '时代与背景\n后末世。';
+    const protagonistJson =
+      '{"name":"林越","gender":"男","personality":"冷静+心软","custom_fields":[{"key":"金手指","value":"预知"}]}';
     const outlineJson =
       '[{"action":"add_chapter","title":"开端","summary":"开始"}]';
+    const chapterOutlineText =
+      '第1章 | 目标=觉醒 | 阻碍=家族打压 | 爽点=当众打脸 | 钩子=神秘老者是谁';
     const charsJson =
-      '[{"action":"create_character","name":"主角","gender":"男"}]';
+      '[{"action":"create_character","name":"配角","gender":"男"}]';
     const title = '末世求生指南';
 
     (globalThis as any).fetch = jest
@@ -1354,7 +1458,21 @@ describe('quickCreate rollback', () => {
       .mockResolvedValueOnce({
         ok: true,
         json: () =>
+          Promise.resolve({
+            choices: [{ message: { content: protagonistJson } }],
+          }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
           Promise.resolve({ choices: [{ message: { content: outlineJson } }] }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            choices: [{ message: { content: chapterOutlineText } }],
+          }),
       })
       .mockResolvedValueOnce({
         ok: true,

@@ -1,3 +1,4 @@
+import { authFetch } from "@/services/api";
 import { useState } from "react";
 import {
   Dialog,
@@ -34,7 +35,7 @@ export function SaveAsTemplateDialog({ open, onOpenChange, type, data }: Props) 
     setSaving(true);
     try {
       const t = localStorage.getItem("token");
-      const res = await fetch("/api/templates", {
+      const res = await authFetch("/api/templates", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${t}` },
         body: JSON.stringify({ name: name.trim(), type, category, description: desc, data, is_public: isPublic }),

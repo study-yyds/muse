@@ -17,7 +17,6 @@ import {
   unique,
   primaryKey,
 } from 'drizzle-orm/pg-core';
-import { sql } from 'drizzle-orm';
 import { books } from './books';
 import { chapters } from './chapters';
 

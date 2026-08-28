@@ -6,6 +6,7 @@ import {
   Query,
   Body,
   UseGuards,
+  BadRequestException,
 } from '@nestjs/common';
 import { AdminService } from './admin.service';
 import { AuthGuard } from '../auth/auth.guard';
@@ -21,10 +22,19 @@ export class AdminController {
     @Query('page') page: string,
     @Query('pageSize') pageSize: string,
   ) {
-    const data = await this.admin.listUsers(
-      page ? parseInt(page) : 1,
-      pageSize ? parseInt(pageSize) : 20,
-    );
+    // 分页参数校验：NaN/负数/超大 pageSize 直接 400
+    const p = page ? Number(page) : 1;
+    const ps = pageSize ? Number(pageSize) : 20;
+    if (
+      !Number.isInteger(p) ||
+      p < 1 ||
+      !Number.isInteger(ps) ||
+      ps < 1 ||
+      ps > 100
+    ) {
+      throw new BadRequestException('分页参数无效');
+    }
+    const data = await this.admin.listUsers(p, ps);
     return { code: 200, data };
   }
 
@@ -42,10 +52,18 @@ export class AdminController {
     @Param('userId') userId: string,
     @Query('months') months: string,
   ) {
-    const data = await this.admin.getUserUsage(
-      userId,
-      months ? parseInt(months) : 6,
-    );
+    const m = months ? Number(months) : 6;
+    if (!Number.isInteger(m) || m < 1 || m > 24) {
+      throw new BadRequestException('months 参数无效（1-24）');
+    }
+    const data = await this.admin.getUserUsage(userId, m);
+    return { code: 200, data };
+  }
+
+  // 平台总用量统计（全站 token 总量 + 按模型聚合）
+  @Get('usage')
+  async getPlatformUsage() {
+    const data = await this.admin.getPlatformUsage();
     return { code: 200, data };
   }
 }

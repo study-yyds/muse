@@ -1,6 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { eq, and, or, isNull } from 'drizzle-orm';
-import { sql } from 'drizzle-orm';
+import { eq, and, or, isNull, desc } from 'drizzle-orm';
 import { getDb, schema } from '../database/connection';
 
 @Injectable()
@@ -27,7 +26,8 @@ export class TemplatesService {
     return db
       .select()
       .from(schema.templates)
-      .where(and(...conditions));
+      .where(and(...conditions))
+      .orderBy(desc(schema.templates.created_at));
   }
 
   async get(id: string, userId?: string) {
@@ -39,7 +39,11 @@ export class TemplatesService {
       .limit(1);
     if (!tpl) return null;
     // 公开或预置或自己创建的才返回
-    if (tpl.is_preset || tpl.is_public || (userId && tpl.creator_user_id === userId)) {
+    if (
+      tpl.is_preset ||
+      tpl.is_public ||
+      (userId && tpl.creator_user_id === userId)
+    ) {
       return tpl;
     }
     return null; // 私有模板对非所有者不可见
@@ -93,7 +97,8 @@ export class TemplatesService {
     const db = getDb();
     const conditions: any[] = [];
     if (params.type) conditions.push(eq(schema.templates.type, params.type));
-    if (params.category) conditions.push(eq(schema.templates.category, params.category));
+    if (params.category)
+      conditions.push(eq(schema.templates.category, params.category));
     return db
       .select()
       .from(schema.templates)

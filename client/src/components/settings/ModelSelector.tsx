@@ -1,3 +1,4 @@
+import { authFetch } from "@/services/api";
 import { useState, useEffect } from "react";
 
 interface KeyInfo {
@@ -10,9 +11,12 @@ interface KeyInfo {
 
 interface Props {
   usage: "chat" | "image";
-  value?: string;       // selected model name
+  // 选中值：平台模型名（如 deepseek-v4-flash）、`custom:<keyId>`，或 ""（智能默认）
+  value?: string;
   onChange: (model: string, keyId?: string) => void;
   className?: string;
+  // 是否显示"智能（默认）"选项（值 ""，由后端按场景自动选模型）
+  allowAuto?: boolean;
 }
 
 const PLATFORM_MODELS = {
@@ -27,12 +31,17 @@ const PLATFORM_MODELS = {
   ],
 };
 
-export function ModelSelector({ usage, value, onChange, className }: Props) {
+/** 自定义 Key 的选中值（用 keyId 而非 model_name，避免同名 Key 选择歧义） */
+export function customKeyValue(keyId: string): string {
+  return `custom:${keyId}`;
+}
+
+export function ModelSelector({ usage, value, onChange, className, allowAuto }: Props) {
   const [customKeys, setCustomKeys] = useState<KeyInfo[]>([]);
 
   useEffect(() => {
     const token = localStorage.getItem("token");
-    fetch("/api/user/api-keys", {
+    authFetch("/api/user/api-keys", {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((r) => r.json())
@@ -58,11 +67,20 @@ export function ModelSelector({ usage, value, onChange, className }: Props) {
       value={value || ""}
       onChange={(e) => {
         const val = e.target.value;
-        const custom = customKeys.find((k) => k.model_name === val);
-        onChange(val, custom?.id);
+        if (val === "") {
+          onChange("", undefined); // 智能默认：由后端按场景自动选模型
+        } else if (val.startsWith("custom:")) {
+          const key = customKeys.find((k) => customKeyValue(k.id) === val);
+          onChange(key?.model_name ?? "", key?.id);
+        } else {
+          onChange(val, undefined);
+        }
       }}
       className={className || "text-xs rounded border border-border bg-background px-2 py-1"}
     >
+      {allowAuto && (
+        <option value="">智能（默认）</option>
+      )}
       <optgroup label="—— 平台内置 ——">
         {platformModels.map((m) => (
           <option key={m.name} value={m.name}>
@@ -73,7 +91,7 @@ export function ModelSelector({ usage, value, onChange, className }: Props) {
       {customKeys.length > 0 && (
         <optgroup label="—— 我的 Key ——">
           {customKeys.map((k) => (
-            <option key={k.id} value={k.model_name}>
+            <option key={k.id} value={customKeyValue(k.id)}>
               {k.name}（{k.model_name}）
             </option>
           ))}

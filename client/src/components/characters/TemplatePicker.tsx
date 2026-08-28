@@ -1,3 +1,4 @@
+import { authFetch } from "@/services/api";
 import { useState, useEffect } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -131,7 +132,7 @@ export function TemplatePicker({ onSelect }: Props) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch("/api/templates?type=character")
+    authFetch("/api/templates?type=character")
       .then((r) => r.json())
       .then((d) => {
         const items = (d.data ?? []).map((t: any) => ({

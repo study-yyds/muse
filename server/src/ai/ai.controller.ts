@@ -36,9 +36,11 @@ export class AiController {
       message: string;
       messages?: any[];
       model?: string;
+      key_id?: string;
       chapter_id?: string;
       cursor_position?: number;
       style?: string;
+      rewrite?: boolean;
       guide_mode?: boolean;
       guide_context?: string;
       guide_type?: string;
@@ -64,7 +66,8 @@ export class AiController {
   @UseGuards(aiRateLimit)
   @Post('mimic-style')
   async mimicStyle(
-    @Body() body: { book_id?: string; model?: string; text?: string },
+    @Body()
+    body: { book_id?: string; model?: string; key_id?: string; text?: string },
     @Req() req: Request,
   ) {
     if (body.book_id) {
@@ -75,6 +78,7 @@ export class AiController {
       body.model ?? 'deepseek-v4-flash',
       body.text,
       (req as any).userId,
+      body.key_id,
     );
     return { code: 200, data };
   }
@@ -190,18 +194,35 @@ export class AiController {
     body: {
       premise: string;
       model?: string;
+      key_id?: string;
       type?: string;
       guide_summary?: string;
       guide_full_log?: string;
+      // 自写梗概模式：骨架化已在客户端确认，后端只建书 + 写 settings
+      mode?: string;
+      synopsis?: string;
+      skeleton?: string;
+      preview?: string;
     },
     @Res() res: Response,
     @Req() req: Request,
   ) {
+    if (body.type === 'short' && body.mode === 'synopsis') {
+      const data = await this.ai.createShortFromSynopsis({
+        user_id: (req as any).userId,
+        synopsis: body.synopsis || body.premise,
+        skeleton: body.skeleton,
+        preview: body.preview,
+      });
+      res.status(200).json({ code: 200, data });
+      return;
+    }
     if (body.type === 'short') {
       await this.ai.quickCreateShort(res, {
         user_id: (req as any).userId,
         premise: body.premise,
         model: body.model,
+        key_id: body.key_id,
         guide_summary: body.guide_summary,
         guide_full_log: body.guide_full_log,
       });
@@ -210,10 +231,37 @@ export class AiController {
         user_id: (req as any).userId,
         premise: body.premise,
         model: body.model,
+        key_id: body.key_id,
         guide_summary: body.guide_summary,
         guide_full_log: body.guide_full_log,
       });
     }
+  }
+
+  // 自写梗概：骨架化 + 逻辑体检（一次调用，返回骨架/梗概/风险列表）
+  @UseGuards(aiRateLimit)
+  @Post('skeletonize')
+  async skeletonizeSynopsis(
+    @Body()
+    body: {
+      synopsis: string;
+      model?: string;
+      key_id?: string;
+      with_check?: boolean;
+    },
+    @Req() req: Request,
+  ) {
+    if (!body.synopsis?.trim()) {
+      throw new BadRequestException('缺少故事梗概');
+    }
+    const data = await this.ai.skeletonizeSynopsis({
+      user_id: (req as any).userId,
+      synopsis: body.synopsis,
+      model: body.model,
+      key_id: body.key_id,
+      with_check: body.with_check !== false,
+    });
+    return { code: 200, data };
   }
 
   // ============== AI 生图 ==============
@@ -226,6 +274,8 @@ export class AiController {
       book_id: string;
       premise: string;
       model?: string;
+      key_id?: string;
+      resume_story?: boolean;
     },
     @Res() res: Response,
     @Req() req: Request,
@@ -239,6 +289,8 @@ export class AiController {
       book_id: body.book_id,
       premise: body.premise || '',
       model: body.model,
+      key_id: body.key_id,
+      resume_story: body.resume_story,
     });
   }
 
@@ -263,7 +315,7 @@ export class AiController {
   @UseGuards(aiRateLimit)
   @Post('generate-synopsis')
   async generateSynopsis(
-    @Body() body: { book_id: string; model?: string },
+    @Body() body: { book_id: string; model?: string; key_id?: string },
     @Req() req: Request,
   ) {
     await this.ai.checkBookOwnership(body.book_id, (req as any).userId);
@@ -271,6 +323,7 @@ export class AiController {
       body.book_id,
       (req as any).userId,
       body.model,
+      body.key_id,
     );
     return { code: 200, data };
   }
@@ -279,7 +332,10 @@ export class AiController {
   @Post('recommend-style')
   async recommendStyle(@Body() body: { book_id: string }, @Req() req: Request) {
     await this.ai.checkBookOwnership(body.book_id, (req as any).userId);
-    const data = await this.ai.recommendVisualStyle(body.book_id);
+    const data = await this.ai.recommendVisualStyle(
+      body.book_id,
+      (req as any).userId,
+    );
     return { code: 200, data };
   }
 
@@ -293,6 +349,7 @@ export class AiController {
       size?: string;
       style?: string;
       model?: string;
+      key_id?: string;
     },
     @Req() req: Request,
   ) {
@@ -305,6 +362,7 @@ export class AiController {
       body.style,
       (req as any).userId,
       body.model,
+      body.key_id,
     );
 
     // 写入 cover_url + 历史
@@ -321,12 +379,14 @@ export class AiController {
     const extra = (settings?.extra ?? {}) as Record<string, any>;
     const history: string[] = extra.cover_history ?? [];
     if (!history.includes(url)) history.push(url);
+    // 截断历史版本，防止 JSONB 无限膨胀
+    const cappedHistory = history.slice(-20);
     await db
       .update(schema.book_settings)
-      .set({ extra: { ...extra, cover_history: history } } as any)
+      .set({ extra: { ...extra, cover_history: cappedHistory } } as any)
       .where(eq(schema.book_settings.book_id, body.book_id));
 
-    return { code: 200, data: { url, history } };
+    return { code: 200, data: { url, history: cappedHistory } };
   }
 
   @UseGuards(aiRateLimit)
@@ -340,6 +400,7 @@ export class AiController {
       size?: string;
       style?: string;
       model?: string;
+      key_id?: string;
     },
     @Req() req: Request,
   ) {
@@ -361,6 +422,7 @@ export class AiController {
       body.style,
       (req as any).userId,
       body.model,
+      body.key_id,
     );
 
     // 写入 avatar_url + 历史
@@ -375,11 +437,13 @@ export class AiController {
       .where(eq(schema.characters.char_id, body.char_id));
     const history: string[] = (char?.avatar_history as any[]) ?? [];
     if (!history.includes(url)) history.push(url);
+    // 截断历史版本，防止 JSONB 无限膨胀
+    const cappedHistory = history.slice(-20);
     await db2
       .update(schema.characters)
-      .set({ avatar_history: history } as any)
+      .set({ avatar_history: cappedHistory } as any)
       .where(eq(schema.characters.char_id, body.char_id));
 
-    return { code: 200, data: { url, history } };
+    return { code: 200, data: { url, history: cappedHistory } };
   }
 }

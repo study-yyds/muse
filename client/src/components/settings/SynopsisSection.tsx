@@ -1,15 +1,16 @@
 import { useState, useEffect } from "react";
-import { api } from "@/services/api";
+import { api, authFetch } from "@/services/api";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { Loader2 } from "lucide-react";
-import { ModelSelector } from "@/components/settings/ModelSelector";
+import { ModelSelector, customKeyValue } from "@/components/settings/ModelSelector";
 
 export function SynopsisSection({ bookId }: { bookId: string }) {
   const [synopsis, setSynopsis] = useState("");
   const [loading, setLoading] = useState(false);
   const [model, setModel] = useState("deepseek-v4-flash");
+  const [keyId, setKeyId] = useState<string | undefined>(undefined);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -23,13 +24,13 @@ export function SynopsisSection({ bookId }: { bookId: string }) {
     setLoading(true);
     try {
       const token = localStorage.getItem("token");
-      const res = await fetch("/api/ai/generate-synopsis", {
+      const res = await authFetch("/api/ai/generate-synopsis", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ book_id: bookId, model }),
+        body: JSON.stringify({ book_id: bookId, model, key_id: keyId }),
       });
       const json = await res.json();
       const s = json?.data?.synopsis || "";
@@ -58,7 +59,12 @@ export function SynopsisSection({ bookId }: { bookId: string }) {
         </p>
       )}
       <div className="flex items-center gap-2">
-        <ModelSelector usage="chat" value={model} onChange={setModel} className="text-xs rounded border border-border bg-background px-2 py-1" />
+        <ModelSelector
+          usage="chat"
+          value={keyId ? customKeyValue(keyId) : model}
+          onChange={(m, k) => { setModel(m); setKeyId(k); }}
+          className="text-xs rounded border border-border bg-background px-2 py-1"
+        />
         <Button size="sm" variant="outline" onClick={generate} disabled={loading}>
           {loading && <Loader2 className="size-3 animate-spin mr-1" />}
           {synopsis ? "重新生成" : "生成简介"}
