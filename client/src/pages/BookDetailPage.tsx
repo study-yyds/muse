@@ -309,7 +309,7 @@ export function BookDetailPage() {
             >
               <div className="w-10 h-1 rounded-full bg-border" />
             </div>
-            <AIChatPanel section={section} bookId={bookId ?? ""} />
+            <AIChatPanel section={section} bookId={bookId ?? ""} initialStyle={book?.preset_style} />
           </div>
         )}
       </div>
@@ -337,7 +337,7 @@ export function BookDetailPage() {
               document.addEventListener("pointerup", onUp);
             }}
           />
-          <AIChatPanel section={section} bookId={bookId ?? ""} />
+          <AIChatPanel section={section} bookId={bookId ?? ""} initialStyle={book?.preset_style} />
         </div>
       )}
     </div>
@@ -373,7 +373,7 @@ async function mergeWorldSections(
   return merged;
 }
 
-function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
+function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookId: string; initialStyle?: string }) {
   type Ver = { content: string; action?: any; reasoning?: string };
   type Msg = { role: string; content: string; action?: any; adoptedVer?: number; reasoning?: string; versions?: Ver[]; quality?: { count: number; types: string[] } };
   // AI 味检测类型 → 中文提示（与 text-quality-checks.ts 的 issue.type 对应）
@@ -400,8 +400,9 @@ function AIChatPanel({ section, bookId }: { section: string; bookId: string }) {
   const [loading, setLoading] = useState(false);
   const [model, setModel] = useState("deepseek-v4-flash");
   const [modelKeyId, setModelKeyId] = useState<string | undefined>(undefined);
-  const [modelKeyId, setModelKeyId] = useState<string | undefined>(undefined);
-  const [chatStyle, setChatStyle] = useState("default");
+  const [chatStyle, setChatStyle] = useState(initialStyle ?? "default");
+  // 书设置里切换风格预设时同步到面板（快捷创作默认"快节奏网文"）
+  useEffect(() => { setChatStyle(initialStyle ?? "default"); }, [initialStyle]);
   const [guideMode, setGuideMode] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [expandedReasoning, setExpandedReasoning] = useState<Set<number>>(new Set());

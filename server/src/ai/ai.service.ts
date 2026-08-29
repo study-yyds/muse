@@ -655,7 +655,8 @@ ${chars.map((c) => c.name).join('、')}
 
     // 风格说明：4 个预设统一按"语言质感"维度；mimic = 用户笔风分析结果
     const styleGuide: Record<string, string> = {
-      default: '',
+      default:
+        '自然流畅的通俗小说叙事：语言直白清晰，动作与对话推进情节，少用辞藻堆砌；段落不宜过长，避免文艺腔与抽象抒情',
       'light-novel':
         '快节奏网文（番茄/起点主流写法）：写"人话"——动词为主、少形容词，拒绝矫情长句与堆砌辞藻；段落短，手机屏不超过5行；用动作和对话展示情绪与冲突，不直白叙述；冲突前置，片段内必有具体可感知的麻烦与爽点（打压→反转→打脸）；情绪靠真细节传递，不替读者说完；结尾留强钩子',
       serious:
@@ -667,6 +668,22 @@ ${chars.map((c) => c.name).join('、')}
       colloquial:
         '平实口语：像日常说话一样自然，多用生活化词汇；句式松散灵活，允许口语省略；贴近真实对话节奏，不端着',
     };
+    // 书级风格预设：大纲/角色/世界观上下文也吃风格约束（正文由面板 style 控制）
+    let bookStyleNote = '';
+    if (params.book_id && !isShort) {
+      try {
+        const [bsp] = await db
+          .select({ preset_style: schema.book_settings.preset_style })
+          .from(schema.book_settings)
+          .where(eq(schema.book_settings.book_id, params.book_id))
+          .limit(1);
+        bookStyleNote = bsp?.preset_style
+          ? (styleGuide[bsp.preset_style] ?? '')
+          : '';
+      } catch {
+        /* 查询失败不阻断 */
+      }
+    }
     let styleNote = params.style ? (styleGuide[params.style] ?? '') : '';
     if (params.style === 'mimic' && params.book_id) {
       // 笔风分析结果：读取已保存的分析文本（查询失败/为空则不注入）
@@ -678,12 +695,39 @@ ${chars.map((c) => c.name).join('、')}
           .limit(1);
         styleNote =
           (bs?.extra as Record<string, any>)?.mimic_style_analysis ?? '';
+        if (styleNote) {
+          // 描述式模仿遵循率低：附一段原文作为风格样本。
+          // 优先用分析时保存的原文（粘贴文本路径）；没有则取第一章（全书分析路径）
+          const storedSample = ((bs?.extra ?? {}) as Record<string, any>)
+            ?.mimic_style_sample as string | undefined | null;
+          let sample = (storedSample ?? '').slice(0, 500);
+          if (sample.length < 100) {
+            try {
+              const [ch0] = await db
+                .select({ content: schema.chapters.content })
+                .from(schema.chapters)
+                .where(eq(schema.chapters.book_id, params.book_id))
+                .orderBy(schema.chapters.sort_order)
+                .limit(1);
+              sample = (ch0?.content ?? '').slice(0, 500);
+            } catch {
+              sample = '';
+            }
+          }
+          if (sample.length >= 100) {
+            styleNote += `\n\n【风格样本——模仿以下文笔的用词、句式与节奏】\n${sample}`;
+          }
+        }
       } catch {
         /* 分析不存在则跳过 */
       }
     }
     const styleBlock = styleNote
       ? `\n【文风要求——严格遵守】\n${styleNote}`
+      : '';
+    // 大纲/角色/世界观上下文注入书级风格（正文走 styleBlock，面板切换只影响正文）
+    const bookStyleBlock = bookStyleNote
+      ? `\n【全书风格——设定与情节的表述按此语言质感】\n${bookStyleNote}`
       : '';
 
     // 世界观按需注入：用本章正文+大纲节点的要素给分区打分，选最相关的注入
@@ -762,6 +806,7 @@ ${charBrief}
 
 【世界观——情节必须符合以下世界设定】
 ${worldText.slice(0, 1500)}
+${bookStyleBlock}
 
 【当前大纲节点（情节关键点），修改已有节点时用对应的 id】
 ${outlineNodes || '暂无节点，需要从零开始'}
@@ -794,6 +839,7 @@ ${charBrief || '暂无角色'}
 
 【世界观——新角色必须符合这个世界】
 ${worldText.slice(0, 1500)}
+${bookStyleBlock}
 
 【创作指引】
 - 主角必须有金手指/能力、缺陷与弧光（开篇→结局的变化）；配角要有"要什么"（动机）和"怕什么"（软肋）
@@ -823,6 +869,7 @@ ${worldSectionNames.map((n) => `- ${n}`).join('\n')}
 
 【当前各分区内容——空分区请填充，有内容的分区可补充或修改】
 ${worldText}
+${bookStyleBlock}
 
 【构建指引】
 - 每个分区都要给出具体、独特的细节
@@ -4306,11 +4353,16 @@ ${storyText.slice(-800)}`;
       bookId = book.book_id;
       await db
         .insert(schema.book_settings)
-        .values({ book_id: bookId, preset_style: 'default' });
+        // 快捷创作默认绑定"快节奏网文"：番茄向用户为主，文艺向可在设置里切换
+        .values({ book_id: bookId, preset_style: 'light-novel' });
       await db.insert(schema.outlines).values({ book_id: bookId });
       await db
         .insert(schema.world_settings)
         .values({ book_id: bookId, sections: [] });
+      // 预建第一章：完成后可直接进入写作页（与短篇建"正文"对齐，避免空书）
+      await db
+        .insert(schema.chapters)
+        .values({ book_id: bookId, title: '第一章', sort_order: 1 });
       send('step', {
         step: 'book',
         status: 'done',
@@ -4328,6 +4380,8 @@ ${storyText.slice(-800)}`;
 **重要：世界观只写环境、规则、群体。❌ 不要写"刘婶是卖煎饼的，她每天早上..."——这是角色信息，不属于世界观。✅ 写"巷子里有固定摊贩，形成了一套默契的营业时间和规矩"。具体人物留给后续步骤生成。在用户提供的信息基础上合理扩展，但不要修改或替换用户已明确的设定。**
 
 根据故事类型，自行选择最合适的 3-4 个分区来组织世界观。不同故事类型关注的重点不同——年代文关注时代政策和家庭结构，厨艺小说关注店铺环境和食客圈子，玄幻关注力量体系——选对题材真正需要的分区，不要套固定模板。只写组织/群体/环境层面，具体人物留给角色生成环节。
+
+【调性】设定为冲突与爽点服务：每条设定都要能派上用场（制造矛盾、限制主角、提供打脸素材），不做无关的文学性铺陈。
 
 【输出格式——严格遵守】
 按分区名逐个输出正文内容，格式如下：
@@ -4374,6 +4428,7 @@ ${storyText.slice(-800)}`;
 - 缺陷/不理性的点：人味来源，与核心欲望冲突
 - 弧光：开篇→结局的性格或心境变化（非单纯变强）
 - 语言指纹：口头禅/说话风格
+- 所有字段表述具体可写（"护短、嘴硬心软"），禁止文学化抽象（"在孤独中寻找自我救赎"式）
 
 【输出格式——只输出 JSON 对象】
 {"name":"必填","gender":"男/女","personality":"性格3个关键词+1个反差","identity":"开局身份（10字内）","backstory":"背景（40字内）","motivation":"核心欲望：到底要什么（30字内）","catchphrase":"口头禅","speech_style":"说话风格","appearance":"外貌","custom_fields":[{"key":"金手指","value":"描述（30字内）"},{"key":"缺陷","value":"描述（20字内）"},{"key":"弧光","value":"开篇→结局的变化（30字内）"}]}`;
@@ -4451,6 +4506,7 @@ ${storyText.slice(-800)}`;
 3. 格局扩展：故事舞台逐步扩大
 4. 每个节点应能制造悬念或期待，让读者想看下一章
 5. 节点必须体现主角的动机驱动：主角的每个关键选择都能回溯到他的欲望/缺陷/金手指，禁止主角随波逐流
+6. 每个节点必须内置冲突或爽点（打压→反转→打脸，或悬念揭示），摘要用"谁+做了什么+得到什么结果"的直白句式，禁止文艺腔与抽象抒情
 
 【数量要求】
 至少输出 8-12 个情节节点，覆盖前 1-2 卷。标题简洁有力。
@@ -4496,6 +4552,7 @@ ${storyText.slice(-800)}`;
 3. 上一章的钩子=下一章开篇要回答的问题，因果承接
 4. 一章一小冲突，10 章内至少 2 个小高潮
 5. 爽点必须具体（什么被证明/谁被打脸/什么反转），禁止"主角变强"式空话
+6. 表述直白网文化："打脸""捡漏""当众揭穿"式话术优先，禁止文学化修饰
 
 只输出 10 行，每行一条章纲，不要编号、不要其他文字。`;
         const chOutText = await aiCall(
@@ -4644,6 +4701,10 @@ ${storyText.slice(-800)}`;
           await db2
             .delete(schema.characters)
             .where(eq(schema.characters.book_id, bookId));
+          // 预建章节一并清理
+          await db2
+            .delete(schema.chapters)
+            .where(eq(schema.chapters.book_id, bookId));
           await db2
             .delete(schema.outlines)
             .where(eq(schema.outlines.book_id, bookId));

@@ -59,7 +59,12 @@ export function BookSettingsPanel({ bookId, book, coverUrl, onCoverChange }: Pro
       const analysis = json.data?.analysis ?? "";
       setMimicResult(analysis);
       if (analysis) {
-        api.put(`/books/${bookId}/settings`, { extra: { mimic_style_analysis: analysis } as any });
+        // 粘贴文本分析时把原文存为风格样本（续写注入用，描述式模仿遵循率低）
+        const extraPatch: Record<string, any> = {
+          mimic_style_analysis: analysis,
+          mimic_style_sample: body.text ? String(body.text).slice(0, 1000) : null,
+        };
+        api.put(`/books/${bookId}/settings`, { extra: extraPatch as any });
         toast({ title: "笔风分析完成" });
       } else {
         toast({ title: json.data?.analysis === "" ? "分析失败" : "内容不足", variant: "destructive" });

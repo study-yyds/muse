@@ -18,6 +18,7 @@ import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { useForm } from "react-hook-form";
+import { WRITING_STYLES } from "@/lib/writing-styles";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Plus, BookOpen, Loader2, Trash2, Undo2, Sparkles, Check, Send } from "lucide-react";
@@ -252,7 +253,7 @@ export function BookListPage() {
     reset,
   } = useForm<CreateBookForm>({
     resolver: zodResolver(createBookSchema),
-    defaultValues: { title: "", preset_style: "default" },
+    defaultValues: { title: "", preset_style: "light-novel" },
   });
 
   const onSubmit = (form: CreateBookForm) => {
@@ -362,6 +363,14 @@ export function BookListPage() {
                     setQuickTitles(data.titles);
                     setQuickCreatedId(data.book_id);
                     setQuickAppliedTitle(data.title || data.titles[0]);
+                  } else if (data.title) {
+                    // 长篇：一步到底无候选环节——展示完成态与打开作品按钮（与短篇同构）
+                    hasTitleCandidates = true;
+                    setQuickTitles([{ style: "已应用", title: data.title }]);
+                    setQuickCreatedId(data.book_id);
+                    setQuickAppliedTitle(data.title);
+                    // 引导模式下退出引导界面，露出完成态与打开作品按钮
+                    setQuickGuiding(false);
                   }
                 } else if (eventType === "error") {
                   toast({ title: data.message || "生成失败", variant: "destructive" });
@@ -1098,6 +1107,18 @@ export function BookListPage() {
                   {errors.title && (
                     <p className="text-xs text-destructive">{errors.title.message}</p>
                   )}
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="preset_style">写作风格</Label>
+                  <select
+                    id="preset_style"
+                    {...register("preset_style")}
+                    className="w-full rounded border border-border bg-background px-3 py-2 text-sm"
+                  >
+                    {WRITING_STYLES.map((s) => (
+                      <option key={s.value} value={s.value}>{s.label}</option>
+                    ))}
+                  </select>
                 </div>
                 <div className="flex justify-end gap-2">
                   <Button
