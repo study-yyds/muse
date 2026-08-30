@@ -832,7 +832,7 @@ describe('streamChatToClient', () => {
     jest.clearAllMocks();
   });
 
-  it('推送 chunk 和 reasoning 事件', async () => {
+  it('推送 chunk 事件，思考内容不转发（前端只显示加载态）', async () => {
     const mockFetch = jest.fn().mockResolvedValue({
       ok: true,
       body: {
@@ -856,8 +856,8 @@ describe('streamChatToClient', () => {
       'deepseek-v4-flash',
     );
 
-    expect(res._events.some((e: any) => e.event === 'reasoning')).toBe(true);
     expect(res._events.some((e: any) => e.event === 'chunk')).toBe(true);
+    expect(res._events.some((e: any) => e.event === 'reasoning')).toBe(false);
     expect(res._events.some((e: any) => e.event === 'done')).toBe(true);
   });
 

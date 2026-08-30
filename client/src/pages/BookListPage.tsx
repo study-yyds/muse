@@ -1399,6 +1399,9 @@ export function BookListPage() {
                       >
                         打开作品
                       </Button>
+                      <p className="text-[11px] text-muted-foreground leading-relaxed">
+                        发布提示：番茄/起点/晋江等平台限制直接发布 AI 生成的正文（起点严禁 AI 正文、晋江仅允许校对/起名/粗纲、番茄禁止直接复制 AI 章节）。建议将生成内容作为底稿人工修改后再发布。
+                      </p>
                     </div>
                   )}
 

@@ -14,6 +14,13 @@ interface PendingInsertRequest {
   // 发起请求时的章节与光标位置（防止采纳时插入到错误章节/位置）
   chapterId: string | null;
   textOffset: number;
+  // 发起时间戳：编辑器超时未就绪则丢弃，防止陈旧的插入请求迟到生效
+  at: number;
+}
+
+interface ChapterSwitchRequest {
+  chapterId: string;
+  at: number;
 }
 
 interface ReplaceRequest {
@@ -39,6 +46,8 @@ interface EditorState {
   cursorPosition: number;
   selectedText: string;
   pendingInsert: PendingInsertRequest | null;
+  // 一次性章节切换请求：AI 面板自动建章/切章时通知编辑器跟随，消费即清除
+  chapterSwitch: ChapterSwitchRequest | null;
   // 改写请求：携带原文本 + 精确位置（避免多处匹配时替换错误）
   pendingReplace: ReplaceRequest | null;
   // 改写上下文：用户在编辑器中选中的文本 + 精确选区位置
@@ -46,6 +55,8 @@ interface EditorState {
   // 最近一次 AI 请求时的章节与光标位置（采纳时精确插入用）
   pendingRequest: PendingRequestMeta | null;
   setActiveChapter: (id: string | null) => void;
+  requestChapterSwitch: (chapterId: string) => void;
+  clearChapterSwitch: () => void;
   setContent: (content: string) => void;
   setCursor: (pos: number) => void;
   setSelection: (text: string, pos: number) => void;
@@ -64,16 +75,20 @@ export const useEditorStore = create<EditorState>((set) => ({
   cursorPosition: 0,
   selectedText: "",
   pendingInsert: null,
+  chapterSwitch: null,
   pendingReplace: null,
   aiRewriteContext: null,
   pendingRequest: null,
   setActiveChapter: (id) => set({ activeChapterId: id, editorContent: "", cursorPosition: 0, selectedText: "" }),
+  requestChapterSwitch: (chapterId) =>
+    set({ chapterSwitch: { chapterId, at: Date.now() } }),
+  clearChapterSwitch: () => set({ chapterSwitch: null }),
   setContent: (content) => set({ editorContent: content }),
   setCursor: (pos) => set({ cursorPosition: pos }),
   setSelection: (text, pos) => set({ selectedText: text, cursorPosition: pos }),
   clearSelection: () => set({ selectedText: "" }),
   requestInsert: (text, chapterId = null, textOffset = 0) =>
-    set({ pendingInsert: { text, chapterId, textOffset } }),
+    set({ pendingInsert: { text, chapterId, textOffset, at: Date.now() } }),
   requestReplace: (oldText, newText, start, end, tiptapFrom?, tiptapTo?, chapterId = null) =>
     set({ pendingReplace: { oldText, newText, start, end, tiptapFrom, tiptapTo, chapterId } }),
   clearPendingInsert: () => set({ pendingInsert: null, pendingReplace: null }),

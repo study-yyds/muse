@@ -548,26 +548,26 @@ ${after || '（结尾）'}`;
           }
         }
 
-        // 章纲注入：快捷创作产出的前 10 章细纲（目标/阻碍/爽点/钩子），
-        // 按章节序号取对应行——卷纲颗粒度太粗，写作时靠章纲补上位约束
-        if (ch.sort_order <= 10) {
-          try {
-            const [bso] = await db
-              .select({ extra: schema.book_settings.extra })
-              .from(schema.book_settings)
-              .where(eq(schema.book_settings.book_id, params.book_id))
-              .limit(1);
-            const chOutlines = ((bso?.extra ?? {}) as Record<string, any>)
-              ?.chapter_outlines as string[] | undefined;
-            const line = chOutlines?.[ch.sort_order - 1];
+        // 章纲注入：按章节序号取对应行（快捷创作首批 10 章，后续可续生）——
+        // 卷纲颗粒度太粗，写作时靠章纲补上位约束
+        try {
+          const [bso] = await db
+            .select({ extra: schema.book_settings.extra })
+            .from(schema.book_settings)
+            .where(eq(schema.book_settings.book_id, params.book_id))
+            .limit(1);
+          const chOutlines = ((bso?.extra ?? {}) as Record<string, any>)
+            ?.chapter_outlines as string[] | undefined;
+          if (chOutlines?.length && ch.sort_order <= chOutlines.length) {
+            const line = chOutlines[ch.sort_order - 1];
             if (line) {
               chapterOutlineBlock = `【本章细纲——目标/阻碍/爽点/钩子，写作必须覆盖】
 ${line}（本章已写 ${ch.content.length} 字）
 `;
             }
-          } catch {
-            /* 章纲查询失败不影响续写 */
           }
+        } catch {
+          /* 章纲查询失败不影响续写 */
         }
         // 黄金三章：平台共识——前300字定去留、第1章300字内四件事、第3章内第一个小爽点
         goldenThreeBlock =
@@ -586,7 +586,7 @@ ${line}（本章已写 ${ch.content.length} 字）
               : '';
         // 本章进度感知：续写需知道写到哪、还剩多少，避免章中留钩子/章末开新线
         if (ch.content.length >= 1500) {
-          chapterProgressBlock = `【本章进度】已写 ${ch.content.length} 字（目标 2500-3500 字）——本章已进入收束段：兑现本章爽点、落章末钩子，不要开启新的冲突线。
+          chapterProgressBlock = `【本章进度】已写 ${ch.content.length} 字（本章目标 2000-5000 字）——写到自然停点即可落章末钩子收束；未到停点则继续推进，不凑字、不拖延、不开新冲突线。
 `;
         }
 
@@ -765,11 +765,15 @@ ${styleBlock}`;
 - 每 300-500 字推进一次剧情（新信息/冲突/反转），禁止原地描写
 - 对话每句一行，用对话推进剧情；段末可留钩子
 - 文风与光标前文保持一致：前文短句你就短句，前文白描你就白描
-- 若角色在故事进程中经历了重大事件，其言行要有对应变化`;
+- 若角色在故事进程中经历了重大事件，其言行要有对应变化
+- 本章目标约 2000-5000 字：一次写不完就写到自然停点，作者会继续
+- 当前大纲节点是剧情大方向（通常需要多章完成），本章只推进其中一段，禁止把整个节点情节压缩进一章
+- 若注入有【本章细纲】，以细纲为本章执行计划（目标/阻碍/爽点/钩子），大纲节点仅作方向参考
+- 主角道德基线：可以狠、自保、报复，但对象必须是真恶人（对方确实作恶或先害主角）；不得伤害无辜之人（仆从/路人）；灰色行为必须有正当理由（被逼到绝境/对方作恶在先）；黑化反派型主角也必须有可理解的动机，不得无缘无故作恶`;
 
     const writeReplyFormat = `【回复格式——严格遵守】
 你的回复分为两部分：
-1. 正文内容（纯自然语言，不含任何 JSON 标记）
+1. 正文内容（纯自然语言：不含任何 JSON 标记，禁止 Markdown 格式——不用 # 标题、不用 **加粗**、不用列表符号，章节标题直接写成"第N章 标题"一行）
 2. 最后一行为操作指令 JSON（单独一行）
 
 示例：
@@ -812,6 +816,7 @@ ${bookStyleBlock}
 ${outlineNodes || '暂无节点，需要从零开始'}
 
 【规划指引】
+- 若作者要求生成正文/章节内容，提醒其切换到"写作"面板，本面板只产出大纲节点
 - 每个节点是一个独立的情节事件，标题精炼有冲突感，摘要写清"谁做了什么，导致了什么变化"
 - 节点之间必须有因果链：上一个节点的结果 = 下一个节点的起因
 - 故事弧线完整：铺垫 → 激励事件 → 上升冲突 → 转折 → 高潮 → 收束
@@ -842,6 +847,7 @@ ${worldText.slice(0, 1500)}
 ${bookStyleBlock}
 
 【创作指引】
+- 若作者要求生成正文/章节内容，提醒其切换到"写作"面板，不要在此输出正文
 - 主角必须有金手指/能力、缺陷与弧光（开篇→结局的变化）；配角要有"要什么"（动机）和"怕什么"（软肋）
 - 角色要服务于故事：为什么需要这个角色？TA推动什么情节？
 - 性格不能凭空而来：用背景故事解释性格成因
@@ -872,6 +878,7 @@ ${worldText}
 ${bookStyleBlock}
 
 【构建指引】
+- 若作者要求生成正文/章节内容，提醒其切换到"写作"面板，不要在此输出正文
 - 每个分区都要给出具体、独特的细节
 - 规则要有代价，设定要推动故事
 - 不同势力/阵营要有不同的价值观和利益冲突
@@ -1109,7 +1116,11 @@ ${own?.facts ? `【本章已确立】\n${own.facts}\n` : ''}${recent?.facts ? `�
           bookId: params.book_id || undefined,
           usageType: resolved.source === 'user' ? 'user_key' : 'platform_key',
         },
-        undefined,
+        // 思考链会耗尽 max_tokens 导致正文为空：平台模型（DeepSeek/千问均含推理
+        // 能力）与用户 DeepSeek/千问 Key 一律关闭思考，其余自定义 Key 尊重原样
+        resolved.source === 'platform' || /deepseek|qwen/i.test(resolved.model)
+          ? { type: 'disabled' }
+          : undefined,
         // 正文类输出跑 AI 味检测（短篇 context 与长篇写作共用）
         ct === 'write' || isShort,
       );
@@ -1237,10 +1248,8 @@ ${own?.facts ? `【本章已确立】\n${own.facts}\n` : ''}${recent?.facts ? `�
               const content = delta?.content;
               const reasoning = delta?.reasoning_content;
               if (reasoning) {
+                // 只累计用量，不再转发：前端不展示思考文本，只显示加载态
                 fullReasoning += reasoning;
-                res.write(
-                  `event: reasoning\ndata: ${JSON.stringify(reasoning)}\n\n`,
-                );
               }
               if (content) {
                 fullContent += content;
@@ -1272,8 +1281,9 @@ ${own?.facts ? `【本章已确立】\n${own.facts}\n` : ''}${recent?.facts ? `�
       }
 
       // 多级回退提取 JSON action（对齐快捷创作解析器）
+      // 只用正文提取：推理模型的思考文本会引用示例 JSON，误提取会产生假"采纳"按钮
       try {
-        const combined = fullContent || fullReasoning;
+        const combined = fullContent;
         const attempts: string[] = [];
 
         // 1. markdown 代码块
@@ -1508,6 +1518,238 @@ ${own?.facts ? `【本章已确立】\n${own.facts}\n` : ''}${recent?.facts ? `�
     } catch (e: any) {
       console.error('[extractChapterFacts] failed:', e.message);
     }
+  }
+
+  /**
+   * 续生章纲：写到已有章纲末尾后，生成下一批 10 章细纲并追加保存。
+   * 输入=卷纲+上一批章纲结尾+最近已写章节摘要，保证批次间钩子衔接、不重写已发生事件。
+   * 结构设计类长指令在 Flash 上先塌陷（IFScale），平台智能默认升级 Pro。
+   */
+  async extendChapterOutlines(
+    userId: string,
+    bookId: string,
+    model?: string,
+    keyId?: string,
+  ): Promise<{ lines: string[]; startNo: number }> {
+    const db = getDb();
+    const resolved = await this.resolveApiKey(userId, 'chat', model, keyId);
+    const useModel =
+      !model && resolved.source === 'platform'
+        ? 'deepseek-v4-pro'
+        : resolved.model;
+    const resolvedUse =
+      useModel === resolved.model
+        ? resolved
+        : await this.resolveApiKey(userId, 'chat', useModel, keyId);
+
+    // 已有章纲
+    const [settings] = await db
+      .select({ extra: schema.book_settings.extra })
+      .from(schema.book_settings)
+      .where(eq(schema.book_settings.book_id, bookId))
+      .limit(1);
+    const existing = ((settings?.extra ?? {}) as Record<string, any>)
+      ?.chapter_outlines as string[] | undefined;
+    const existingLines = existing ?? [];
+    const startNo = existingLines.length + 1;
+
+    // 最近已写章节摘要（承接已写剧情，不重写已发生事件）
+    const recentChs = await db
+      .select({
+        title: schema.chapters.title,
+        summary: schema.chapters.summary,
+        sort_order: schema.chapters.sort_order,
+      })
+      .from(schema.chapters)
+      .where(
+        and(
+          eq(schema.chapters.book_id, bookId),
+          isNotNull(schema.chapters.summary),
+        ),
+      )
+      .orderBy(desc(schema.chapters.sort_order))
+      .limit(3);
+
+    // 承接素材：优先章节摘要；没有摘要（手动建书/篇幅不足）则取最新已写章节正文尾部
+    let continuityBlock = '';
+    if (recentChs.length) {
+      continuityBlock = `【最近已写章节摘要】\n${recentChs.reverse().map((c) => `- 第${c.sort_order}章 ${c.title}：${c.summary}`).join('\n')}\n`;
+    } else {
+      const [lastCh] = await db
+        .select({
+          title: schema.chapters.title,
+          content: schema.chapters.content,
+          sort_order: schema.chapters.sort_order,
+        })
+        .from(schema.chapters)
+        .where(eq(schema.chapters.book_id, bookId))
+        .orderBy(desc(schema.chapters.sort_order))
+        .limit(1);
+      if (lastCh && (lastCh.content ?? '').trim()) {
+        continuityBlock = `【已写章节（第${lastCh.sort_order}章）正文尾部——续写必须承接，不重写已发生事件】\n${(lastCh.content ?? '').slice(-1500)}\n`;
+      }
+    }
+
+    const [bookRow] = await db
+      .select({ title: schema.books.title })
+      .from(schema.books)
+      .where(eq(schema.books.book_id, bookId))
+      .limit(1);
+
+    // 卷纲（大纲节点）
+    const loadOutlineNodes = async () => {
+      const [outline] = await db
+        .select()
+        .from(schema.outlines)
+        .where(eq(schema.outlines.book_id, bookId))
+        .limit(1);
+      return outline
+        ? await db
+            .select({
+              title: schema.outline_chapters.title,
+              summary: schema.outline_chapters.summary,
+            })
+            .from(schema.outline_chapters)
+            .where(eq(schema.outline_chapters.outline_id, outline.outline_id))
+            .orderBy(schema.outline_chapters.sort_order)
+        : [];
+    };
+    let nodes = await loadOutlineNodes();
+
+    // 手动建书无卷纲：先用书名+引导摘要+已写正文自动生成卷纲，再展开章纲
+    if (nodes.length === 0) {
+      const guideSummary = (settings?.extra ?? {}) as Record<string, any>;
+      const guideBlock =
+        (guideSummary?.guide_summary as string | undefined)?.slice(0, 800) ?? '';
+      const outlineGenPrompt = `你是网文大纲规划助手。根据下面的信息为这部小说设计情节大纲（卷纲），至少 8-12 个节点。
+
+【书名】${bookRow?.title ?? '（未命名）'}
+
+${guideBlock ? `【创作方向——严格遵循】\n${guideBlock}\n` : ''}
+${continuityBlock ? `【已写正文参考——大纲必须承接，不重写已发生事件】\n${continuityBlock.slice(0, 1500)}` : '【注意】暂无正文：根据书名和题材常识合理发挥。'}
+
+【核心要求】
+1. 分卷/分段推进：每段有明确的阶段目标，段末解决并引出下一段
+2. 递进节奏：每个节点应有实质进展
+3. 每个节点必须内置冲突或爽点（打压→反转→打脸，或悬念揭示）
+4. 摘要用"谁+做了什么+得到什么结果"的直白句式，禁止文艺腔
+
+【输出格式——严格遵守】
+只输出 JSON 数组，不要任何其他文字。title 精炼（8字内），summary 简短（30字内）：
+[{"title":"裂缝心跳","summary":"沈桁在灰塔底层发现空间裂缝，接触神秘气体后指纹异变"}]`;
+      const rOutline = await fetch(`${resolvedUse.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${resolvedUse.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: useModel,
+          messages: [
+            { role: 'system', content: outlineGenPrompt },
+            { role: 'user', content: '请设计这部小说的卷纲。' },
+          ],
+          max_tokens: 4096,
+          temperature: 0.7,
+          thinking: { type: 'disabled' },
+        }),
+        signal: AbortSignal.timeout(120_000),
+      });
+      if (!rOutline.ok) {
+        throw new Error(`outline auto-gen status ${rOutline.status}`);
+      }
+      const dOutline = await rOutline.json();
+      const outlineRaw = (dOutline.choices?.[0]?.message?.content ?? '').trim();
+      const savedCount = await this.parseAndSaveOutline(bookId, outlineRaw);
+      if (!savedCount) {
+        throw new Error('卷纲自动生成失败，请稍后重试');
+      }
+      await this.recordUsage({
+        userId,
+        bookId,
+        model: useModel,
+        inChars: outlineGenPrompt.length,
+        outChars: outlineRaw.length,
+        usageType: resolvedUse.source === 'user' ? 'user_key' : 'platform_key',
+      });
+      nodes = await loadOutlineNodes();
+    }
+
+    const outlineText =
+      nodes.map((n) => `- ${n.title}：${n.summary}`).join('\n') || '（无大纲）';
+
+    // 硬性要求按素材条件化：首批无上一批钩子可承接、无卷纲时从正文自然延伸
+    const requirements = [
+      '一章一小冲突，10 章内至少 2 个小高潮；爽点必须具体（什么被证明/谁被打脸/什么反转），禁止"主角变强"式空话',
+      '表述直白网文化，禁止文学化修饰',
+      '打脸/报复对象必须是真恶人（对方先作恶），不得牵连无辜之人',
+      nodes.length
+        ? '卷纲是大方向：新章纲推进的情节必须落在卷纲范围内'
+        : '暂无大纲：剧情从已写正文自然延伸，不要凭空引入与正文无关的设定',
+      existingLines.length
+        ? `承接上一批章纲的结尾钩子：第 ${startNo} 章的开篇必须回答上一批最后一章的钩子`
+        : '',
+    ]
+      .filter(Boolean)
+      .map((r, i) => `${i + 1}. ${r}`)
+      .join('\n');
+
+    const prompt = `你是网文细纲设计师。为这本书生成下一批 10 章的细纲（第 ${startNo} 到第 ${startNo + 9} 章）。
+
+${bookRow?.title ? `【书名】${bookRow.title}` : ''}
+
+【每章一行，格式】
+第N章 | 目标=主角本章要达成什么 | 阻碍=什么在挡路（人或事） | 爽点=本章的爽点/反转/打脸点 | 钩子=章末悬念
+
+【硬性要求】
+${requirements}
+
+【卷纲】
+${outlineText.slice(0, 2000) || '（无大纲）'}
+
+${continuityBlock}
+${existingLines.length ? `【上一批章纲结尾】\n${existingLines.slice(-3).join('\n')}\n` : ''}
+只输出 10 行，每行一条章纲，不要编号、不要其他文字。`;
+
+    const r = await fetch(`${resolvedUse.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${resolvedUse.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: useModel,
+        messages: [
+          { role: 'system', content: prompt },
+          { role: 'user', content: `请生成第 ${startNo} 到第 ${startNo + 9} 章的细纲。` },
+        ],
+        max_tokens: 2048,
+        temperature: 0.7,
+        // 推理模型关闭思考链,防止思考耗尽 max_tokens
+        thinking: { type: 'disabled' },
+      }),
+      signal: AbortSignal.timeout(120_000),
+    });
+    if (!r.ok) throw new Error(`extend outlines status ${r.status}`);
+    const d = await r.json();
+    const rawText = (d.choices?.[0]?.message?.content ?? '').trim();
+    const lines = AiService.parseChapterOutlines(rawText);
+    if (!lines.length) throw new Error('章纲续生解析为空');
+
+    // 追加保存（只接在已有批次后面，覆盖重复续生）
+    await db
+      .update(schema.book_settings)
+      .set({ extra: { ...((settings?.extra ?? {}) as Record<string, any>), chapter_outlines: [...existingLines, ...lines] } })
+      .where(eq(schema.book_settings.book_id, bookId));
+    await this.recordUsage({
+      userId,
+      bookId,
+      model: useModel,
+      inChars: prompt.length,
+      outChars: rawText.length,
+      usageType: resolvedUse.source === 'user' ? 'user_key' : 'platform_key',
+    });
+    return { lines, startNo };
   }
 
   // AI 模仿笔风：分析已完成章节，提取写作风格特征
@@ -4507,6 +4749,7 @@ ${storyText.slice(-800)}`;
 4. 每个节点应能制造悬念或期待，让读者想看下一章
 5. 节点必须体现主角的动机驱动：主角的每个关键选择都能回溯到他的欲望/缺陷/金手指，禁止主角随波逐流
 6. 每个节点必须内置冲突或爽点（打压→反转→打脸，或悬念揭示），摘要用"谁+做了什么+得到什么结果"的直白句式，禁止文艺腔与抽象抒情
+7. 主角道德基线：报复/打脸对象必须是真恶人（对方先作恶），情节不得伤害无辜之人（仆从/路人）；灰色行为须有正当理由
 
 【数量要求】
 至少输出 8-12 个情节节点，覆盖前 1-2 卷。标题简洁有力。
@@ -4553,6 +4796,7 @@ ${storyText.slice(-800)}`;
 4. 一章一小冲突，10 章内至少 2 个小高潮
 5. 爽点必须具体（什么被证明/谁被打脸/什么反转），禁止"主角变强"式空话
 6. 表述直白网文化："打脸""捡漏""当众揭穿"式话术优先，禁止文学化修饰
+7. 打脸/报复对象必须是真恶人（对方先作恶），不得牵连无辜之人
 
 只输出 10 行，每行一条章纲，不要编号、不要其他文字。`;
         const chOutText = await aiCall(

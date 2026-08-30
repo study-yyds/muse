@@ -20,7 +20,7 @@ import { useEditorStore } from "@/stores/editor";
 import { useToast } from "@/hooks/use-toast";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { ArrowLeft, UserRound, Globe, ListTree, FileText, Download, Send, Loader2, Sparkles, Settings, BarChart3, Menu, Square, ChevronRight } from "lucide-react";
+import { ArrowLeft, UserRound, Globe, ListTree, FileText, Download, Send, Loader2, Sparkles, Settings, BarChart3, Menu, Square } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type Section = "write" | "outline" | "characters" | "world" | "settings" | "stats";
@@ -176,7 +176,11 @@ export function BookDetailPage() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [mobileAiExpanded, setMobileAiExpanded] = useState(false);
   const [aiPanelHeight, setAiPanelHeight] = useState(45); // vh
-  const [aiPanelWidth, setAiPanelWidth] = useState(288); // px
+  // AI 面板宽度：拖拽后持久化，刷新保持（钳制 200-500）
+  const [aiPanelWidth, setAiPanelWidth] = useState(() => {
+    const saved = Number(localStorage.getItem("muse_ai_panel_width"));
+    return Number.isFinite(saved) && saved >= 200 && saved <= 500 ? saved : 288;
+  });
   const [isMobile, setIsMobile] = useState(window.innerWidth < 1024);
   const [coverUrl, setCoverUrl] = useState<string | null>(null);
 
@@ -328,6 +332,8 @@ export function BookDetailPage() {
                 const delta = startX - ev.clientX;
                 const newWidth = Math.min(500, Math.max(200, startWidth + delta));
                 setAiPanelWidth(newWidth);
+                // 拖动过程持续落盘，刷新后保持上次宽度
+                localStorage.setItem("muse_ai_panel_width", String(newWidth));
               };
               const onUp = () => {
                 document.removeEventListener("pointermove", onMove);
@@ -400,13 +406,48 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
   const [loading, setLoading] = useState(false);
   const [model, setModel] = useState("deepseek-v4-flash");
   const [modelKeyId, setModelKeyId] = useState<string | undefined>(undefined);
+  // 中文数字转阿拉伯（支持 1-99：一/二/十/十一/二十/九十九）
+  const zhNum = (s: string): number | null => {
+    const map: Record<string, number> = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+    if (/^\d+$/.test(s)) return parseInt(s, 10);
+    if (s === "十") return 10;
+    if (/^[一二三四五六七八九]十[一二三四五六七八九]?$/.test(s)) {
+      const [t, o] = [s[0], s.length > 1 ? s[1] : ""];
+      return (map[t] ?? 0) * 10 + (o ? (map[o] ?? 0) : 0);
+    }
+    if (map[s] != null) return map[s];
+    return null;
+  };
+
+  // 按"第N章"标题拆分多章正文：标题行作章节名，正文按章分段
+  const splitChapters = (text: string): Array<{ title: string; content: string }> => {
+    const lines = text.split("\n");
+    const heads: number[] = [];
+    lines.forEach((l, i) => {
+      if (/^(?:#{1,3}\s*)?第[一二三四五六七八九十百\d]+\s*章/.test(l.trim())) heads.push(i);
+    });
+    if (heads.length === 0) return [{ title: "", content: text }];
+    const segs: Array<{ title: string; content: string }> = [];
+    // 第一个标题前的文字（如无标题的引子）作为无标题段
+    const pre = lines.slice(0, heads[0]).join("\n").trim();
+    if (pre) segs.push({ title: "", content: pre });
+    for (let i = 0; i < heads.length; i++) {
+      const start = heads[i];
+      const end = i + 1 < heads.length ? heads[i + 1] : lines.length;
+      const title = lines[start].trim().replace(/^#{1,3}\s*/, "").slice(0, 30);
+      const body = lines
+        .slice(start + 1, end)
+        .join("\n")
+        .trim();
+      if (body) segs.push({ title, content: body });
+    }
+    return segs;
+  };
   const [chatStyle, setChatStyle] = useState(initialStyle ?? "default");
   // 书设置里切换风格预设时同步到面板（快捷创作默认"快节奏网文"）
   useEffect(() => { setChatStyle(initialStyle ?? "default"); }, [initialStyle]);
   const [guideMode, setGuideMode] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [expandedReasoning, setExpandedReasoning] = useState<Set<number>>(new Set());
-  const [streamReasonCollapsed, setStreamReasonCollapsed] = useState(false);
   const [activeVer, setActiveVer] = useState<Record<number, number>>({});
   // 反馈重新生成：按消息索引展开输入框
   const [feedbackOpen, setFeedbackOpen] = useState<number | null>(null);
@@ -621,6 +662,9 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
     return t;
   };
 
+  // 行首 Markdown 标题标记（## 等）剥离：模型偶发不遵循纯文本要求
+  const stripMdHeadings = (t: string) => t.replace(/^#{1,6}\s+/gm, "");
+
   const extractDisplayText = (t: string) => {
     if (!t.trim()) return "";
     let s = t.trim();
@@ -746,17 +790,79 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
   };
 
   const doSend = async (userMsg: string) => {
+    // 错面板提示：在角色/世界观等面板请求写正文时提醒（不阻断发送，AI 侧也会引导）
+    if (
+      section !== "write" &&
+      section !== "outline" &&
+      /(生成|写|续写).*(第.{1,3}章|正文|小说|故事)/.test(userMsg)
+    ) {
+      toast({ title: "提示：生成正文请切换到「写作」面板" });
+    }
     const um: Msg = { role: "user", content: userMsg };
     const prevMsgs = [...msgs, um].map((m) => ({ role: m.role, content: m.content }));
     const newMsgs = [...msgs, um];
     setMsgs(newMsgs);
     // 立即保存用户消息到 DB（不等 debounce），避免刷新丢失
     if (sessionId) flushSave(sessionId, newMsgs);
-    setInput(""); setLoading(true); setStreaming(""); setReasoning(""); setStreamReasonCollapsed(false);
+    setInput(""); setLoading(true); setStreaming(""); setReasoning("");
     const controller = new AbortController();
     abortRef.current = controller;
     const bodyExtra: Record<string, any> = {};
-    const activeCh = useEditorStore.getState().activeChapterId;
+    let activeCh = useEditorStore.getState().activeChapterId;
+    // 章节意图识别：请求"生成第N章"时自动切换/新建到目标章，避免写进当前章
+    if (section === "write") {
+      const m = userMsg.match(/第([一二三四五六七八九十百\d]+)\s*章/);
+      const targetNo = m ? zhNum(m[1]) : null;
+      try {
+        const listRes = await fetch(`/api/books/${bookId}/chapters`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const listData = await listRes.json();
+        const chs = listData?.data ?? [];
+        const cur = chs.find(
+          (c: any) => c.chapter_id === activeCh,
+        ) as { sort_order: number } | undefined;
+        let chapterId: string | null = null;
+        if (targetNo != null && cur && cur.sort_order !== targetNo) {
+          // 请求的章号与当前章不同：找目标章，没有则新建
+          const target = chs.find((c: any) => c.sort_order === targetNo);
+          chapterId = target?.chapter_id ?? null;
+          if (!chapterId) {
+            const createRes = await fetch(`/api/books/${bookId}/chapters`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${token}`,
+              },
+              body: JSON.stringify({ title: `第${m![1]}章` }),
+            });
+            const createData = await createRes.json();
+            chapterId = createData?.data?.chapter_id ?? null;
+          }
+        } else if (!activeCh && chs.length === 0) {
+          // 无章节时自动建"第一章"：直接让 AI 生成也能落进编辑器
+          const createRes = await fetch(`/api/books/${bookId}/chapters`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({ title: "第一章" }),
+          });
+          const createData = await createRes.json();
+          chapterId = createData?.data?.chapter_id ?? null;
+        }
+        if (chapterId) {
+          // 立即更新 store（采纳插入的章节校验用），并发出一次性切换请求让编辑器跟随
+          useEditorStore.getState().setActiveChapter(chapterId);
+          useEditorStore.getState().requestChapterSwitch(chapterId);
+          queryClient.invalidateQueries({ queryKey: ["chapters", bookId] });
+          activeCh = chapterId;
+        }
+      } catch {
+        /* 章节处理失败不阻断：正文仍会生成 */
+      }
+    }
     if (section === "write" && activeCh) {
       bodyExtra.chapter_id = activeCh;
       bodyExtra.cursor_position = rewriteCtx ? rewriteCtx.start : useEditorStore.getState().cursorPosition;
@@ -828,7 +934,7 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
       : curMsgs[lastUserIdx].content;
     const prevMsgs = curMsgs.slice(0, lastUserIdx + 1).map((m) => ({ role: m.role, content: m.content }));
 
-    setLoading(true); setStreamReasonCollapsed(false); isRegeneratingRef.current = true;
+    setLoading(true); isRegeneratingRef.current = true;
     clearInterval(autoSaveIntervalRef.current);
     autoSaveIntervalRef.current = setInterval(() => {
       const sid = sessionId;
@@ -1081,7 +1187,7 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
         });
         queryClient.invalidateQueries({ queryKey: ["world-setting", bookId] });
         toast({ title: "世界观已更新" });
-      } else {
+      } else if (a.content?.trim()) {
         const pendingReq = useEditorStore.getState().pendingRequest;
         const reqChapter =
           pendingReq?.chapterId ?? useEditorStore.getState().activeChapterId ?? null;
@@ -1089,10 +1195,60 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
         if (oldCtx) {
           useEditorStore.getState().requestReplace(oldCtx.text, a.content, oldCtx.start, oldCtx.end, oldCtx.tiptapFrom, oldCtx.tiptapTo, reqChapter);
           useEditorStore.getState().clearAiRewrite();
+          toast({ title: "已替换选区" });
         } else {
-          useEditorStore.getState().requestInsert(a.content, reqChapter, pendingReq?.cursorPosition ?? 0);
+          // 多章拆分：AI 一次生成多章时，首段插入当前章，其余自动新建章节
+          const stripMd = (t: string) => t.replace(/^#{1,6}\s+/gm, "");
+          const segs = splitChapters(a.content);
+          useEditorStore.getState().requestInsert(
+            stripMd(segs[0]?.content ?? ""),
+            reqChapter,
+            pendingReq?.cursorPosition ?? 0,
+          );
+          let created = 0;
+          for (const seg of segs.slice(1)) {
+            try {
+              const createRes = await fetch(`/api/books/${bookId}/chapters`, {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  Authorization: `Bearer ${token}`,
+                },
+                body: JSON.stringify({ title: seg.title || "新章节" }),
+              });
+              const createData = await createRes.json();
+              const cid = createData?.data?.chapter_id;
+              if (cid) {
+                const putRes = await fetch(`/api/books/${bookId}/chapters/${cid}`, {
+                  method: "PUT",
+                  headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${token}`,
+                  },
+                  body: JSON.stringify({
+                    content: stripMd(seg.content),
+                    word_count: seg.content.length,
+                  }),
+                });
+                if (putRes.ok) {
+                  created++;
+                } else {
+                  toast({ title: "有章节内容保存失败，请手动补写", variant: "destructive" });
+                }
+              }
+            } catch {
+              /* 单章失败不阻断其余 */
+            }
+          }
+          if (created) {
+            queryClient.invalidateQueries({ queryKey: ["chapters", bookId] });
+            toast({ title: `已插入当前章，并新建 ${created} 章` });
+          } else {
+            toast({ title: "已插入编辑器" });
+          }
         }
-        toast({ title: "已插入编辑器" });
+      } else {
+        toast({ title: "本次生成无正文内容，请重新生成", variant: "destructive" });
       }
       const verIdx = msgs[gi]?.versions ? (activeVer[gi] ?? msgs[gi].versions!.length - 1) : 0;
       const updated = msgs.map((m, i) => (i === gi ? { ...m, adoptedVer: verIdx } : m));
@@ -1177,15 +1333,6 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
         <ScrollArea className="h-full">
           <div className="p-4 space-y-3">
             {msgs.map((m: Msg, i: number) => {
-              const reasonExpanded = expandedReasoning.has(i);
-              const toggleReasoning = () => {
-                setExpandedReasoning((prev) => {
-                  const next = new Set(prev);
-                  if (next.has(i)) next.delete(i);
-                  else next.add(i);
-                  return next;
-                });
-              };
               return (
                 <div
                   key={i}
@@ -1207,33 +1354,16 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
                     const isLastAi = i === msgs.length - 1 && m.role === "assistant";
                     const isAdopted = m.adoptedVer !== undefined;
                     const hasAction = !!curVer.action;
+                    // 模型偶发漏输出结尾 JSON：写作面板有正文即可采纳（按 insert_content 处理）
+                    const adoptFallback =
+                      section === "write" &&
+                      !hasAction &&
+                      !!stripActionJson(curVer.content || "").trim();
 
                     return (
                       <div>
-                        {/* 思考块（折叠） */}
-                        {curVer.reasoning && (
-                          <div className="mb-2">
-                            <button
-                              onClick={toggleReasoning}
-                              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors w-full text-left"
-                            >
-                              <ChevronRight
-                                className={cn(
-                                  "size-3 transition-transform",
-                                  reasonExpanded && "rotate-90",
-                                )}
-                              />
-                              思考
-                            </button>
-                            {reasonExpanded && (
-                              <div className="mt-1.5 pl-4 border-l-2 border-border text-xs text-muted-foreground whitespace-pre-wrap leading-relaxed max-h-48 overflow-y-auto">
-                                {curVer.reasoning}
-                              </div>
-                            )}
-                          </div>
-                        )}
                         {curVer.content ? (
-                          <div className="whitespace-pre-wrap">{stripActionJson(curVer.content)}</div>
+                          <div className="whitespace-pre-wrap">{stripMdHeadings(stripActionJson(curVer.content))}</div>
                         ) : null}
                         {m.quality && !isAdopted && (
                           <div className="mt-1 text-xs text-amber-600 dark:text-amber-400">
@@ -1246,8 +1376,19 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
                           </div>
                         ) : isLastAi ? (
                           <div className="mt-2 pt-2 border-t border-border flex items-center gap-2 flex-wrap">
-                            {hasAction && (
-                              <Button size="xs" disabled={adoptingRef.current} onClick={() => adopt(curVer.action!, i)}>
+                            {(hasAction || adoptFallback) && (
+                              <Button
+                                size="xs"
+                                disabled={adoptingRef.current}
+                                onClick={() =>
+                                  adopt(
+                                    hasAction
+                                      ? curVer.action!
+                                      : { action: "insert_content", content: stripActionJson(curVer.content) },
+                                    i,
+                                  )
+                                }
+                              >
                                 {adoptingRef.current ? "采纳中..." : "采纳"}
                               </Button>
                             )}
@@ -1328,43 +1469,19 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
                 </div>
               );
             })}
-            {/* 流式输出：思考（可折叠） + 正文 */}
-            {(reasoning || streaming) && (
+            {/* 流式输出：只显示正文，思考阶段只显示加载标志 */}
+            {streaming && (
               <div className="text-sm rounded-lg px-3 py-2 bg-muted text-foreground mr-2">
-                {reasoning && (
-                  <div className={cn(streaming && "mb-2")}>
-                    <button
-                      onClick={() => setStreamReasonCollapsed(!streamReasonCollapsed)}
-                      className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
-                    >
-                      <ChevronRight
-                        className={cn(
-                          "size-3 transition-transform",
-                          !streamReasonCollapsed && "rotate-90",
-                        )}
-                      />
-                      <Loader2 className="size-3 animate-spin" />
-                      思考中...
-                    </button>
-                    {!streamReasonCollapsed && (
-                      <div className="mt-1.5 pl-4 border-l-2 border-border text-xs text-muted-foreground whitespace-pre-wrap leading-relaxed max-h-48 overflow-y-auto">
-                        {reasoning}
-                      </div>
-                    )}
-                  </div>
-                )}
-                {streaming && (
-                  <div className={cn("whitespace-pre-wrap", reasoning && "pt-2 border-t border-border")}>
-                    {stripActionJson(streaming)}
-                    <span className="inline-block w-1.5 h-4 bg-primary animate-pulse ml-0.5 align-text-bottom" />
-                  </div>
-                )}
+                <div className="whitespace-pre-wrap">
+                  {stripMdHeadings(stripActionJson(streaming))}
+                  <span className="inline-block w-1.5 h-4 bg-primary animate-pulse ml-0.5 align-text-bottom" />
+                </div>
               </div>
             )}
-            {loading && !reasoning && !streaming && !isRegeneratingRef.current && (
+            {loading && !streaming && !isRegeneratingRef.current && (
               <div className="text-xs text-muted-foreground italic px-3">
                 <Loader2 className="inline size-3 animate-spin mr-1" />
-                连接中...
+                生成中...
               </div>
             )}
             <div ref={scrollBottomRef} />
@@ -1399,54 +1516,52 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
             }}
             className="text-sm border-0 bg-transparent resize-none !p-0 min-h-6 shadow-none focus-visible:ring-0 leading-normal"
           />
-          {/* 底部工具栏 */}
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-1.5">
-              {section === "write" && (
-                <select
-                  value={chatStyle}
-                  onChange={(e) => setChatStyle(e.target.value)}
-                  className="text-[11px] text-muted-foreground bg-muted/50 rounded-full px-2.5 py-1 border-0 outline-none cursor-pointer"
-                >
-                  {WRITING_STYLES.map((s) => (
-                    <option key={s.value} value={s.value}>
-                      {s.value === "default" ? "风格" : s.label}
-                    </option>
-                  ))}
-                  {/* 做过笔风分析后才出现 */}
-                  {mimicAnalysis && <option value="mimic">我的笔风</option>}
-                </select>
-              )}
-              <ModelSelector
-                usage="chat"
-                value={modelKeyId ? customKeyValue(modelKeyId) : model}
-                onChange={(m, keyId) => { setModel(m); setModelKeyId(keyId); }}
-                className="text-[11px] text-muted-foreground bg-muted/50 rounded-full px-2.5 py-1 border-0 outline-none cursor-pointer"
-              />
-              <label className="flex items-center gap-1 cursor-pointer" title={guideMode ? "关闭引导模式" : "开启引导模式"}>
-                <button
-                  onClick={(e) => { e.preventDefault(); setGuideMode(!guideMode); }}
+          {/* 底部工具栏：窄面板时工具项换行，发送按钮 ml-auto 始终右对齐 */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {section === "write" && (
+              <select
+                value={chatStyle}
+                onChange={(e) => setChatStyle(e.target.value)}
+                className="text-[11px] text-muted-foreground bg-muted/50 rounded-full px-2.5 py-1 border-0 outline-none cursor-pointer shrink-0"
+              >
+                {WRITING_STYLES.map((s) => (
+                  <option key={s.value} value={s.value}>
+                    {s.value === "default" ? "风格" : s.label}
+                  </option>
+                ))}
+                {/* 做过笔风分析后才出现 */}
+                {mimicAnalysis && <option value="mimic">我的笔风</option>}
+              </select>
+            )}
+            <ModelSelector
+              usage="chat"
+              value={modelKeyId ? customKeyValue(modelKeyId) : model}
+              onChange={(m, keyId) => { setModel(m); setModelKeyId(keyId); }}
+              className="text-[11px] text-muted-foreground bg-muted/50 rounded-full px-2.5 py-1 border-0 outline-none cursor-pointer max-w-28"
+            />
+            <label className="flex items-center gap-1 cursor-pointer shrink-0" title={guideMode ? "关闭引导模式" : "开启引导模式"}>
+              <button
+                onClick={(e) => { e.preventDefault(); setGuideMode(!guideMode); }}
+                className={cn(
+                  "relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors",
+                  guideMode ? "bg-primary" : "bg-muted",
+                )}
+              >
+                <span
                   className={cn(
-                    "relative inline-flex h-5 w-9 shrink-0 rounded-full border-2 border-transparent transition-colors",
-                    guideMode ? "bg-primary" : "bg-muted",
+                    "pointer-events-none block h-4 w-4 rounded-full bg-white shadow transition-transform",
+                    guideMode ? "translate-x-4" : "translate-x-0",
                   )}
-                >
-                  <span
-                    className={cn(
-                      "pointer-events-none block h-4 w-4 rounded-full bg-white shadow transition-transform",
-                      guideMode ? "translate-x-4" : "translate-x-0",
-                    )}
-                  />
-                </button>
-                <span className="text-[11px] text-muted-foreground select-none">引导</span>
-              </label>
-            </div>
+                />
+              </button>
+              <span className="text-[11px] text-muted-foreground select-none">引导</span>
+            </label>
             {loading ? (
-              <button onClick={stop} className="size-8 flex items-center justify-center rounded-full bg-destructive text-white ml-1">
+              <button onClick={stop} className="ml-auto size-8 flex items-center justify-center rounded-full bg-destructive text-white">
                 <Square className="size-4" />
               </button>
             ) : (
-              <button onClick={send} disabled={!input.trim()} className="size-8 flex items-center justify-center rounded-full bg-primary text-primary-foreground disabled:opacity-30 ml-1">
+              <button onClick={send} disabled={!input.trim()} className="ml-auto size-8 flex items-center justify-center rounded-full bg-primary text-primary-foreground disabled:opacity-30">
                 <Send className="size-4" />
               </button>
             )}

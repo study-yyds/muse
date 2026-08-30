@@ -64,6 +64,23 @@ export class AiController {
   }
 
   @UseGuards(aiRateLimit)
+  @Post('chapter-outlines/extend')
+  async extendChapterOutlines(
+    @Body()
+    body: { book_id: string; model?: string; key_id?: string },
+    @Req() req: Request,
+  ) {
+    await this.ai.checkBookOwnership(body.book_id, (req as any).userId);
+    const data = await this.ai.extendChapterOutlines(
+      (req as any).userId,
+      body.book_id,
+      body.model,
+      body.key_id,
+    );
+    return { code: 200, data };
+  }
+
+  @UseGuards(aiRateLimit)
   @Post('mimic-style')
   async mimicStyle(
     @Body()

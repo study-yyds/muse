@@ -20,6 +20,7 @@ import {
   Sparkles,
   Video,
   ChevronDown,
+  Trash2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { PromoVideoDialog } from "@/components/promo/PromoVideoDialog";
@@ -46,11 +47,22 @@ export function WritingEditor({ bookId, bookType }: Props) {
   const isShort = bookType === "short";
   const [activeChapterId, setActiveChapterId] = useState<string | null>(null);
 
+  // 刚删除的章节 id：列表刷新前会短暂残留，自动选中需跳过它
+  const lastDeletedIdRef = useRef<string | null>(null);
+
+  // 无选中章节时自动选中第一章（长篇空书直接生成也能落进编辑器；短篇同逻辑）
   useEffect(() => {
-    if (isShort && !activeChapterId && chapters.length === 1) {
+    if (!activeChapterId && chapters.length > 0) {
+      if (
+        lastDeletedIdRef.current &&
+        chapters.length === 1 &&
+        chapters[0].chapter_id === lastDeletedIdRef.current
+      ) {
+        return; // 仅剩的章节是刚删的那条，等列表刷新
+      }
       setActiveChapterId(chapters[0].chapter_id);
     }
-  }, [isShort, activeChapterId, chapters]);
+  }, [activeChapterId, chapters]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     typeof window !== 'undefined' && window.innerWidth < 768,
   );
@@ -70,6 +82,7 @@ export function WritingEditor({ bookId, bookType }: Props) {
   const [editorContent, setEditorContent] = useState("");
   const [isDirty, setIsDirty] = useState(false);
   const [boundNodeId, setBoundNodeId] = useState<string | null>(null);
+  const [extendingOutlines, setExtendingOutlines] = useState(false);
 
   // 最新值 ref：供卸载/页面隐藏兜底保存与同步守卫读取，避免闭包过期
   const editorContentRef = useRef(editorContent);
@@ -94,6 +107,10 @@ export function WritingEditor({ bookId, bookType }: Props) {
   });
   const todayWords = statsData?.data?.todayWords ?? 0;
   const dailyGoal = settingsData?.data?.daily_word_goal ?? (settingsData?.data?.extra as any)?.daily_word_goal ?? 0;
+  // 章纲（快捷创作首批 10 章，可续生）：当前章号超出已有章纲时提示续生
+  const chapterOutlines = (settingsData?.data?.extra as any)?.chapter_outlines as string[] | undefined;
+  const chapterOutlinesCount = chapterOutlines?.length ?? 0;
+  const curSort = chapters.find((c) => c.chapter_id === activeChapterId)?.sort_order ?? null;
   const goalProgress = dailyGoal > 0 ? Math.min(todayWords / dailyGoal, 1) : 0;
   // 短篇"故事走向"卡片:选中的梗概(写作对照)
   const outlinePreview = (settingsData?.data?.extra as any)?.outline_preview as
@@ -126,6 +143,25 @@ export function WritingEditor({ bookId, bookType }: Props) {
   useEffect(() => {
     if (activeChapterId) storeSetActive(activeChapterId);
   }, [activeChapterId, storeSetActive]);
+
+  // AI 面板自动建章/切章：一次性请求，消费后立即清除——不会与本地选中互相
+  // 触发造成 setState 循环（此前双向同步 effect 在点击章节时引发无限更新）
+  const chapterSwitch = useEditorStore((s) => s.chapterSwitch);
+  const clearChapterSwitch = useEditorStore((s) => s.clearChapterSwitch);
+  useEffect(() => {
+    if (!chapterSwitch) return;
+    if (chapterSwitch.chapterId === activeChapterId) {
+      clearChapterSwitch();
+      return;
+    }
+    // 超时丢弃：编辑器长时间未就绪视为失效
+    if (Date.now() - chapterSwitch.at > 5000) {
+      clearChapterSwitch();
+      return;
+    }
+    setActiveChapterId(chapterSwitch.chapterId);
+    clearChapterSwitch();
+  }, [chapterSwitch, activeChapterId, clearChapterSwitch]);
 
   const saveMutation = useMutation({
     mutationFn: () =>
@@ -160,6 +196,45 @@ export function WritingEditor({ bookId, bookType }: Props) {
       toast({ title: "新章节已创建" });
     },
   });
+
+  // 删除章节：仅限长篇（短篇唯一正文章不可删）；删除当前章则清编辑器并选剩余章节
+  const deleteChapterMutation = useMutation({
+    mutationFn: (chapterId: string) =>
+      api.delete(`/books/${bookId}/chapters/${chapterId}`),
+    onSuccess: (_res: any, chapterId: string) => {
+      queryClient.invalidateQueries({ queryKey: ["chapters", bookId] });
+      queryClient.invalidateQueries({ queryKey: ["book", bookId] });
+      lastDeletedIdRef.current = chapterId;
+      if (activeChapterId === chapterId) {
+        // 显式清掉已删章节的残留内容，再选定剩余章节（不依赖自动选中，
+        // 避免列表未刷新时选中已删章节）
+        setEditorContent("");
+        setIsDirty(false);
+        const remaining = chapters.find((c) => c.chapter_id !== chapterId);
+        if (remaining) {
+          setActiveChapterId(remaining.chapter_id);
+        } else {
+          setActiveChapterId(null);
+          useEditorStore.getState().setActiveChapter(null);
+        }
+      }
+      toast({ title: "章节已删除" });
+    },
+    onError: () => {
+      toast({ title: "删除失败", variant: "destructive" });
+    },
+  });
+
+  const handleDeleteChapter = (ch: { chapter_id: string; title: string }) => {
+    if (isShort) return;
+    if (
+      !confirm(
+        `确定删除《${ch.title}》？正文内容将一并删除，无法恢复。`,
+      )
+    )
+      return;
+    deleteChapterMutation.mutate(ch.chapter_id);
+  };
 
   // 自动保存：内容变化停止 2 秒后静默保存
   const AUTOSAVE_DEBOUNCE_MS = 2000;
@@ -297,7 +372,7 @@ export function WritingEditor({ bookId, bookType }: Props) {
                 <div
                   key={ch.chapter_id}
                   className={cn(
-                    "flex items-center gap-1 px-2 py-1.5 text-sm hover:bg-muted/50 transition-colors cursor-pointer",
+                    "group flex items-center gap-1 px-2 py-1.5 text-sm hover:bg-muted/50 transition-colors cursor-pointer",
                     activeChapterId === ch.chapter_id && "bg-muted font-medium text-foreground",
                     activeChapterId !== ch.chapter_id && "text-muted-foreground",
                   )}
@@ -306,6 +381,15 @@ export function WritingEditor({ bookId, bookType }: Props) {
                     <div className="truncate">{ch.title}</div>
                     <div className="text-xs text-muted-foreground">{ch.word_count.toLocaleString()} 字</div>
                   </button>
+                  {!isShort && (
+                    <button
+                      onClick={() => handleDeleteChapter(ch)}
+                      className="shrink-0 p-1 rounded text-muted-foreground opacity-0 group-hover:opacity-100 hover:text-destructive hover:bg-destructive/10 transition-opacity"
+                      title="删除章节"
+                    >
+                      <Trash2 className="size-3.5" />
+                    </button>
+                  )}
                 </div>
               ))}
               {chapters.length === 0 && !listLoading && (
@@ -361,7 +445,11 @@ export function WritingEditor({ bookId, bookType }: Props) {
             {activeChapterId && outlineNodes.length > 0 && (
               <select
                 value={boundNodeId ?? ""}
-                onChange={(e) => setBoundNodeId(e.target.value || null)}
+                onChange={(e) => {
+                  setBoundNodeId(e.target.value || null);
+                  // 绑定变更也是修改：标记脏触发自动保存，否则切换章节后绑定丢失
+                  setIsDirty(true);
+                }}
                 className="text-xs rounded border border-border bg-background px-2 py-1 text-foreground max-w-[160px]"
                 title="关联大纲节点"
               >
@@ -372,6 +460,45 @@ export function WritingEditor({ bookId, bookType }: Props) {
                   </option>
                 ))}
               </select>
+            )}
+            {!isShort && (chapterOutlinesCount === 0 || (curSort != null && curSort > chapterOutlinesCount)) && (
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={extendingOutlines}
+                title="生成/续生下一批 10 章章纲（承接卷纲与已写章节）"
+                onClick={async () => {
+                  setExtendingOutlines(true);
+                  try {
+                    const t = localStorage.getItem("token");
+                    const r = await authFetch("/api/ai/chapter-outlines/extend", {
+                      method: "POST",
+                      headers: {
+                        "Content-Type": "application/json",
+                        Authorization: `Bearer ${t}`,
+                      },
+                      body: JSON.stringify({ book_id: bookId }),
+                    });
+                    const j = await r.json();
+                    if (r.ok && j.code === 200 && j.data?.lines?.length) {
+                      queryClient.invalidateQueries({ queryKey: ["book-settings", bookId] });
+                      toast({ title: `已生成第 ${j.data.startNo}-${j.data.startNo + j.data.lines.length - 1} 章章纲` });
+                    } else {
+                      toast({ title: j.message || "生成失败", variant: "destructive" });
+                    }
+                  } catch {
+                    toast({ title: "续生失败", variant: "destructive" });
+                  } finally {
+                    setExtendingOutlines(false);
+                  }
+                }}
+              >
+                {extendingOutlines
+                  ? "生成中..."
+                  : chapterOutlinesCount === 0
+                    ? "生成章纲"
+                    : `续生章纲（第 ${chapterOutlinesCount + 1} 章起）`}
+              </Button>
             )}
             {isDirty && <span className="text-xs text-muted-foreground">未保存</span>}
             {bookType === 'short' && activeChapterId && (

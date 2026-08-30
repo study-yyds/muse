@@ -113,8 +113,12 @@ export function TiptapEditor({ content, onChange, placeholder }: Props) {
     },
     onUpdate: ({ editor }) => {
       const text = getPlainText(editor);
-      isInternalChange.current = true;
-      onChange(text);
+      // 程序化内容同步不算用户编辑：跳过 onChange，避免章节加载/切换被误标脏
+      const isInternal = isInternalChange.current;
+      isInternalChange.current = false;
+      if (!isInternal) {
+        onChange(text);
+      }
       useEditorStore.getState().setContent(text);
     },
     onSelectionUpdate: ({ editor }) => {
@@ -133,16 +137,14 @@ export function TiptapEditor({ content, onChange, placeholder }: Props) {
     },
   });
 
-  // 外部内容变更时同步编辑器
+  // 外部内容变更时同步编辑器：程序化 setContent 会触发 onUpdate，
+  // 先标记 isInternalChange，onUpdate 据此跳过 onChange（不误标脏）
   useEffect(() => {
     if (!editor) return;
-    if (isInternalChange.current) {
-      isInternalChange.current = false;
-      return;
-    }
     const currentText = getPlainText(editor);
     if (content !== currentText) {
       const isStructured = (content || '').trimStart().startsWith('{"type"') || (content || '').trimStart().startsWith('<p');
+      isInternalChange.current = true;
       editor.commands.setContent(isStructured ? content : textToHtml(content));
     }
   }, [content, editor]);
@@ -183,6 +185,13 @@ export function TiptapEditor({ content, onChange, placeholder }: Props) {
       return;
     }
     if (pendingInsert != null) {
+      // 过期丢弃：编辑器 5 秒内未就绪视为失效——防止陈旧的插入请求在
+      // 编辑器下次挂载时"幽灵插入"（用户没点采纳却出现旧内容）
+      if (Date.now() - (pendingInsert.at ?? 0) > 5000) {
+        toast({ title: "AI 内容未插入（编辑器未就绪），请重新生成后采纳", variant: "destructive" });
+        clearPendingInsert();
+        return;
+      }
       // 插入到请求发起时的光标位置，而不是当前光标
       const pos = textOffsetToDocPos(editor, pendingInsert.textOffset);
       editor.chain().focus().setTextSelection(pos).insertContent(pendingInsert.text).run();
