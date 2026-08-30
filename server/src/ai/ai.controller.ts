@@ -80,6 +80,33 @@ export class AiController {
     return { code: 200, data };
   }
 
+  @Get('quota')
+  async quota(@Req() req: Request) {
+    const data = await this.ai.getMonthlyQuota((req as any).userId);
+    return { code: 200, data };
+  }
+
+  @UseGuards(aiRateLimit)
+  @Post('generate-chapter')
+  async generateChapter(
+    @Body()
+    body: {
+      book_id: string;
+      chapter_id: string;
+      model?: string;
+      key_id?: string;
+      style?: string;
+    },
+    @Res() res: Response,
+    @Req() req: Request,
+  ) {
+    await this.ai.checkBookOwnership(body.book_id, (req as any).userId);
+    await this.ai.generateChapter(res, {
+      ...body,
+      user_id: (req as any).userId,
+    });
+  }
+
   @UseGuards(aiRateLimit)
   @Post('mimic-style')
   async mimicStyle(

@@ -15,6 +15,8 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { useForm } from "react-hook-form";
@@ -62,6 +64,7 @@ export function BookListPage() {
   const [showDeleted, setShowDeleted] = useState(false);
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [batchConfirm, setBatchConfirm] = useState<"delete" | "restore" | null>(null);
   const [quickOpen, setQuickOpen] = useState(false);
   const [quickRestored, setQuickRestored] = useState(false);
   const [quickType, setQuickType] = useState<'novel' | 'short'>('novel');
@@ -259,6 +262,32 @@ export function BookListPage() {
   const onSubmit = (form: CreateBookForm) => {
     createBook.mutate(form);
     reset();
+  };
+
+  // 批量操作执行（ConfirmDialog 确认后）：一次请求并发执行
+  const runBatchAction = async () => {
+    const ids = [...selectedIds];
+    const isDelete = batchConfirm === "delete";
+    try {
+      if (isDelete) {
+        await api.post(
+          showDeleted ? `/books/batch-permanent-delete` : `/books/batch-delete`,
+          { book_ids: ids },
+        );
+      } else {
+        await api.post(`/books/batch-restore`, { book_ids: ids });
+      }
+      toast({
+        title: `已${isDelete ? (showDeleted ? "彻底删除" : "删除") : "恢复"} ${ids.length} 个作品`,
+      });
+    } catch (e: any) {
+      toast({ title: e.message || "操作失败", variant: "destructive" });
+    }
+    // 无论成败都清理选中并刷新列表（失败时列表未变，刷新无害）
+    setSelectedIds(new Set());
+    setSelectMode(false);
+    queryClient.invalidateQueries({ queryKey: ["books"] });
+    setBatchConfirm(null);
   };
 
   // 长生成期间防止系统睡眠:电脑睡眠会断开 SSE 导致生成中止
@@ -1016,44 +1045,13 @@ export function BookListPage() {
               </Button>
               {showDeleted && (
                 <Button size="sm" disabled={selectedIds.size === 0}
-                  onClick={async () => {
-                    if (!confirm(`恢复选中的 ${selectedIds.size} 个作品？`)) return;
-                    const ids = [...selectedIds];
-                    try {
-                      await api.post(`/books/batch-restore`, { book_ids: ids });
-                      toast({ title: `已恢复 ${ids.length} 个作品` });
-                    } catch (e: any) {
-                      toast({ title: e.message || "恢复失败", variant: "destructive" });
-                      return;
-                    }
-                    setSelectedIds(new Set());
-                    setSelectMode(false);
-                    queryClient.invalidateQueries({ queryKey: ["books"] });
-                  }}
+                  onClick={() => setBatchConfirm("restore")}
                 >
                   恢复选中 ({selectedIds.size})
                 </Button>
               )}
               <Button variant="destructive" size="sm" disabled={selectedIds.size === 0}
-                onClick={async () => {
-                  if (!confirm(`确定删除选中的 ${selectedIds.size} 个作品？`)) return;
-                  const ids = [...selectedIds];
-                  try {
-                    if (showDeleted) {
-                      // 回收站：一次请求批量彻底删除（并发，速度快）
-                      await api.post(`/books/batch-permanent-delete`, { book_ids: ids });
-                    } else {
-                      for (const id of ids) await api.delete(`/books/${id}`);
-                    }
-                    toast({ title: `已${showDeleted ? "彻底删除" : "删除"} ${ids.length} 个作品` });
-                  } catch (e: any) {
-                    toast({ title: e.message || "删除失败", variant: "destructive" });
-                    return;
-                  }
-                  setSelectedIds(new Set());
-                  setSelectMode(false);
-                  queryClient.invalidateQueries({ queryKey: ["books"] });
-                }}
+                onClick={() => setBatchConfirm("delete")}
               >
                 删除选中 ({selectedIds.size})
               </Button>
@@ -1262,12 +1260,10 @@ export function BookListPage() {
                         />
                         {quickSynopsisMode && !synopsisConfirmed && (
                           <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
-                            <input
-                              type="checkbox"
+                            <Checkbox
                               checked={synopsisCheckEnabled}
                               onChange={(e) => setSynopsisCheckEnabled(e.target.checked)}
                               disabled={quickGenerating || synopsisWorking}
-                              className="size-4 rounded border-border accent-primary"
                             />
                             生成时指出潜在矛盾（推荐）
                           </label>
@@ -1857,6 +1853,22 @@ export function BookListPage() {
           </Dialog>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={batchConfirm != null}
+        onOpenChange={(o) => !o && setBatchConfirm(null)}
+        title={batchConfirm === "restore" ? "恢复作品" : "删除作品"}
+        description={
+          batchConfirm === "restore"
+            ? `恢复选中的 ${selectedIds.size} 个作品？`
+            : showDeleted
+              ? `确定彻底删除选中的 ${selectedIds.size} 个作品？此操作无法恢复。`
+              : `确定删除选中的 ${selectedIds.size} 个作品？将移入回收站，7 天内可恢复。`
+        }
+        confirmText={batchConfirm === "restore" ? "恢复" : "删除"}
+        destructive={batchConfirm === "delete"}
+        onConfirm={runBatchAction}
+      />
 
       {/* 加载骨架 */}
       {isLoading && (

@@ -139,6 +139,27 @@ export class BooksService {
       .where(eq(schema.books.book_id, bookId));
   }
 
+  /** 批量软删除：并发执行；取消进行中的 AI 生成；只删属于当前用户且未删除的 */
+  async softDeleteBatch(userId: string, bookIds: string[]) {
+    const db = getDb();
+    if (bookIds.length === 0) return;
+    await Promise.all(
+      bookIds.map(async (bookId) => {
+        abortBookRequests(bookId);
+        await db
+          .update(schema.books)
+          .set({ deleted_at: sql`NOW()` })
+          .where(
+            and(
+              eq(schema.books.book_id, bookId),
+              eq(schema.books.user_id, userId),
+              isNull(schema.books.deleted_at),
+            ),
+          );
+      }),
+    );
+  }
+
   // 永久删除（显式清理子表，保底 DB FK 可能未配置）
   // 仅允许删除已软删除（回收站中）的作品，防止绕过 7 天恢复窗口
   async permanentDelete(bookId: string): Promise<boolean> {

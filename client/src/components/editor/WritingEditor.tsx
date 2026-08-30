@@ -25,6 +25,14 @@ import {
 import { cn } from "@/lib/utils";
 import { PromoVideoDialog } from "@/components/promo/PromoVideoDialog";
 import { ZhihuPackDialog } from "@/components/zhihu/ZhihuPackDialog";
+import { PlotThreadsEditor } from "@/components/settings/PlotThreadsEditor";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 
 interface Props {
   bookId: string;
@@ -83,6 +91,9 @@ export function WritingEditor({ bookId, bookType }: Props) {
   const [isDirty, setIsDirty] = useState(false);
   const [boundNodeId, setBoundNodeId] = useState<string | null>(null);
   const [extendingOutlines, setExtendingOutlines] = useState(false);
+  const [generatingChapter, setGeneratingChapter] = useState(false);
+  const [plotOpen, setPlotOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<{ chapter_id: string; title: string } | null>(null);
 
   // 最新值 ref：供卸载/页面隐藏兜底保存与同步守卫读取，避免闭包过期
   const editorContentRef = useRef(editorContent);
@@ -227,13 +238,78 @@ export function WritingEditor({ bookId, bookType }: Props) {
 
   const handleDeleteChapter = (ch: { chapter_id: string; title: string }) => {
     if (isShort) return;
-    if (
-      !confirm(
-        `确定删除《${ch.title}》？正文内容将一并删除，无法恢复。`,
-      )
-    )
-      return;
-    deleteChapterMutation.mutate(ch.chapter_id);
+    setDeleteTarget(ch);
+  };
+
+  // 整章生成：按章纲写完整一章（追加到章末），服务端单轮为主、字数不足补写
+  const generateWholeChapter = async () => {
+    if (!activeChapterId || generatingChapter) return;
+    setGeneratingChapter(true);
+    const controller = new AbortController();
+    const token = localStorage.getItem("token");
+    try {
+      const res = await authFetch(
+        "/api/ai/generate-chapter",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ book_id: bookId, chapter_id: activeChapterId }),
+          signal: controller.signal,
+        },
+        20 * 60_000,
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error("无响应");
+      const decoder = new TextDecoder();
+      let buf = "";
+      let warnings: string[] = [];
+      let quality: { count: number; types: string[] } | null = null;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) { buf += decoder.decode(); break; }
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split("\n"); buf = lines.pop() ?? "";
+        let ev = "";
+        for (const line of lines) {
+          if (line.startsWith("event: ")) { ev = line.slice(7); continue; }
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const data = JSON.parse(line.slice(6));
+            if (ev === "done") {
+              warnings = data.warnings ?? [];
+              quality = data.quality ?? null;
+            }
+            if (ev === "error") {
+              throw new Error(data.message || "生成失败");
+            }
+          } catch (err: any) {
+            if (ev === "error") {
+              throw err instanceof Error ? err : new Error("生成失败");
+            }
+          }
+        }
+      }
+      queryClient.invalidateQueries({ queryKey: ["chapter", bookId, activeChapterId] });
+      queryClient.invalidateQueries({ queryKey: ["chapters", bookId] });
+      queryClient.invalidateQueries({ queryKey: ["book", bookId] });
+      if (warnings.length) {
+        toast({ title: warnings[0], variant: "destructive" });
+      }
+      if (quality) {
+        toast({ title: `AI 味提示（${quality.count} 处）：${quality.types.slice(0, 3).join("、")}` });
+      }
+      toast({ title: "本章已生成" });
+    } catch (err: any) {
+      if (err?.name !== "AbortError") {
+        toast({ title: err?.message || "生成失败", variant: "destructive" });
+      }
+    } finally {
+      setGeneratingChapter(false);
+    }
   };
 
   // 自动保存：内容变化停止 2 秒后静默保存
@@ -450,7 +526,7 @@ export function WritingEditor({ bookId, bookType }: Props) {
                   // 绑定变更也是修改：标记脏触发自动保存，否则切换章节后绑定丢失
                   setIsDirty(true);
                 }}
-                className="text-xs rounded border border-border bg-background px-2 py-1 text-foreground max-w-[160px]"
+                className="text-xs rounded border border-border bg-background px-2 py-1 text-foreground max-w-40"
                 title="关联大纲节点"
               >
                 <option value="">无关联大纲</option>
@@ -498,6 +574,26 @@ export function WritingEditor({ bookId, bookType }: Props) {
                   : chapterOutlinesCount === 0
                     ? "生成章纲"
                     : `续生章纲（第 ${chapterOutlinesCount + 1} 章起）`}
+              </Button>
+            )}
+            {!isShort && activeChapterId && (
+              <Button
+                size="xs"
+                disabled={generatingChapter}
+                title="按章纲生成完整一章（追加到章末，不覆盖已有内容）"
+                onClick={generateWholeChapter}
+              >
+                {generatingChapter ? "生成中..." : "生成本章"}
+              </Button>
+            )}
+            {!isShort && (
+              <Button
+                size="xs"
+                variant="outline"
+                title="管理伏笔（登记/回收/删除）"
+                onClick={() => setPlotOpen(true)}
+              >
+                伏笔
               </Button>
             )}
             {isDirty && <span className="text-xs text-muted-foreground">未保存</span>}
@@ -577,6 +673,30 @@ export function WritingEditor({ bookId, bookType }: Props) {
         )}
       </div>
 
+
+      <Dialog open={plotOpen} onOpenChange={setPlotOpen}>
+        <DialogContent className="max-w-md max-h-[80vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle>伏笔账本</DialogTitle>
+          </DialogHeader>
+          <div className="flex-1 min-h-0 overflow-y-auto">
+            <PlotThreadsEditor bookId={bookId} />
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onOpenChange={(o) => !o && setDeleteTarget(null)}
+        title="删除章节"
+        description={`确定删除《${deleteTarget?.title ?? ""}》？正文内容将一并删除，无法恢复。`}
+        confirmText="删除"
+        destructive
+        onConfirm={() => {
+          if (deleteTarget) deleteChapterMutation.mutate(deleteTarget.chapter_id);
+          setDeleteTarget(null);
+        }}
+      />
 
       <PromoVideoDialog bookId={bookId} open={promoOpen} onOpenChange={setPromoOpen} />
       <ZhihuPackDialog

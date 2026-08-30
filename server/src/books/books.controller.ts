@@ -89,6 +89,22 @@ export class BooksController {
     return { code: 200, message: `已彻底删除 ${ids.length} 个作品` };
   }
 
+  // 批量软删除（作品列表批量操作，一次请求并发执行）
+  @Post('batch-delete')
+  async batchDelete(
+    @Body() body: { book_ids: string[] },
+    @Req() req: Request,
+  ) {
+    const ids = Array.isArray(body.book_ids)
+      ? body.book_ids.filter((id: any) => typeof id === 'string').slice(0, 100)
+      : [];
+    if (ids.length === 0) {
+      return { code: 400, message: '未选择作品' };
+    }
+    await this.books.softDeleteBatch((req as any).userId, ids);
+    return { code: 200, message: `已删除 ${ids.length} 个作品` };
+  }
+
   // 批量恢复（回收站批量操作，一次请求并发恢复）
   @Post('batch-restore')
   async batchRestore(

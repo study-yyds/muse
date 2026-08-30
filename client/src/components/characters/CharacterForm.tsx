@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Plus, Trash2 } from "lucide-react";
 
 // 注：年龄不是固定字段——成长线（如"外表20实际500"、"15→200随境界成长"）
@@ -125,11 +126,9 @@ export function CharacterForm({ defaultValues, onSubmit, onCancel, isPending }: 
         ))}
         {/* 主要角色开关 */}
         <div className="sm:col-span-2 flex items-center gap-2">
-          <input
+          <Checkbox
             id="is_main"
-            type="checkbox"
             {...form.register("is_main")}
-            className="size-4 rounded border-border"
           />
           <Label htmlFor="is_main" className="text-sm font-normal cursor-pointer">
             主要角色（始终注入 AI 上下文）

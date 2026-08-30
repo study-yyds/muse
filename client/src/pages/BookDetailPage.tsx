@@ -789,6 +789,117 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
     return { content: ac ? extractDisplayText(ac) : "", action, reasoning: ar, quality };
   };
 
+  // 整章生成循环：按目标章号列表逐个生成（每章独立 SSE 调用，追加式写入）
+  const generateChaptersLoop = async (targets: number[], label: string) => {
+    const um: Msg = { role: "user", content: `生成${label}` };
+    const newMsgs = [...msgs, um];
+    setMsgs(newMsgs);
+    if (sessionId) flushSave(sessionId, newMsgs);
+    setInput("");
+    setLoading(true);
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const results: string[] = [];
+    let lastChapterId = useEditorStore.getState().activeChapterId;
+    try {
+      for (const targetSort of targets) {
+        // 确保目标章节存在（目标就是当前章时不切换）
+        const listRes = await fetch(`/api/books/${bookId}/chapters`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const listData = await listRes.json();
+        const chs = listData?.data ?? [];
+        let target = chs.find((c: any) => c.sort_order === targetSort);
+        if (!target) {
+          const createRes = await fetch(`/api/books/${bookId}/chapters`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({ title: `第${targetSort}章` }),
+          });
+          const createData = await createRes.json();
+          target = createData?.data ?? null;
+        }
+        if (!target?.chapter_id) throw new Error(`第${targetSort}章创建失败`);
+        if (lastChapterId !== target.chapter_id) {
+          useEditorStore.getState().setActiveChapter(target.chapter_id);
+          useEditorStore.getState().requestChapterSwitch(target.chapter_id);
+        }
+        lastChapterId = target.chapter_id;
+        queryClient.invalidateQueries({ queryKey: ["chapters", bookId] });
+
+        const res = await authFetch(
+          "/api/ai/generate-chapter",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              book_id: bookId,
+              chapter_id: target.chapter_id,
+            }),
+            signal: controller.signal,
+          },
+          20 * 60_000,
+        );
+        if (!res.ok) throw new Error(`第${targetSort}章请求失败 (${res.status})`);
+        const reader = res.body?.getReader();
+        if (!reader) throw new Error("无响应");
+        const decoder = new TextDecoder();
+        let buf = "";
+        let genLength = 0;
+        let genWarnings: string[] = [];
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) { buf += decoder.decode(); break; }
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n"); buf = lines.pop() ?? "";
+          let ev = "";
+          for (const line of lines) {
+            if (line.startsWith("event: ")) { ev = line.slice(7); continue; }
+            if (!line.startsWith("data: ")) continue;
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (ev === "done") {
+                genLength = data.length ?? 0;
+                genWarnings = data.warnings ?? [];
+              }
+              if (ev === "error") throw new Error(data.message || "生成失败");
+            } catch (err: any) {
+              if (ev === "error") {
+                throw err instanceof Error ? err : new Error("生成失败");
+              }
+            }
+          }
+        }
+        results.push(`第${targetSort}章 ${genLength} 字`);
+        if (genWarnings.length) {
+          toast({ title: `第${targetSort}章：${genWarnings[0]}`, variant: "destructive" });
+        }
+      }
+      queryClient.invalidateQueries({ queryKey: ["chapter", bookId, lastChapterId ?? ""] });
+      queryClient.invalidateQueries({ queryKey: ["chapters", bookId] });
+      queryClient.invalidateQueries({ queryKey: ["book", bookId] });
+      const finalMsgs = [...newMsgs, { role: "assistant", content: `已生成${label}：${results.join("、")}` }];
+      setMsgs(finalMsgs);
+      if (sessionId) flushSave(sessionId, finalMsgs);
+      toast({ title: `已生成${label}` });
+    } catch (err: any) {
+      if (err?.name !== "AbortError") {
+        const errMsgs = [...newMsgs, { role: "assistant", content: `（${err?.message ?? "生成失败"}）` }];
+        setMsgs(errMsgs);
+        if (sessionId) flushSave(sessionId, errMsgs);
+        toast({ title: err?.message || "生成失败", variant: "destructive" });
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const doSend = async (userMsg: string) => {
     // 错面板提示：在角色/世界观等面板请求写正文时提醒（不阻断发送，AI 侧也会引导）
     if (
@@ -797,6 +908,36 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
       /(生成|写|续写).*(第.{1,3}章|正文|小说|故事)/.test(userMsg)
     ) {
       toast({ title: "提示：生成正文请切换到「写作」面板" });
+    }
+    // 整章生成意图："生成第N章"（单章）/ "生成前N章"（多章循环）→ 路由到整章生成
+    if (section === "write") {
+      const gMatch = userMsg.match(/(?:生成|写)\s*(第|前|共)?([一二三四五六七八九十百\d]+)\s*章/);
+      if (gMatch) {
+        const prefix = gMatch[1] ?? "";
+        const num = zhNum(gMatch[2]);
+        if (num != null && num >= 1) {
+          if (prefix === "第") {
+            await generateChaptersLoop([num], `第${gMatch[2]}章`);
+          } else {
+            // "生成前N章"：从当前章开始共 N 章
+            let curSort = 1;
+            try {
+              const listRes = await fetch(`/api/books/${bookId}/chapters`, {
+                headers: { Authorization: `Bearer ${token}` },
+              });
+              const listData = await listRes.json();
+              const chs = listData?.data ?? [];
+              curSort =
+                chs.find(
+                  (c: any) => c.chapter_id === useEditorStore.getState().activeChapterId,
+                )?.sort_order ?? 1;
+            } catch { /* 取不到就用 1 */ }
+            const targets = Array.from({ length: num }, (_, i) => curSort + i);
+            await generateChaptersLoop(targets, `前${gMatch[2]}章`);
+          }
+          return;
+        }
+      }
     }
     const um: Msg = { role: "user", content: userMsg };
     const prevMsgs = [...msgs, um].map((m) => ({ role: m.role, content: m.content }));
@@ -1299,13 +1440,13 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
                       >
                         <div className="min-w-0">
                           <div className="truncate">{s.title ?? "无标题"}</div>
-                          <div className="text-[10px] text-muted-foreground">
+                          <div className="text-xs text-muted-foreground">
                             {s.messages?.length ?? 0} 条消息
                           </div>
                         </div>
                       </DropdownMenuItem>
                       <button
-                        className="text-red-400 hover:text-red-600 text-[10px] shrink-0 px-1"
+                        className="text-destructive hover:text-destructive/80 text-xs shrink-0 px-1"
                         onClick={() => deleteSession(s.id)}
                       >
                         删除
@@ -1366,7 +1507,7 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
                           <div className="whitespace-pre-wrap">{stripMdHeadings(stripActionJson(curVer.content))}</div>
                         ) : null}
                         {m.quality && !isAdopted && (
-                          <div className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                          <div className="mt-1 text-xs text-destructive">
                             ⚠ AI 味提示（{m.quality.count} 处）：{m.quality.types.slice(0, 3).map((t) => QUALITY_LABELS[t] ?? t).join("、")}
                           </div>
                         )}
@@ -1522,7 +1663,7 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
               <select
                 value={chatStyle}
                 onChange={(e) => setChatStyle(e.target.value)}
-                className="text-[11px] text-muted-foreground bg-muted/50 rounded-full px-2.5 py-1 border-0 outline-none cursor-pointer shrink-0"
+                className="text-xs text-muted-foreground bg-muted/50 rounded-full px-2.5 py-1 border-0 outline-none cursor-pointer shrink-0"
               >
                 {WRITING_STYLES.map((s) => (
                   <option key={s.value} value={s.value}>
@@ -1537,7 +1678,7 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
               usage="chat"
               value={modelKeyId ? customKeyValue(modelKeyId) : model}
               onChange={(m, keyId) => { setModel(m); setModelKeyId(keyId); }}
-              className="text-[11px] text-muted-foreground bg-muted/50 rounded-full px-2.5 py-1 border-0 outline-none cursor-pointer max-w-28"
+              className="text-xs text-muted-foreground bg-muted/50 rounded-full px-2.5 py-1 border-0 outline-none cursor-pointer max-w-28"
             />
             <label className="flex items-center gap-1 cursor-pointer shrink-0" title={guideMode ? "关闭引导模式" : "开启引导模式"}>
               <button
@@ -1554,7 +1695,7 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
                   )}
                 />
               </button>
-              <span className="text-[11px] text-muted-foreground select-none">引导</span>
+              <span className="text-xs text-muted-foreground select-none">引导</span>
             </label>
             {loading ? (
               <button onClick={stop} className="ml-auto size-8 flex items-center justify-center rounded-full bg-destructive text-white">

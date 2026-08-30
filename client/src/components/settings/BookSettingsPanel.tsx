@@ -11,6 +11,7 @@ import { Settings, Loader2, Check, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { ModelSelector, customKeyValue } from "@/components/settings/ModelSelector";
 import { SynopsisSection } from "@/components/settings/SynopsisSection";
+import { PlotThreadsEditor } from "@/components/settings/PlotThreadsEditor";
 import { WRITING_STYLES } from "@/lib/writing-styles";
 
 interface BookSettings {
@@ -36,6 +37,21 @@ export function BookSettingsPanel({ bookId, book, coverUrl, onCoverChange }: Pro
   });
 
   const settings = data?.data;
+
+  // 本月 AI 用量（计费口径：生成字数；quota_words 为 null 表示不限）
+  const { data: quotaData } = useQuery({
+    queryKey: ["ai-quota"],
+    queryFn: () =>
+      api.get<{
+        data: {
+          used_words: number;
+          quota_words: number | null;
+          remaining: number | null;
+          month: string;
+        };
+      }>(`/ai/quota`),
+  });
+  const quota = quotaData?.data;
 
   const [presetStyle, setPresetStyle] = useState("default");
   const [wordGoal, setWordGoal] = useState(0);
@@ -81,37 +97,6 @@ export function BookSettingsPanel({ bookId, book, coverUrl, onCoverChange }: Pro
   const doMimicBook = () => doMimic({ book_id: bookId, model: mimicModel, key_id: mimicKeyId });
   const doMimicCustom = () => doMimic({ text: customStyleText, model: mimicModel, key_id: mimicKeyId });
 
-  // 伏笔账本：用户手动登记 + AI 抽取合并（描述 | 待收/已收），续写时注入未回收的
-  const plotThreads = ((settings as any)?.extra?.plot_threads as
-    | Array<{ desc: string; status: string }>
-    | undefined) ?? [];
-  const [newThread, setNewThread] = useState("");
-  const [threadsOpen, setThreadsOpen] = useState(false);
-  const [editingIdx, setEditingIdx] = useState<number | null>(null);
-  const [editingText, setEditingText] = useState("");
-  const saveThreads = async (next: Array<{ desc: string; status: string }>) => {
-    try {
-      await api.put(`/books/${bookId}/settings`, { extra: { plot_threads: next } as any });
-      queryClient.invalidateQueries({ queryKey: ["book-settings", bookId] });
-    } catch {
-      toast({ title: "保存失败", variant: "destructive" });
-    }
-  };
-  const addThread = () => {
-    const d = newThread.trim();
-    if (!d) return;
-    saveThreads([...plotThreads, { desc: d, status: "待收" }]);
-    setNewThread("");
-  };
-  const updateThread = (i: number, patch: Partial<{ desc: string; status: string }>) => {
-    const next = plotThreads.map((t, idx) => (idx === i ? { ...t, ...patch } : t));
-    saveThreads(next);
-  };
-  const removeThread = (i: number) => {
-    if (!confirm(`确定删除伏笔"${plotThreads[i]?.desc ?? ""}"？`)) return;
-    saveThreads(plotThreads.filter((_, idx) => idx !== i));
-  };
-
   useEffect(() => {
     if (settings) {
       // 旧值 plain（小白文）已从预设中移除，归一为默认
@@ -151,6 +136,26 @@ export function BookSettingsPanel({ bookId, book, coverUrl, onCoverChange }: Pro
 
   return (
     <div className="max-w-lg mx-auto p-6 space-y-6">
+      {/* 本月 AI 用量（计费口径：生成字数） */}
+      {quota && quota.quota_words != null && (
+        <div className="space-y-2">
+          <Label className="text-sm font-medium">本月 AI 用量</Label>
+          <div className="flex items-center gap-2">
+            <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
+              <div
+                className="h-full bg-primary transition-all"
+                style={{
+                  width: `${Math.min(100, (quota.used_words / quota.quota_words) * 100)}%`,
+                }}
+              />
+            </div>
+            <span className="text-xs text-muted-foreground shrink-0">
+              {quota.used_words.toLocaleString()} / {quota.quota_words.toLocaleString()} 字
+            </span>
+          </div>
+        </div>
+      )}
+      <Separator />
       <h2 className="text-base font-semibold text-foreground flex items-center gap-2">
         <Settings className="size-5" />
         作品设置
@@ -290,101 +295,8 @@ export function BookSettingsPanel({ bookId, book, coverUrl, onCoverChange }: Pro
 
       <Separator />
 
-      {/* 伏笔账本：默认折叠，展开后列表限高滚动，避免长列表挤压下方内容 */}
-      <div className="space-y-2">
-        <button
-          onClick={() => setThreadsOpen(!threadsOpen)}
-          className="flex items-center gap-2 w-full text-left"
-        >
-          <Label className="text-sm font-medium cursor-pointer">伏笔账本</Label>
-          <span className="text-xs text-muted-foreground">
-            {plotThreads.filter((t) => t.status !== "已收").length} 条待收
-          </span>
-          <span className="ml-auto text-xs text-muted-foreground">
-            {threadsOpen ? "收起" : "展开"}
-          </span>
-        </button>
-        {threadsOpen && (
-          <>
-            <p className="text-xs text-muted-foreground">
-              手动登记伏笔；AI 续写时自动注入未回收的伏笔（最多 8 条），回收后标记"已收"。
-            </p>
-            <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
-              {plotThreads.map((t, i) => (
-                <div key={i} className="flex items-center gap-2 text-sm">
-                  <span
-                    className={
-                      "text-xs px-1.5 py-0.5 rounded shrink-0 " +
-                      (t.status === "已收"
-                        ? "bg-muted text-muted-foreground"
-                        : "bg-primary/10 text-foreground")
-                    }
-                  >
-                    {t.status ?? "待收"}
-                  </span>
-                  {editingIdx === i ? (
-                    <Input
-                      autoFocus
-                      value={editingText}
-                      onChange={(e) => setEditingText(e.target.value)}
-                      onBlur={() => {
-                        const d = editingText.trim();
-                        if (d && d !== t.desc) updateThread(i, { desc: d });
-                        setEditingIdx(null);
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                        if (e.key === "Escape") { setEditingIdx(null); setEditingText(t.desc); }
-                      }}
-                      className="flex-1 min-w-0 h-6 text-sm"
-                    />
-                  ) : (
-                    <span
-                      onClick={() => { setEditingIdx(i); setEditingText(t.desc); }}
-                      title="点击编辑描述"
-                      className={
-                        "flex-1 min-w-0 truncate cursor-text " +
-                        (t.status === "已收" ? "line-through text-muted-foreground" : "")
-                      }
-                    >
-                      {t.desc}
-                    </span>
-                  )}
-                  <button
-                    onClick={() => updateThread(i, { status: t.status === "已收" ? "待收" : "已收" })}
-                    className="shrink-0 text-xs text-muted-foreground hover:text-foreground"
-                  >
-                    {t.status === "已收" ? "重开" : "已收"}
-                  </button>
-                  <button
-                    onClick={() => removeThread(i)}
-                    className="shrink-0 text-xs text-muted-foreground hover:text-destructive"
-                  >
-                    删除
-                  </button>
-                </div>
-              ))}
-              {plotThreads.length === 0 && (
-                <p className="text-xs text-muted-foreground">
-                  暂无伏笔。写正文时 AI 会自动抽取，也可手动添加。
-                </p>
-              )}
-            </div>
-            <div className="flex items-center gap-2">
-              <Input
-                value={newThread}
-                onChange={(e) => setNewThread(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") addThread(); }}
-                placeholder="伏笔描述，如：神秘老者身份未揭"
-                className="flex-1"
-              />
-              <Button size="sm" onClick={addThread} disabled={!newThread.trim()}>
-                添加
-              </Button>
-            </div>
-          </>
-        )}
-      </div>
+      {/* 伏笔账本（折叠版，共享组件；写作页弹窗同源） */}
+      <PlotThreadsEditor bookId={bookId} collapsed />
 
       <Separator />
 
@@ -719,7 +631,7 @@ function ApiKeyForm({ bookId: _ }: { bookId: string }) {
             <div key={k.id} className="flex items-center gap-2 text-xs py-1 px-2 rounded bg-muted/30">
               <span className="font-medium">{k.name}</span>
               <span className="text-muted-foreground">{k.model_name}</span>
-              <Badge variant="secondary" className="text-[10px]">{k.usage}</Badge>
+              <Badge variant="secondary" className="text-xs">{k.usage}</Badge>
               <button onClick={() => deleteKey(k.id)} className="ml-auto text-muted-foreground hover:text-destructive">
                 <X className="size-3" />
               </button>

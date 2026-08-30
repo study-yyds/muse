@@ -73,8 +73,11 @@ export const user_monthly_quota = pgTable(
     // 月份标识：格式 "YYYY-MM"（如 "2026-07"）
     month: varchar('month', { length: 7 }).notNull(),
 
-    // 本月已用 token 数（原子增量更新）
+    // 本月已用 token 数（原子增量更新，内部成本核算）
     used_tokens: integer('used_tokens').notNull().default(0),
+
+    // 本月已用字数（原子增量更新，对外计费口径=生成字数）
+    used_words: integer('used_words').notNull().default(0),
   },
   (table) => [
     // (用户, 月份) 联合主键

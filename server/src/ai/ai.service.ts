@@ -43,6 +43,22 @@ function sanitizeMessages(msgs: any[]): any[] {
   }));
 }
 
+// 写作风格预设（模块级常量：chat 续写与整章生成共用）
+const STYLE_GUIDES: Record<string, string> = {
+  default:
+    '自然流畅的通俗小说叙事：语言直白清晰，动作与对话推进情节，少用辞藻堆砌；段落不宜过长，避免文艺腔与抽象抒情',
+  'light-novel':
+    '快节奏网文（番茄/起点主流写法）：写"人话"——动词为主、少形容词，拒绝矫情长句与堆砌辞藻；段落短，手机屏不超过5行；用动作和对话展示情绪与冲突，不直白叙述；冲突前置，片段内必有具体可感知的麻烦与爽点（打压→反转→打脸）；情绪靠真细节传递，不替读者说完；结尾留强钩子',
+  serious:
+    '文艺细腻：句子节奏舒缓，多用长句与细节描写；情感表达克制含蓄，靠动作与场景传情；注重氛围营造；修辞与用词讲究但不堆砌',
+  ancient:
+    '古风：多用文言词汇与四字短语，善用诗词意象；句式对仗工整，有章回体韵味；称谓与器物考究，符合古代语境',
+  'jj-style':
+    '晋江文风：以人物关系与情感线为叙事核心（言情/纯爱/百合通用，无CP作品则以人物成长与羁绊为主线）；心理描写细腻，氛围感与留白充足；一条主情绪贯穿全篇，情绪转折必须有铺垫；对话含蓄有张力，靠潜台词和细节传递情绪，不把话说满；情节逻辑自洽，情感质感优先于节奏爽感',
+  colloquial:
+    '平实口语：像日常说话一样自然，多用生活化词汇；句式松散灵活，允许口语省略；贴近真实对话节奏，不端着',
+};
+
 @Injectable()
 export class AiService {
   // 统一获取 API Key（指定 keyId 时精确使用该 Key，否则用户自定义优先，fallback 平台）
@@ -58,6 +74,10 @@ export class AiService {
     source: 'user' | 'platform';
   }> {
     const db = getDb();
+    // 月度字数额度拦截：所有 AI 调用统一在此检查（计费口径=生成字数）
+    if (userId) {
+      await this.assertMonthlyQuota(userId);
+    }
     if (userId) {
       // 前端指定了具体 Key：只使用该 Key（校验归属 + 启用 + 用途匹配）
       if (keyId) {
@@ -216,7 +236,12 @@ export class AiService {
       const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
       await db
         .insert(schema.user_monthly_quota)
-        .values({ user_id: params.userId, month, used_tokens: tokenCount })
+        .values({
+          user_id: params.userId,
+          month,
+          used_tokens: tokenCount,
+          used_words: params.outChars,
+        })
         .onConflictDoUpdate({
           target: [
             schema.user_monthly_quota.user_id,
@@ -224,12 +249,116 @@ export class AiService {
           ],
           set: {
             used_tokens: sql`${schema.user_monthly_quota.used_tokens} + ${tokenCount}`,
+            used_words: sql`${schema.user_monthly_quota.used_words} + ${params.outChars}`,
           },
         });
     } catch (e: any) {
       console.error('[usage] record failed:', e.message);
     }
   }
+
+  /**
+   * 月度字数额度拦截：额度耗尽时抛错（带标记）；DB 异常静默放行——
+   * 额度系统故障不阻断创作，但不能因故障白放行超限。
+   */
+  private async assertMonthlyQuota(userId: string) {
+    try {
+      const db = getDb();
+      const now = new Date();
+      const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+      const [quotaRow] = await db
+        .select({ used: schema.user_monthly_quota.used_words })
+        .from(schema.user_monthly_quota)
+        .where(
+          and(
+            eq(schema.user_monthly_quota.user_id, userId),
+            eq(schema.user_monthly_quota.month, month),
+          ),
+        )
+        .limit(1);
+      const [user] = await db
+        .select({ quota: schema.users.monthly_words_quota })
+        .from(schema.users)
+        .where(eq(schema.users.user_id, userId))
+        .limit(1);
+      const quota = user?.quota ?? null;
+      if (quota != null && quota >= 0 && (quotaRow?.used ?? 0) >= quota) {
+        const err = new Error(
+          '本月 AI 字数额度已用完，请升级套餐或等待下月重置',
+        );
+        (err as any).__quotaExceeded = true;
+        throw err;
+      }
+    } catch (e: any) {
+      if (e?.__quotaExceeded) throw e;
+      /* DB 异常静默放行 */
+    }
+  }
+
+  /** 本月用量与额度（对外计费口径：生成字数；quota 为 null 表示不限） */
+  async getMonthlyQuota(userId: string) {
+    const db = getDb();
+    const now = new Date();
+    const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const [quotaRow] = await db
+      .select({ used: schema.user_monthly_quota.used_words })
+      .from(schema.user_monthly_quota)
+      .where(
+        and(
+          eq(schema.user_monthly_quota.user_id, userId),
+          eq(schema.user_monthly_quota.month, month),
+        ),
+      )
+      .limit(1);
+    const [user] = await db
+      .select({ quota: schema.users.monthly_words_quota })
+      .from(schema.users)
+      .where(eq(schema.users.user_id, userId))
+      .limit(1);
+    const quota = user?.quota ?? 30000;
+    const used = quotaRow?.used ?? 0;
+    return {
+      month,
+      used_words: used,
+      quota_words: quota < 0 ? null : quota,
+      remaining: quota < 0 ? null : Math.max(0, quota - used),
+    };
+  }
+
+  // 主流题材知识库（引导模式注入）：题材-套路-爽点结构-引导追问点。
+  // 覆盖经典热门（模型自有知识，非实时榜单）；时效热点由运营配置维护（预留）
+  static readonly GENRE_KNOWLEDGE = `【题材知识库（2026 年网文市场趋势）——提问与给方向时参考】
+
+【2026 三大风向】
+1. 反套路成为新套路：读者看腻传统套路，开篇 300 字内要给出"反预期"信号；读者能接受慢节奏、重逻辑的深度内容
+2. 跨界融合取代单一题材：爆款多为"题材A+题材B"的化学反应（如末世+种田、玄幻+同人、历史+考据权谋）；追问点：两个题材的情绪反差/化学反应点在哪
+3. 情绪价值压过逻辑爽感："发疯文学""反内卷""躺平流"（摸鱼得奖励）完读率显著更高；从"我要赢"转向"我值得"；追问点：主角的情绪出口是什么、在反抗什么评价体系
+
+【男频赛道（2026）】
+- 都市脑洞/都市日常（新书最多）：日常藏异常+脑洞反转；追问点：核心异常、反转节奏
+- 东方仙侠/都市高武：设定扎实+快节奏；追问点：力量体系代价、越级打脸设计
+- 战神赘婿（仍稳）：老套路但流量稳定，开篇须做反套路微调
+- 系统流都市：新人友好；追问点：系统规则/奖励/代价
+- 都市种田/重生基建：全民参与感+成长线；追问点：开局资源、扩张节奏
+- 无限流智斗：规则怪谈+以智取胜；追问点：规则边界、骚操作设计
+- 历史权谋/考据：硬核深度向；追问点：史实考据点、权谋棋局
+- 同人：斗罗/斗破不可写（版权封禁），海贼/火影等动漫同人起量快
+
+【女频赛道（2026）】
+- 豪门总裁/先婚后爱（最大盘）：甜宠为主，"双洁"是主流刚需，虐越少越好；追问点：契约缘由、误会反转、男主先动心的契机
+- 年代文/高干（榜单半壁江山）：可短期冲爆款，流量周期短，不宜写太长；追问点：时代红利点、家长里短冲突
+- 宫斗宅斗（古言）：追问点：家世格局、斗法层级
+- 追妻火葬场+带球跑：已烂大街，需强反套路才写
+- 蓝海：非遗文化+中女创业、女性科研/科考（航天/考古/海洋）、无CP女性互助群像——作品极少但转化好评率高，番茄对"非遗传承"标签有流量倾斜
+
+【知乎盐选短篇向】
+- 强反转+信息差+道德困境；追问点：核心物证、隐瞒的真相、结局反转方向
+
+【政策红线】
+- 黑化/暴力擦边题材已被屏蔽签约，属高危雷区
+- 平台严打纯 AI 水文：开篇代入感强、主线清晰、人物立得住是收稿硬标准
+
+注意：以上为 2026 年市场趋势参考（非实时榜单，需定期人工更新），是辅助判断不是模板——先听清作者脑洞，再针对性追问；不要替作者选题材。`
 
   // 构建引导模式 system prompt
   static buildGuideSystemPrompt(context?: string, type?: string): string {
@@ -242,6 +371,8 @@ export class AiService {
 - 作者要写的是长篇网络小说。从作者的脑洞中识别这个故事的驱动力，围绕它来提问，不预设模板`;
 
     return `你是一位创作导师，帮作者把模糊的想法打磨成精彩的故事。${typeGuide}
+
+${AiService.GENRE_KNOWLEDGE}
 
 【怎么做——看例子】
 
@@ -656,20 +787,7 @@ ${chars.map((c) => c.name).join('、')}
       .join('\n');
 
     // 风格说明：4 个预设统一按"语言质感"维度；mimic = 用户笔风分析结果
-    const styleGuide: Record<string, string> = {
-      default:
-        '自然流畅的通俗小说叙事：语言直白清晰，动作与对话推进情节，少用辞藻堆砌；段落不宜过长，避免文艺腔与抽象抒情',
-      'light-novel':
-        '快节奏网文（番茄/起点主流写法）：写"人话"——动词为主、少形容词，拒绝矫情长句与堆砌辞藻；段落短，手机屏不超过5行；用动作和对话展示情绪与冲突，不直白叙述；冲突前置，片段内必有具体可感知的麻烦与爽点（打压→反转→打脸）；情绪靠真细节传递，不替读者说完；结尾留强钩子',
-      serious:
-        '文艺细腻：句子节奏舒缓，多用长句与细节描写；情感表达克制含蓄，靠动作与场景传情；注重氛围营造；修辞与用词讲究但不堆砌',
-      ancient:
-        '古风：多用文言词汇与四字短语，善用诗词意象；句式对仗工整，有章回体韵味；称谓与器物考究，符合古代语境',
-      'jj-style':
-        '晋江文风：以人物关系与情感线为叙事核心（言情/纯爱/百合通用，无CP作品则以人物成长与羁绊为主线）；心理描写细腻，氛围感与留白充足；一条主情绪贯穿全篇，情绪转折必须有铺垫；对话含蓄有张力，靠潜台词和细节传递情绪，不把话说满；情节逻辑自洽，情感质感优先于节奏爽感',
-      colloquial:
-        '平实口语：像日常说话一样自然，多用生活化词汇；句式松散灵活，允许口语省略；贴近真实对话节奏，不端着',
-    };
+    const styleGuide = STYLE_GUIDES;
     // 书级风格预设：大纲/角色/世界观上下文也吃风格约束（正文由面板 style 控制）
     let bookStyleNote = '';
     if (params.book_id && !isShort) {
@@ -961,7 +1079,10 @@ ${extra.guide_full_log ? `\n【引导讨论原始记录——参考细节】\n${
       if (!isShort && ct === 'write' && params.book_id && params.chapter_id) {
         try {
           const [ch] = await db
-            .select({ content: schema.chapters.content })
+            .select({
+              content: schema.chapters.content,
+              sort_order: schema.chapters.sort_order,
+            })
             .from(schema.chapters)
             .where(eq(schema.chapters.chapter_id, params.chapter_id))
             .limit(1);
@@ -1027,10 +1148,44 @@ ${extra.guide_full_log ? `\n【引导讨论原始记录——参考细节】\n${
                     const d = desc ?? '';
                     const st = status ?? '待收';
                     const idx = merged.findIndex((t: any) => t.desc === d);
-                    if (idx >= 0) merged[idx] = { desc: d, status: st };
+                    if (idx >= 0) merged[idx] = { ...merged[idx], status: st };
                     else merged.push({ desc: d, status: st });
                   }
                   extra.plot_threads = merged.slice(-50);
+                  // 代码级回收校验：带关键词的伏笔被标"已收"时，验证关键词出现在
+                  // 本章或上一章正文；未命中驳回为"待收"（模型自评不可靠，短篇同款教训）
+                  const keyedThreads = (
+                    (extra.plot_threads as any[]) ?? []
+                  ).filter(
+                    (t: any) =>
+                      t.status === '已收' &&
+                      typeof t.key === 'string' &&
+                      t.key.trim(),
+                  );
+                  if (keyedThreads.length) {
+                    const [prevCh] = await db
+                      .select({ content: schema.chapters.content })
+                      .from(schema.chapters)
+                      .where(
+                        and(
+                          eq(schema.chapters.book_id, params.book_id),
+                          sql`${schema.chapters.sort_order} < ${ch?.sort_order ?? 0}`,
+                        ),
+                      )
+                      .orderBy(desc(schema.chapters.sort_order))
+                      .limit(1);
+                    const haystack = `${ch?.content ?? ''}\n${prevCh?.content ?? ''}`;
+                    extra.plot_threads = (
+                      extra.plot_threads as any[]
+                    ).map((t: any) =>
+                      t.status === '已收' &&
+                      typeof t.key === 'string' &&
+                      t.key.trim() &&
+                      !haystack.includes(t.key.trim())
+                        ? { ...t, status: '待收' }
+                        : t,
+                    );
+                  }
                 }
                 await db
                   .update(schema.book_settings)
@@ -1760,6 +1915,419 @@ ${existingLines.length ? `【上一批章纲结尾】\n${existingLines.slice(-3)
       usageType: resolvedUse.source === 'user' ? 'user_key' : 'platform_key',
     });
     return { lines, startNo };
+  }
+
+  /**
+   * 整章生成：按章纲（目标/阻碍/爽点/钩子）写完整一章。
+   * 三级降级：章纲 → 绑定大纲节点 → 模型自定"本章目标"行。
+   * 单轮为主（16k 输出），字数 <2000 自动补写一轮；章末钩子关键词校验 + AI 味检测。
+   * 已有正文不覆盖：生成内容追加到章末。
+   */
+  async generateChapter(
+    res: Response,
+    params: {
+      user_id: string;
+      book_id: string;
+      chapter_id: string;
+      model?: string;
+      key_id?: string;
+      style?: string;
+    },
+  ) {
+    const db = getDb();
+    const resolved = await this.resolveApiKey(
+      params.user_id,
+      'chat',
+      params.model,
+      params.key_id,
+    );
+    const model = resolved.model;
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    const send = (event: string, data: Record<string, any>) =>
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+
+    const abortCtrl = new AbortController();
+    const onClientClose = () => abortCtrl.abort();
+    res.on('close', onClientClose);
+    registerBookAbort(params.book_id, abortCtrl);
+    const genSignal = (timeoutMs: number) =>
+      AbortSignal.any([abortCtrl.signal, AbortSignal.timeout(timeoutMs)]);
+
+    try {
+      send('step', { step: 'prepare', status: 'generating', label: '组装写作上下文' });
+      const [ch] = await db
+        .select({
+          title: schema.chapters.title,
+          content: schema.chapters.content,
+          sort_order: schema.chapters.sort_order,
+          bound_outline_node_id: schema.chapters.bound_outline_node_id,
+        })
+        .from(schema.chapters)
+        .where(
+          and(
+            eq(schema.chapters.chapter_id, params.chapter_id),
+            eq(schema.chapters.book_id, params.book_id),
+          ),
+        )
+        .limit(1);
+      if (!ch) throw new Error('章节不存在');
+
+      // 书设置（章纲 + 风格预设）
+      const [settings] = await db
+        .select({
+          preset_style: schema.book_settings.preset_style,
+          extra: schema.book_settings.extra,
+        })
+        .from(schema.book_settings)
+        .where(eq(schema.book_settings.book_id, params.book_id))
+        .limit(1);
+      const extra = (settings?.extra ?? {}) as Record<string, any>;
+
+      // 章纲：当前行 + 上一行（开篇应回答其钩子）
+      const chOutlines = extra.chapter_outlines as string[] | undefined;
+      let chapterPlanBlock = '';
+      let planHook = '';
+      if (chOutlines?.length && ch.sort_order <= chOutlines.length) {
+        const line = chOutlines[ch.sort_order - 1];
+        const prevLine =
+          ch.sort_order > 1 ? chOutlines[ch.sort_order - 2] : undefined;
+        if (line) {
+          chapterPlanBlock = `${prevLine ? `【上一章章纲——本章开篇应回答其钩子】\n${prevLine}\n` : ''}【本章细纲——目标/阻碍/爽点/钩子，写作必须覆盖】\n${line}\n`;
+          const hookMatch = line.match(/钩子\s*=\s*([^|]*)/);
+          planHook = hookMatch ? hookMatch[1].trim() : '';
+        }
+      }
+
+      // 大纲节点：已完成前置 ×2 + 当前 + 下一
+      let nodeBlock = '';
+      if (ch.bound_outline_node_id) {
+        const [outline] = await db
+          .select({ outline_id: schema.outlines.outline_id })
+          .from(schema.outlines)
+          .where(eq(schema.outlines.book_id, params.book_id))
+          .limit(1);
+        if (outline) {
+          const nodes = await db
+            .select()
+            .from(schema.outline_chapters)
+            .where(eq(schema.outline_chapters.outline_id, outline.outline_id))
+            .orderBy(schema.outline_chapters.sort_order);
+          const idx = nodes.findIndex((n) => n.id === ch.bound_outline_node_id);
+          if (idx >= 0) {
+            const prevNodes = nodes
+              .slice(Math.max(0, idx - 2), idx)
+              .filter((n) => n.status === 'completed');
+            const lines: string[] = [];
+            if (prevNodes.length) {
+              lines.push('【已完成的前置情节——角色当前状态由此形成】');
+              prevNodes.forEach((n) => lines.push(`- ${n.title}：${n.summary}`));
+            }
+            lines.push(`【当前节点——本章正在写的情节】${nodes[idx].title}：${nodes[idx].summary}`);
+            if (nodes[idx + 1]) {
+              lines.push(`【下一节点——剧情走向参考】${nodes[idx + 1].title}：${nodes[idx + 1].summary}`);
+            }
+            nodeBlock = lines.join('\n');
+          }
+        }
+      }
+      const needsSelfPlan = !chapterPlanBlock && !nodeBlock;
+
+      // 角色：主要角色 + 正文出现的角色
+      const chars = await db
+        .select()
+        .from(schema.characters)
+        .where(eq(schema.characters.book_id, params.book_id));
+      const chapterText = (ch.content ?? '').toLowerCase();
+      const mainChars = chars.filter((c) => c.is_main);
+      const appearedChars = chars.filter((c) => {
+        if (c.is_main) return false;
+        const names = [
+          c.name,
+          ...(c.aliases ? c.aliases.split(/[,，]/).map((s) => s.trim()) : []),
+        ];
+        return names.some((n) => chapterText.includes(n.toLowerCase()));
+      });
+      const contextChars =
+        [...mainChars, ...appearedChars].length > 0
+          ? [...mainChars, ...appearedChars]
+          : chars;
+      const charFull = contextChars
+        .map((c) =>
+          [
+            `【${c.name}】${c.is_main ? '（主要角色）' : ''}`,
+            c.gender ? `性别：${c.gender}` : null,
+            c.identity ? `身份：${c.identity}` : null,
+            c.personality ? `性格：${c.personality}` : null,
+            c.catchphrase ? `口头禅：${c.catchphrase}` : null,
+            c.speech_style ? `说话风格：${c.speech_style}` : null,
+            c.backstory ? `背景：${c.backstory}` : null,
+            c.motivation ? `动机：${c.motivation}` : null,
+            c.appearance ? `外貌：${c.appearance}` : null,
+            ...((c.custom_fields as any[] | undefined) ?? []).map(
+              (f: any) => `${f.key}：${f.value}`,
+            ),
+          ]
+            .filter(Boolean)
+            .join('\n'),
+        )
+        .join('\n\n');
+      const charNameList = chars.length
+        ? `【全部角色名单——正文不得凭空新增人名，新角色必须先经作者确认】\n${chars.map((c) => c.name).join('、')}\n`
+        : '';
+
+      // 世界观按需注入
+      const [world] = await db
+        .select()
+        .from(schema.world_settings)
+        .where(eq(schema.world_settings.book_id, params.book_id))
+        .limit(1);
+      const worldSections = world?.sections as any[] | undefined;
+      let worldBlock = '';
+      if (worldSections?.length) {
+        const factors = AiService.extractFactors(
+          `${ch.title} ${chapterPlanBlock} ${nodeBlock} ${chapterText.slice(-1000)}`,
+        );
+        worldBlock = AiService.selectWorldSections(
+          worldSections as Array<{ name: string; content: string }>,
+          factors,
+        );
+      }
+
+      // 风格（面板传入优先，回退书预设）
+      const styleNote = STYLE_GUIDES[
+        params.style || settings?.preset_style || 'default'
+      ] ?? '';
+      const styleBlock = styleNote ? `【文风要求——严格遵守】\n${styleNote}\n` : '';
+
+      // 记忆：交接摘要 + 活跃伏笔 + 前章事实
+      let memoryBlock = '';
+      {
+        const handoff = extra.writing_handoff as
+          | { summary?: string }
+          | undefined;
+        if (handoff?.summary) {
+          memoryBlock += `【上次写作交接——继续写时从这里接上】\n${handoff.summary}\n`;
+        }
+        const activeThreads = ((extra.plot_threads as any[]) ?? []).filter(
+          (t: any) => t.status !== '已收',
+        );
+        if (activeThreads.length) {
+          memoryBlock += `【活跃伏笔——写到这里时记得推进】\n${activeThreads
+            .slice(0, 8)
+            .map((t: any) => `- ${t.desc}（${t.status}）`)
+            .join('\n')}\n`;
+        }
+        const chapterFacts = extra.chapter_facts as
+          | Record<string, { facts: string; at: number }>
+          | undefined;
+        if (chapterFacts && Object.keys(chapterFacts).length > 0) {
+          const own = chapterFacts[params.chapter_id];
+          const recent = Object.entries(chapterFacts)
+            .filter(([id]) => id !== params.chapter_id)
+            .sort((a, b) => (b[1]?.at ?? 0) - (a[1]?.at ?? 0))[0]?.[1];
+          if (own?.facts || recent?.facts) {
+            memoryBlock += `\n【前文已确立事实与未解悬念——续写必须继承，不得改写】\n${own?.facts ? `【本章已确立】\n${own.facts}\n` : ''}${recent?.facts ? `【前章】\n${recent.facts}` : ''}\n`;
+          }
+        }
+      }
+
+      // 黄金三章
+      const goldenBlock =
+        ch.sort_order === 1
+          ? `【开篇三章专项——本章是第 1 章，严格遵守】\n- 前 300 字内完成：冲突爆发 + 主角登场 + 目标浮现 + 钩子落地\n- 禁止开篇大段世界观说明文（设定靠情节和对话带出）\n- 主角的金手指/能力最晚本章上线\n- 章末强钩子：让读者必须点开下一章\n`
+          : ch.sort_order <= 3
+            ? `【开篇三章专项——本章处于黄金三章内】\n- 本章内必须有具体的小爽点（打压→反转→打脸）或强悬念\n- 章末强钩子\n`
+            : '';
+
+      // 已有正文：追加模式
+      const existingContent = (ch.content ?? '').trim();
+      const existingTail = existingContent.slice(-1500);
+
+      const taskBlock = needsSelfPlan
+        ? `【本章任务】\n本章没有细纲约束：第一行先输出"本章目标=… | 冲突=… | 章末钩子=…"（自定本章写作目标），然后空一行写正文。目标约 2000-5000 字，写到自然停点；章末必须以悬念或未完成动作收尾（钩子）。`
+        : `【本章任务】\n按上面的细纲/节点写本章：目标、阻碍、爽点、钩子逐项落实。目标约 2000-5000 字，写到自然停点；章末必须落实章末钩子——以悬念或未完成动作收尾。`;
+
+      const systemPrompt = `你是专业小说写作助手，正在为作者写完整的一章（第${ch.sort_order}章《${ch.title}》）。
+
+${chapterPlanBlock}${nodeBlock ? `【故事进程——角色近期经历了什么】\n${nodeBlock}\n` : ''}${goldenBlock}【本作品相关角色设定——请严格按照以下设定写作，保持角色言行一致】
+${charFull || '暂无角色设定'}
+
+${charNameList}【世界观规则——所有情节必须符合以下世界设定】
+${worldBlock || '（暂无世界观设定）'}
+${styleBlock}${memoryBlock}
+【写作指引】
+- 每 300-500 字推进一次剧情（新信息/冲突/反转），禁止原地描写
+- 对话每句一行，用对话推进剧情
+- 文风与设定要求一致；短句白描优先
+- 主角道德基线：可以狠、自保、报复，但对象必须是真恶人（对方先作恶）；不得伤害无辜之人（仆从/路人）；灰色行为必须有正当理由
+
+${taskBlock}
+
+【输出格式】
+- 纯文本正文，禁止 Markdown（不用 # 标题/**加粗**）与 JSON
+- 不写章节标题行（标题由系统管理）
+- 不要输出任何解释或批注`;
+
+      send('step', { step: 'write', status: 'generating', label: '生成正文（第一轮）' });
+      const userPrompt = `请写第${ch.sort_order}章《${ch.title}》${existingContent ? '。本章已有内容，从断点继续写，不重复已写内容：\n【已有内容结尾】\n' + existingTail + '\n' : '。从本章开头开始写。'}`;
+      const r1 = await fetch(`${resolved.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${resolved.apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt },
+          ],
+          max_tokens: 16384,
+          temperature: 0.8,
+          // 思考链会耗尽 max_tokens 导致正文为空（同 chat 策略）
+          ...(resolved.source === 'platform' || /deepseek|qwen/i.test(model)
+            ? { thinking: { type: 'disabled' } }
+            : {}),
+        }),
+        signal: genSignal(600_000),
+      });
+      if (!r1.ok) throw new Error(`generate status ${r1.status}`);
+      const d1 = await r1.json();
+      let text = (d1.choices?.[0]?.message?.content ?? '').trim();
+      if (!text) throw new Error('生成正文为空，请重试');
+
+      // 剥自定目标行 / 尾部 JSON / markdown 标题
+      if (needsSelfPlan && /^本章目标\s*=/.test(text.split('\n')[0] ?? '')) {
+        text = text.split('\n').slice(1).join('\n').trim();
+      }
+      text = text
+        .replace(/\n?\{["']action["']:[\s\S]*$/, '')
+        .replace(/^#{1,6}\s+/gm, '')
+        .trim();
+
+      // 字数不足补写一轮
+      if (text.length < 2000) {
+        send('step', { step: 'write', status: 'generating', label: `字数不足（${text.length}），补写一轮` });
+        const r2 = await fetch(`${resolved.baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${resolved.apiKey}`,
+          },
+          body: JSON.stringify({
+            model,
+            messages: [
+              { role: 'system', content: systemPrompt },
+              {
+                role: 'user',
+                content: `已写部分（结尾）：\n${text.slice(-1500)}\n\n继续写，直到本章情节到自然停点（累计至少 2000 字），章末以悬念/未完成动作收尾。不重复已写内容。`,
+              },
+            ],
+            max_tokens: 16384,
+            temperature: 0.8,
+            ...(resolved.source === 'platform' || /deepseek|qwen/i.test(model)
+              ? { thinking: { type: 'disabled' } }
+              : {}),
+          }),
+          signal: genSignal(600_000),
+        });
+        if (r2.ok) {
+          const d2 = await r2.json();
+          const part2 = ((d2.choices?.[0]?.message?.content ?? '')
+            .trim()
+            .replace(/^#{1,6}\s+/gm, ''));
+          if (part2) {
+            // 接缝去重：第二段开头与第一段结尾重叠部分裁掉
+            let head = part2;
+            const maxLen = Math.min(text.length, part2.length, 200);
+            for (let len = maxLen; len >= 10; len--) {
+              if (text.slice(-len) === part2.slice(0, len)) {
+                head = part2.slice(len).trimStart();
+                break;
+              }
+            }
+            text = `${text.trimEnd()}\n\n${head}`;
+          }
+        }
+      }
+
+      // 章末钩子校验：章纲钩子字段的关键词应出现在结尾 500 字
+      const warnings: string[] = [];
+      if (planHook) {
+        const keys = (planHook.match(/[一-鿿]{4,}/g) ?? []).slice(0, 2);
+        if (
+          keys.length &&
+          !keys.some((k: string) => text.slice(-500).includes(k))
+        ) {
+          warnings.push(
+            `章末钩子可能未落实（章纲钩子：${planHook.slice(0, 20)}），可手动补一句悬念`,
+          );
+        }
+      }
+
+      // AI 味检测（随 done 下发）
+      const issues = detectAiFlavors(text);
+
+      // 保存：空章替换、非空追加
+      send('step', { step: 'save', status: 'generating', label: '保存到章节' });
+      const newContent = existingContent
+        ? `${existingContent}\n\n${text}`
+        : text;
+      await db
+        .update(schema.chapters)
+        .set({
+          content: newContent,
+          word_count: newContent.length,
+          updated_at: sql`NOW()`,
+        })
+        .where(eq(schema.chapters.chapter_id, params.chapter_id));
+      // 作品总字数重算 + 绑定节点 planned → writing
+      const [sumRow] = await db
+        .select({
+          total: sql<number>`COALESCE(SUM(${schema.chapters.word_count}), 0)`,
+        })
+        .from(schema.chapters)
+        .where(eq(schema.chapters.book_id, params.book_id));
+      await db
+        .update(schema.books)
+        .set({ word_count: sumRow?.total ?? 0, status: 'writing', updated_at: new Date() })
+        .where(eq(schema.books.book_id, params.book_id));
+      if (ch.bound_outline_node_id) {
+        await db
+          .update(schema.outline_chapters)
+          .set({ status: 'writing', updated_at: sql`NOW()` })
+          .where(
+            and(
+              eq(schema.outline_chapters.id, ch.bound_outline_node_id),
+              eq(schema.outline_chapters.status, 'planned'),
+            ),
+          );
+      }
+      await this.recordUsage({
+        userId: params.user_id,
+        bookId: params.book_id,
+        model,
+        inChars: systemPrompt.length + userPrompt.length,
+        outChars: text.length,
+        usageType: resolved.source === 'user' ? 'user_key' : 'platform_key',
+      });
+      send('done', {
+        chapter_id: params.chapter_id,
+        length: newContent.length,
+        warnings,
+        quality: issues.length
+          ? { count: issues.length, types: [...new Set(issues.map((i) => i.type))] }
+          : null,
+      });
+    } catch (e: any) {
+      send('error', { message: e?.message ?? '生成失败' });
+    } finally {
+      unregisterBookAbort(params.book_id, abortCtrl);
+      res.off('close', onClientClose);
+      res.end();
+    }
   }
 
   // AI 模仿笔风：分析已完成章节，提取写作风格特征

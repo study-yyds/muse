@@ -68,6 +68,17 @@ jest.mock('../database/connection', () => ({
       token_count: 'token_count',
       created_at: 'created_at',
     },
+    user_monthly_quota: {
+      user_id: 'user_id',
+      month: 'month',
+      used_tokens: 'used_tokens',
+      used_words: 'used_words',
+    },
+    users: {
+      user_id: 'user_id',
+      book_limit: 'book_limit',
+      monthly_words_quota: 'monthly_words_quota',
+    },
   },
 }));
 
@@ -519,6 +530,17 @@ describe('buildGuideSystemPrompt', () => {
     expect(result).toContain('【核心驱动力】');
     expect(result).toContain('【关键节点】');
     expect(result).toContain('【叙事风格】');
+  });
+
+  it('包含 2026 题材知识库（三大风向+赛道+政策红线）', () => {
+    const result = AiService.buildGuideSystemPrompt();
+    expect(result).toContain('【题材知识库（2026 年网文市场趋势）');
+    expect(result).toContain('反套路成为新套路');
+    expect(result).toContain('都市脑洞');
+    expect(result).toContain('年代文');
+    expect(result).toContain('知乎盐选短篇向');
+    expect(result).toContain('政策红线');
+    expect(result).toContain('不要替作者选题材');
   });
 });
 

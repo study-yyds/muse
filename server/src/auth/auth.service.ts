@@ -139,6 +139,8 @@ export class AuthService {
           phone_number: phone,
           phone_hash: phoneHash,
           phone_encrypted: encryptPhone(phone),
+          // 新用户默认不限作品数 + 免费 3 万字/月（DB 默认兜底）
+          book_limit: -1,
         })
         .returning();
       user = newUser;

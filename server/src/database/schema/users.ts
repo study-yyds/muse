@@ -49,9 +49,13 @@ export const users = pgTable(
       .notNull()
       .defaultNow(),
 
-    // 免费配额：最多创建的作品数，默认 3 本
+    // 作品数配额：默认不限（-1 无限），字段保留供付费档或防滥用；admin 可调整
     // NULL 或 -1 表示无限（V2 与 subscriptions 表联动）
-    book_limit: integer('book_limit').notNull().default(3),
+    book_limit: integer('book_limit').notNull().default(-1),
+
+    // 月度 AI 字数额度（计费口径：生成字数=输出字符数），默认免费 3 万字
+    // NULL 或 -1 表示无限（admin/付费档）
+    monthly_words_quota: integer('monthly_words_quota').notNull().default(30000),
   },
   () => [
     // CHECK 约束：role 只允许这两个值
