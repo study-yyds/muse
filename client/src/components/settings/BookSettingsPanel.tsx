@@ -81,6 +81,37 @@ export function BookSettingsPanel({ bookId, book, coverUrl, onCoverChange }: Pro
   const doMimicBook = () => doMimic({ book_id: bookId, model: mimicModel, key_id: mimicKeyId });
   const doMimicCustom = () => doMimic({ text: customStyleText, model: mimicModel, key_id: mimicKeyId });
 
+  // 伏笔账本：用户手动登记 + AI 抽取合并（描述 | 待收/已收），续写时注入未回收的
+  const plotThreads = ((settings as any)?.extra?.plot_threads as
+    | Array<{ desc: string; status: string }>
+    | undefined) ?? [];
+  const [newThread, setNewThread] = useState("");
+  const [threadsOpen, setThreadsOpen] = useState(false);
+  const [editingIdx, setEditingIdx] = useState<number | null>(null);
+  const [editingText, setEditingText] = useState("");
+  const saveThreads = async (next: Array<{ desc: string; status: string }>) => {
+    try {
+      await api.put(`/books/${bookId}/settings`, { extra: { plot_threads: next } as any });
+      queryClient.invalidateQueries({ queryKey: ["book-settings", bookId] });
+    } catch {
+      toast({ title: "保存失败", variant: "destructive" });
+    }
+  };
+  const addThread = () => {
+    const d = newThread.trim();
+    if (!d) return;
+    saveThreads([...plotThreads, { desc: d, status: "待收" }]);
+    setNewThread("");
+  };
+  const updateThread = (i: number, patch: Partial<{ desc: string; status: string }>) => {
+    const next = plotThreads.map((t, idx) => (idx === i ? { ...t, ...patch } : t));
+    saveThreads(next);
+  };
+  const removeThread = (i: number) => {
+    if (!confirm(`确定删除伏笔"${plotThreads[i]?.desc ?? ""}"？`)) return;
+    saveThreads(plotThreads.filter((_, idx) => idx !== i));
+  };
+
   useEffect(() => {
     if (settings) {
       // 旧值 plain（小白文）已从预设中移除，归一为默认
@@ -254,6 +285,104 @@ export function BookSettingsPanel({ bookId, book, coverUrl, onCoverChange }: Pro
             <p className="font-medium mb-1">当前风格分析：</p>
             <p className="text-muted-foreground">{mimicResult}</p>
           </div>
+        )}
+      </div>
+
+      <Separator />
+
+      {/* 伏笔账本：默认折叠，展开后列表限高滚动，避免长列表挤压下方内容 */}
+      <div className="space-y-2">
+        <button
+          onClick={() => setThreadsOpen(!threadsOpen)}
+          className="flex items-center gap-2 w-full text-left"
+        >
+          <Label className="text-sm font-medium cursor-pointer">伏笔账本</Label>
+          <span className="text-xs text-muted-foreground">
+            {plotThreads.filter((t) => t.status !== "已收").length} 条待收
+          </span>
+          <span className="ml-auto text-xs text-muted-foreground">
+            {threadsOpen ? "收起" : "展开"}
+          </span>
+        </button>
+        {threadsOpen && (
+          <>
+            <p className="text-xs text-muted-foreground">
+              手动登记伏笔；AI 续写时自动注入未回收的伏笔（最多 8 条），回收后标记"已收"。
+            </p>
+            <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+              {plotThreads.map((t, i) => (
+                <div key={i} className="flex items-center gap-2 text-sm">
+                  <span
+                    className={
+                      "text-xs px-1.5 py-0.5 rounded shrink-0 " +
+                      (t.status === "已收"
+                        ? "bg-muted text-muted-foreground"
+                        : "bg-primary/10 text-foreground")
+                    }
+                  >
+                    {t.status ?? "待收"}
+                  </span>
+                  {editingIdx === i ? (
+                    <Input
+                      autoFocus
+                      value={editingText}
+                      onChange={(e) => setEditingText(e.target.value)}
+                      onBlur={() => {
+                        const d = editingText.trim();
+                        if (d && d !== t.desc) updateThread(i, { desc: d });
+                        setEditingIdx(null);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                        if (e.key === "Escape") { setEditingIdx(null); setEditingText(t.desc); }
+                      }}
+                      className="flex-1 min-w-0 h-6 text-sm"
+                    />
+                  ) : (
+                    <span
+                      onClick={() => { setEditingIdx(i); setEditingText(t.desc); }}
+                      title="点击编辑描述"
+                      className={
+                        "flex-1 min-w-0 truncate cursor-text " +
+                        (t.status === "已收" ? "line-through text-muted-foreground" : "")
+                      }
+                    >
+                      {t.desc}
+                    </span>
+                  )}
+                  <button
+                    onClick={() => updateThread(i, { status: t.status === "已收" ? "待收" : "已收" })}
+                    className="shrink-0 text-xs text-muted-foreground hover:text-foreground"
+                  >
+                    {t.status === "已收" ? "重开" : "已收"}
+                  </button>
+                  <button
+                    onClick={() => removeThread(i)}
+                    className="shrink-0 text-xs text-muted-foreground hover:text-destructive"
+                  >
+                    删除
+                  </button>
+                </div>
+              ))}
+              {plotThreads.length === 0 && (
+                <p className="text-xs text-muted-foreground">
+                  暂无伏笔。写正文时 AI 会自动抽取，也可手动添加。
+                </p>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <Input
+                value={newThread}
+                onChange={(e) => setNewThread(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") addThread(); }}
+                placeholder="伏笔描述，如：神秘老者身份未揭"
+                className="flex-1"
+              />
+              <Button size="sm" onClick={addThread} disabled={!newThread.trim()}>
+                添加
+              </Button>
+            </div>
+          </>
         )}
       </div>
 

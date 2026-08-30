@@ -559,9 +559,11 @@ ${after || '（结尾）'}`;
           const chOutlines = ((bso?.extra ?? {}) as Record<string, any>)
             ?.chapter_outlines as string[] | undefined;
           if (chOutlines?.length && ch.sort_order <= chOutlines.length) {
+            const prevLine =
+              ch.sort_order > 1 ? chOutlines[ch.sort_order - 2] : undefined;
             const line = chOutlines[ch.sort_order - 1];
             if (line) {
-              chapterOutlineBlock = `【本章细纲——目标/阻碍/爽点/钩子，写作必须覆盖】
+              chapterOutlineBlock = `${prevLine ? `【上一章章纲——本章开篇应回答其钩子】\n${prevLine}\n` : ''}【本章细纲——目标/阻碍/爽点/钩子，写作必须覆盖】
 ${line}（本章已写 ${ch.content.length} 字）
 `;
             }
@@ -974,7 +976,7 @@ ${extra.guide_full_log ? `\n【引导讨论原始记录——参考细节】\n${
             { summary?: string; at_words?: number } | undefined;
           if (!handoff?.summary || curWords - (handoff.at_words ?? 0) >= 800) {
             const handoffPrompt =
-              '你是写作状态交接员。根据章节尾部内容，输出两部分：\n1. 交接摘要（150 字内）：当前剧情位置（谁在哪、在做什么）、主角最近的状态变化、已埋未回收的伏笔\n2. 伏笔账本（另起一段，每行一条）：格式"伏笔：描述 | 待收/已收"，只列与后续剧情相关的伏笔，没有则输出"伏笔：无"';
+              '你是写作状态交接员。根据章节尾部内容，输出两部分：\n1. 交接摘要（150 字内）：当前剧情位置（谁在哪、在做什么）、主角最近的状态变化、已埋未回收的伏笔\n2. 伏笔账本（另起一段，每行一条）：格式"伏笔：描述 | 待收/已收"，只列与后续剧情相关的伏笔，没有则输出"伏笔：无"。注意：只有在本章及之前正文中已实际写到的回收才能标"已收"，未实际写到的一律保持"待收"，不得凭剧情预判提前标"已收"';
             const rH = await fetch(`${resolved.baseUrl}/chat/completions`, {
               method: 'POST',
               headers: {
@@ -1015,12 +1017,20 @@ ${extra.guide_full_log ? `\n【引导讨论原始记录——参考细节】\n${
                   )
                   .map((l: string) => l.replace(/^伏笔[:：]\s*/, ''));
                 if (plotLines.length) {
-                  extra.plot_threads = plotLines.map((line: string) => {
+                  // 合并而非覆盖：保留用户手动添加的伏笔；AI 抽取的按描述匹配更新状态
+                  const prevThreads = (extra.plot_threads as any[]) ?? [];
+                  const merged = [...prevThreads];
+                  for (const line of plotLines) {
                     const [desc, status] = line
                       .split('|')
                       .map((s: string) => s.trim());
-                    return { desc: desc ?? '', status: status ?? '待收' };
-                  });
+                    const d = desc ?? '';
+                    const st = status ?? '待收';
+                    const idx = merged.findIndex((t: any) => t.desc === d);
+                    if (idx >= 0) merged[idx] = { desc: d, status: st };
+                    else merged.push({ desc: d, status: st });
+                  }
+                  extra.plot_threads = merged.slice(-50);
                 }
                 await db
                   .update(schema.book_settings)
