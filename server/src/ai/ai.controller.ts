@@ -67,7 +67,13 @@ export class AiController {
   @Post('chapter-outlines/extend')
   async extendChapterOutlines(
     @Body()
-    body: { book_id: string; model?: string; key_id?: string },
+    body: {
+      book_id: string;
+      model?: string;
+      key_id?: string;
+      count?: number;
+      node_id?: string;
+    },
     @Req() req: Request,
   ) {
     await this.ai.checkBookOwnership(body.book_id, (req as any).userId);
@@ -76,6 +82,8 @@ export class AiController {
       body.book_id,
       body.model,
       body.key_id,
+      body.count,
+      body.node_id,
     );
     return { code: 200, data };
   }

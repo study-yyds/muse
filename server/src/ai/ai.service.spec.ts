@@ -453,6 +453,16 @@ describe('parseChapterOutlines', () => {
     expect(r[0]).toContain('第1章');
   });
 
+  it('容错：冒号/空格分隔与编号前缀（模型格式漂移）', () => {
+    const text = `1. 第1章：目标=A | 阻碍=B
+第2章 目标=C
+- 第3章｜目标=D
+1、第4章 | 目标=E`;
+    const r = AiService.parseChapterOutlines(text);
+    expect(r).toHaveLength(4);
+    expect(r[0]).toContain('第1章：目标=A');
+  });
+
   it('最多保留 10 章', () => {
     const text = Array.from(
       { length: 12 },
@@ -486,6 +496,119 @@ describe('parseProtagonist', () => {
 
   it('无名字返回 null', () => {
     expect(AiService.parseProtagonist('{"gender":"男"}')).toBeNull();
+  });
+
+  it('中文字段名自动归一', () => {
+    const r = AiService.parseProtagonist(
+      '{"姓名":"秦昭","性别":"女","性格":"冷静果决"}',
+    );
+    expect(r?.name).toBe('秦昭');
+    expect(r?.gender).toBe('女');
+    expect(r?.personality).toBe('冷静果决');
+  });
+
+  it('修复尾逗号后仍能解析', () => {
+    const r = AiService.parseProtagonist(
+      '{"name":"秦昭","gender":"女","motivation":"考入最高军校",}',
+    );
+    expect(r?.name).toBe('秦昭');
+    expect(r?.motivation).toBe('考入最高军校');
+  });
+
+  it('散文文本用正则抢救出姓名与动机', () => {
+    const r = AiService.parseProtagonist(
+      '好的，以下是主角设定。姓名：秦昭，性别：女。性格：冷静果决，动机：考入最高军校。',
+    );
+    expect(r?.name).toBe('秦昭');
+    expect(r?.gender).toBe('女');
+    expect(r?.motivation).toBe('考入最高军校');
+  });
+});
+
+describe('AiService.buildChatMemory', () => {
+  const mk = (role: string, content: string) => ({ role, content });
+  // 每条消息拉长到 ~600 字，越过"全部历史 5500 字"的免压缩阈值
+  const pad = (s: string) => s + '，'.repeat(600 - s.length) + '。';
+
+  it('短对话不压缩（总字数在预算内）', () => {
+    const msgs = [mk('user', '我想写末世文'), mk('assistant', '好的'), mk('user', '主角是医生')];
+    const r = AiService.buildChatMemory(msgs);
+    expect(r.messages).toEqual(msgs);
+    expect(r.memoryBlock).toBe('');
+  });
+
+  it('超长历史：近窗按字数预算停（4000字/8条先到先停），早期作者发言进记忆块', () => {
+    const msgs: { role: string; content: string }[] = [];
+    for (let i = 1; i <= 10; i++) msgs.push(mk('user', pad(`第${i}条作者发言：设定${i}`)));
+    for (let i = 1; i <= 8; i++) msgs.push(mk('assistant', pad(`回复${i}`)));
+    const r = AiService.buildChatMemory(msgs);
+    // 每条 600 字：6 条 = 3600 ≤ 4000，第 7 条会超 → 近窗 6 条
+    expect(r.messages.length).toBe(6);
+    expect(r.memoryBlock).toContain('已确认设定');
+    // 记忆块 2000 字封顶，从最旧的丢：第 1 条被丢弃，较新的第 10 条保留
+    expect(r.memoryBlock).not.toContain('第1条作者发言');
+    expect(r.memoryBlock).toContain('第10条作者发言');
+    // 时间顺序排列：较新发言在块中位置靠后（供模型裁决"靠后为准"）
+    expect(r.memoryBlock.indexOf('第9条作者发言')).toBeLessThan(
+      r.memoryBlock.indexOf('第10条作者发言'),
+    );
+    // 压缩区不再出现在 messages 里
+    expect(r.messages).not.toContainEqual(msgs[0]);
+  });
+
+  it('assistant 发言不进记忆块', () => {
+    const msgs: { role: string; content: string }[] = [];
+    msgs.push(mk('user', pad('设定A')), mk('user', pad('设定B')));
+    for (let i = 0; i < 16; i++) msgs.push(mk('assistant', pad(`引导提问${i}`)));
+    const r = AiService.buildChatMemory(msgs);
+    expect(r.messages.length).toBe(6);
+    expect(r.memoryBlock).not.toContain('引导提问');
+    expect(r.memoryBlock).toContain('设定A');
+    expect(r.memoryBlock).toContain('设定B');
+  });
+});
+
+describe('AiService.mergeChatSettings', () => {
+  it('合并结果清洗为字符串数组', async () => {
+    (globalThis as any).fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          choices: [{ message: { content: '["主角武器为剑","女主为医学生"]' } }],
+        }),
+    });
+    const service = new AiService();
+    const r = await (service as any).mergeChatSettings(
+      'http://x',
+      'k',
+      'm',
+      ['主角武器为长枪'],
+      ['改成剑'],
+    );
+    expect(r).toEqual(['主角武器为剑', '女主为医学生']);
+  });
+
+  it('输出非 JSON 数组返回 null', async () => {
+    (globalThis as any).fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({ choices: [{ message: { content: '好的，合并完成' } }] }),
+    });
+    const service = new AiService();
+    expect(
+      await (service as any).mergeChatSettings('http://x', 'k', 'm', [], ['x']),
+    ).toBeNull();
+  });
+
+  it('HTTP 失败返回 null', async () => {
+    (globalThis as any).fetch = jest.fn().mockResolvedValue({
+      ok: false,
+      json: () => Promise.resolve({}),
+    });
+    const service = new AiService();
+    expect(
+      await (service as any).mergeChatSettings('http://x', 'k', 'm', [], ['x']),
+    ).toBeNull();
   });
 });
 
@@ -1513,4 +1636,40 @@ describe('quickCreate rollback', () => {
     expect(mockDb.delete).not.toHaveBeenCalled();
     expect(res._events.some((e: any) => e.event === 'done')).toBe(true);
   }, 15000);
+});
+
+describe('AiService.buildCapabilityTimeline', () => {
+  it('从 JSON 数组卷纲提取觉醒节点并生成禁用区间', () => {
+    const outline = JSON.stringify([
+      { title: '狂妄的资本', summary: '放话考军校，三招放倒对手' },
+      { title: '第一滴血', summary: '防线见习目睹异兽撕伤武者' },
+      { title: '裂空觉醒', summary: '绝境觉醒共鸣+空间双系反杀' },
+      { title: '实测打脸', summary: '特招官质疑造假' },
+    ]);
+    const block = AiService.buildCapabilityTimeline(outline);
+    expect(block).toContain('卷纲第 3 个节点为能力节点');
+    expect(block).toContain('裂空觉醒');
+    expect(block).toContain('第 3 个节点（首个能力节点）之前的章节');
+  });
+
+  it('行格式卷纲（"- 标题：摘要"）同样可提取', () => {
+    const block = AiService.buildCapabilityTimeline(
+      '- 狂妄的资本：放话考军校\n- 裂空觉醒：绝境觉醒共鸣+空间双系反杀\n- 实测打脸：特招官质疑',
+    );
+    expect(block).toContain('卷纲第 2 个节点为能力节点');
+    expect(block).toContain('第 2 个节点（首个能力节点）之前的章节');
+  });
+
+  it('无能力节点时返回空串', () => {
+    expect(AiService.buildCapabilityTimeline('- 入学：秦昭入学\n- 摸底：排名中游')).toBe('');
+    expect(AiService.buildCapabilityTimeline('')).toBe('');
+  });
+
+  it('多个能力节点全部列出', () => {
+    const block = AiService.buildCapabilityTimeline(
+      '- 觉醒：觉醒共鸣\n- 苦修：修炼\n- 突破：突破空间系',
+    );
+    expect(block).toContain('卷纲第 1 个节点为能力节点');
+    expect(block).toContain('卷纲第 3 个节点为能力节点');
+  });
 });

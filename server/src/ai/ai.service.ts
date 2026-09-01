@@ -434,13 +434,17 @@ ${context ? `\n【用户的初始想法】\n${context}` : ''}`;
     // 引导模式：使用引导 prompt，无需加载作品上下文
     if (params.guide_mode) {
       try {
-        const guidePrompt = AiService.buildGuideSystemPrompt(
+        const basePrompt = AiService.buildGuideSystemPrompt(
           params.guide_context,
           params.guide_type,
         );
-        const cleanMessages = Array.isArray(params.messages)
-          ? sanitizeMessages(params.messages)
-          : [];
+        // 长对话记忆：先压缩再截断——早期作者发言压进【已确认设定】注入 system，
+        // 否则 40 条窗口外的设定会被 sanitizeMessages 直接丢弃
+        const { messages: guideMsgs, memoryBlock } = AiService.buildChatMemory(
+          Array.isArray(params.messages) ? params.messages : [],
+        );
+        const cleanMessages = sanitizeMessages(guideMsgs);
+        const guidePrompt = basePrompt + memoryBlock;
         const resolved = await this.resolveApiKey(
           params.user_id,
           'chat',
@@ -919,6 +923,12 @@ ${chapterContext}
 2. 段落简短，段间空行，节末留钩子：让读者想问"然后呢？"
 3. 反差制造爽感：预期→意外→奖励
 
+【套路偏向——知乎盐选】
+1. 爽点走反转/信息差/情感悬置，不走"当众打脸"
+2. 沿用上文第一人称"我"叙事；只写"我"的所见所感，他人内心只能通过其动作/表情/语言被推测
+3. 故事若有核心真相/反转，只释放当前进度该露的信息，不得提前说破后续真相
+4. 节末钩子轮换三种：悬念（危险将至/真相半露）、反转（颠覆预期）、情感悬置（误解加深），禁止连续两节同一式
+
 【技术规则】纯文本，不用Markdown。环境≤3行。不写大段独白。文风与上文保持一致。
 
 正文直接输出，最后一行操作指令 JSON。闲聊只输出自然语言。`,
@@ -1065,14 +1075,70 @@ ${extra.guide_full_log ? `\n【引导讨论原始记录——参考细节】\n${
       : (prompts[ct] ?? prompts.write);
 
     try {
-      const cleanMessages = params.messages
-        ? sanitizeMessages(params.messages)
+      // 对话长期记忆：先压缩再截断——口述设定压进【已确认设定】块，
+      // 可跨 40 条窗口存活（否则 sanitizeMessages 会直接丢弃窗口外内容）
+      const rawMsgs = Array.isArray(params.messages) ? params.messages : [];
+      const { messages: memWindow, memoryBlock: fallbackMemoryBlock } =
+        AiService.buildChatMemory(rawMsgs);
+      let chatMemoryBlock = fallbackMemoryBlock;
+      const cleanMessages = memWindow.length
+        ? sanitizeMessages(memWindow)
         : [{ role: 'user', content: sanitizePrompt(params.message) }];
       const resolved = await this.resolveApiKey(
         params.user_id,
         'chat',
         params.model,
       );
+
+      // 维护版设定记忆（AI 合并去重）：每累计 6 条新作者发言合并一次——
+      // 改设定时旧条目被替换删除，不靠模型每次裁决；合并失败回退上面的静态压缩块
+      if (params.book_id && rawMsgs.length) {
+        try {
+          const [bset] = await db
+            .select({ extra: schema.book_settings.extra })
+            .from(schema.book_settings)
+            .where(eq(schema.book_settings.book_id, params.book_id))
+            .limit(1);
+          const extra = (bset?.extra ?? {}) as Record<string, any>;
+          const userMsgs = rawMsgs
+            .filter((m: any) => m?.role === 'user')
+            .map((m: any) =>
+              sanitizePrompt(m.content).replace(/\s+/g, ' ').trim(),
+            )
+            .filter(Boolean);
+          const anchorMap = (extra.chat_settings_anchor ?? {}) as Record<
+            string,
+            number
+          >;
+          const anchor = anchorMap[ct] ?? 0;
+          if (userMsgs.length - anchor >= 6) {
+            const merged = await this.mergeChatSettings(
+              resolved.baseUrl,
+              resolved.apiKey,
+              resolved.model,
+              (extra.chat_settings ?? []) as string[],
+              userMsgs.slice(anchor),
+            );
+            if (merged) {
+              extra.chat_settings = merged;
+              extra.chat_settings_anchor = {
+                ...anchorMap,
+                [ct]: userMsgs.length,
+              };
+              await db
+                .update(schema.book_settings)
+                .set({ extra } as any)
+                .where(eq(schema.book_settings.book_id, params.book_id));
+            }
+          }
+          const set = (extra.chat_settings ?? []) as string[];
+          if (set.length) {
+            chatMemoryBlock = `\n\n【已确认设定——AI 维护的设定集，按时间从旧到新排列；同一事项以靠后的最新条目为准；与最近对话冲突时以最近对话为准】\n${set.join('\n')}\n`;
+          }
+        } catch {
+          /* 设定集维护失败回退静态压缩块 */
+        }
+      }
       // 写作交接摘要(治"第二天回来 AI 失忆"):章节字数与上次摘要时
       // 差 ≥800 字才更新一次(便宜调用),随续写请求注入
       let handoffBlock = '';
@@ -1270,7 +1336,7 @@ ${own?.facts ? `【本章已确立】\n${own.facts}\n` : ''}${recent?.facts ? `�
       }
       void this.streamChatToClient(
         res,
-        systemPrompt + guideBlock + factsBlock + handoffBlock,
+        systemPrompt + guideBlock + chatMemoryBlock + factsBlock + handoffBlock,
         cleanMessages,
         resolved.model,
         isShort ? 24576 : 8192,
@@ -1695,6 +1761,8 @@ ${own?.facts ? `【本章已确立】\n${own.facts}\n` : ''}${recent?.facts ? `�
     bookId: string,
     model?: string,
     keyId?: string,
+    count?: number,
+    nodeId?: string,
   ): Promise<{ lines: string[]; startNo: number }> {
     const db = getDb();
     const resolved = await this.resolveApiKey(userId, 'chat', model, keyId);
@@ -1717,6 +1785,8 @@ ${own?.facts ? `【本章已确立】\n${own.facts}\n` : ''}${recent?.facts ? `�
       ?.chapter_outlines as string[] | undefined;
     const existingLines = existing ?? [];
     const startNo = existingLines.length + 1;
+    // 本批章数（1-30，默认 10）
+    const genCount = Math.min(Math.max(count ?? 10, 1), 30);
 
     // 最近已写章节摘要（承接已写剧情，不重写已发生事件）
     const recentChs = await db
@@ -1796,8 +1866,9 @@ ${continuityBlock ? `【已写正文参考——大纲必须承接，不重写�
 【核心要求】
 1. 分卷/分段推进：每段有明确的阶段目标，段末解决并引出下一段
 2. 递进节奏：每个节点应有实质进展
-3. 每个节点必须内置冲突或爽点（打压→反转→打脸，或悬念揭示）
+3. 每个节点必须内置冲突或爽点；爽点按番茄长篇偏好——规则内/信息差打脸（对手不降智）、升级养成快感、情绪价值、悬念揭示；节点功能轮换：冲突节点不超过一半，收获/铺垫/揭露节点各至少 1 个
 4. 摘要用"谁+做了什么+得到什么结果"的直白句式，禁止文艺腔
+5. 能力/金手指的觉醒节点必须在对应节点的摘要中明确写出（如"绝境觉醒共鸣+空间双系"），供章纲生成对齐时间线；觉醒节点之前的节点摘要不得出现能力使用，只能写铺垫/伏笔
 
 【输出格式——严格遵守】
 只输出 JSON 数组，不要任何其他文字。title 精炼（8字内），summary 简短（30字内）：
@@ -1840,17 +1911,47 @@ ${continuityBlock ? `【已写正文参考——大纲必须承接，不重写�
       nodes = await loadOutlineNodes();
     }
 
+    // 指定目标节点：卷纲聚焦该节点（+前后邻居作衔接），并加聚焦约束
+    let focusNodeBlock = '';
+    let focusRequirement = '';
+    if (nodeId) {
+      const idx = nodes.findIndex((n: any) => n.id === nodeId);
+      if (idx >= 0) {
+        const focusNodes = nodes.slice(Math.max(0, idx - 1), idx + 2);
+        focusNodeBlock = focusNodes
+          .map(
+            (n: any, i: number) =>
+              `${i === (idx - Math.max(0, idx - 1)) ? '【重点节点——本批章纲围绕它展开】' : ''}- ${n.title}：${n.summary}`,
+          )
+          .join('\n');
+        focusRequirement = `本批 ${genCount} 章全部围绕重点节点展开：目标/阻碍/爽点/钩子服务于该节点的情节，不要跳入后续节点的剧情`;
+      }
+    }
     const outlineText =
-      nodes.map((n) => `- ${n.title}：${n.summary}`).join('\n') || '（无大纲）';
+      (focusNodeBlock || nodes.map((n) => `- ${n.title}：${n.summary}`).join('\n')) ||
+      '（无大纲）';
+    // 能力时间线约束用全量卷纲提取（聚焦块可能不含觉醒节点），显式告诉模型觉醒在第几个节点
+    const timelineBlock = AiService.buildCapabilityTimeline(
+      nodes.map((n) => `- ${n.title}：${n.summary}`).join('\n'),
+    );
 
     // 硬性要求按素材条件化：首批无上一批钩子可承接、无卷纲时从正文自然延伸
     const requirements = [
       '一章一小冲突，10 章内至少 2 个小高潮；爽点必须具体（什么被证明/谁被打脸/什么反转），禁止"主角变强"式空话',
       '表述直白网文化，禁止文学化修饰',
       '打脸/报复对象必须是真恶人（对方先作恶），不得牵连无辜之人',
+      '能力/金手指时间线铁律：以【能力时间线】块为准——首个能力节点之前的章节禁止出现任何异能（连"预判""瞬移"等字眼都不能有），只能埋伏笔；觉醒必须在对应章节作为完整情节写出，不得跳过、不得默认已拥有',
+      '反派动机多样化：不能全是"看不起主角"式脸谱，至少一个反派有自己的立场/苦衷/合理动机；同一反派不得连续 3 章作为主要阻碍',
+      '爽点机制按番茄长篇偏好轮换：打脸须升级为规则内打脸/信息差打脸（对手越精明、越站得住，翻盘越爽），禁止"当众嘲讽→当众打脸"同构循环；爽点模式多样化——升级养成快感、情绪价值（被理解/被看见）、悬念揭示、智力破局各至少出现一次',
+      '章节功能轮换（核心节奏）：冲突章（对抗/考核/战斗）不超过本批一半且不得连续超过 2 章，收获章（升级/资源/奖励兑现）、铺垫章（日常/关系线/感情/内心戏）、揭露章（世界观真相/阴谋推进/伏笔回收）各至少 1 章；冲突章之间必须有缓冲章',
+      '钩子类型轮换：禁止连续 3 章"角色放狠话/威胁"式钩子；本批至少 3 章钩子改为信息揭示（物证/真相碎片）、情感悬置（牵挂/误会/失约）或主角主动做出的危险决定',
+      '对立势力行动具体化：对手施加压力必须用实际动作（动手脚/改档案/截资源/设局），禁止只有语言挑衅；同一阴谋逐章递进露出新一层，本批内至少完成一次阴谋的阶段性揭露',
+      '冲突来源多样化：人际、环境与规则、主角内心缺陷三类冲突至少各出现一次，禁止全篇都是"有人找茬→反击"的同构循环',
+      '权威角色理性铁律：教师、考官、官员等权威配角的言行必须符合其身份立场与自身利益——刁难主角只能出于真实利益冲突（名额竞争、隐瞒事故、站队压力），禁止"看不起主角"式无理由贬损；对主角的质疑应为专业存疑而非人身嘲讽；本批内至少一半配角立场中立或善意',
       nodes.length
         ? '卷纲是大方向：新章纲推进的情节必须落在卷纲范围内'
         : '暂无大纲：剧情从已写正文自然延伸，不要凭空引入与正文无关的设定',
+      focusRequirement,
       existingLines.length
         ? `承接上一批章纲的结尾钩子：第 ${startNo} 章的开篇必须回答上一批最后一章的钩子`
         : '',
@@ -1859,7 +1960,7 @@ ${continuityBlock ? `【已写正文参考——大纲必须承接，不重写�
       .map((r, i) => `${i + 1}. ${r}`)
       .join('\n');
 
-    const prompt = `你是网文细纲设计师。为这本书生成下一批 10 章的细纲（第 ${startNo} 到第 ${startNo + 9} 章）。
+    const prompt = `你是网文细纲设计师。为这本书生成下一批 ${genCount} 章的细纲（第 ${startNo} 到第 ${startNo + genCount - 1} 章）。
 
 ${bookRow?.title ? `【书名】${bookRow.title}` : ''}
 
@@ -1872,9 +1973,10 @@ ${requirements}
 【卷纲】
 ${outlineText.slice(0, 2000) || '（无大纲）'}
 
+${timelineBlock}
 ${continuityBlock}
 ${existingLines.length ? `【上一批章纲结尾】\n${existingLines.slice(-3).join('\n')}\n` : ''}
-只输出 10 行，每行一条章纲，不要编号、不要其他文字。`;
+只输出 ${genCount} 行，每行一条章纲，不要编号、不要其他文字。`;
 
     const r = await fetch(`${resolvedUse.baseUrl}/chat/completions`, {
       method: 'POST',
@@ -1886,7 +1988,7 @@ ${existingLines.length ? `【上一批章纲结尾】\n${existingLines.slice(-3)
         model: useModel,
         messages: [
           { role: 'system', content: prompt },
-          { role: 'user', content: `请生成第 ${startNo} 到第 ${startNo + 9} 章的细纲。` },
+          { role: 'user', content: `请生成第 ${startNo} 到第 ${startNo + genCount - 1} 章的细纲。` },
         ],
         max_tokens: 2048,
         temperature: 0.7,
@@ -3482,33 +3584,255 @@ ${sample}`;
     if (!text) return [];
     return text
       .split('\n')
-      .map((l) => l.trim())
-      .filter((l) => /^第[一二三四五六七八九十\d]+章\s*[|｜]/.test(l))
+      .map((l) =>
+        l
+          .trim()
+          .replace(/^[-*•]\s*/, '')
+          .replace(/^\d+[.、)）]\s*/, ''),
+      )
+      .filter((l) => /^第[一二三四五六七八九十百\d]+章\s*[|｜：: ]/.test(l))
       .slice(0, 10);
   }
 
-  /** 解析主角 JSON：单个对象 / 代码块包裹 / 数组取第一个；无 name 返回 null */
-  static parseProtagonist(aiText: string): any {
-    const attempts: string[] = [];
-    const codeBlock = aiText.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (codeBlock) attempts.push(codeBlock[1].trim());
-    const objMatch = aiText.match(/\{[\s\S]*"name"[\s\S]*\}/);
-    if (objMatch) attempts.push(objMatch[0]);
-    const lastOpen = aiText.lastIndexOf('{');
-    const lastClose = aiText.lastIndexOf('}');
-    if (lastOpen >= 0 && lastClose > lastOpen) {
-      attempts.push(aiText.slice(lastOpen, lastClose + 1));
+  /**
+   * 从卷纲文本提取能力节点，生成显式时间线约束块。
+   * 模型自行推断"觉醒在第几章"不可靠（曾出现第 1 章就用双系、觉醒章被跳过的错误），
+   * 改为把能力节点编号和禁用区间直接写入 prompt。
+   */
+  static buildCapabilityTimeline(outlineText: string): string {
+    const text = outlineText ?? '';
+    let entries: string[] = [];
+    const jsonMatch = text.match(/\[[\s\S]*\]/);
+    if (jsonMatch) {
+      try {
+        const parsed = JSON.parse(jsonMatch[0]);
+        if (Array.isArray(parsed)) {
+          entries = parsed
+            .filter((n: any) => n && (n.title || n.summary))
+            .map((n: any) => `${n.title ?? ''}：${n.summary ?? ''}`);
+        }
+      } catch {
+        entries = [];
+      }
     }
+    if (!entries.length) {
+      entries = text
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean);
+    }
+    const hits = entries
+      .map((e, i) => ({ no: i + 1, e }))
+      .filter(({ e }) => /觉醒|获得|解锁|激活|突破/.test(e));
+    if (!hits.length) return '';
+    const first = hits[0];
+    const list = hits
+      .map((h) => `- 卷纲第 ${h.no} 个节点为能力节点：${h.e.replace(/^- /, '').slice(0, 80)}`)
+      .join('\n');
+    return `【能力时间线——按卷纲严格执行】
+${list}
+- 本批章纲按卷纲节点顺序推进，不得跳过能力节点；每个能力节点必须在对应顺序的某章中完整写出觉醒/获得过程（绝境、触发条件、代价），不得默认主角已拥有
+- 第 ${first.no} 个节点（首个能力节点）之前的章节：主角不得使用任何超自然能力（预判、瞬移、共鸣等异能一律禁用），只能靠体术/头脑/环境；可埋伏笔（旧物发热、异常直觉），但不得点破、不得实际生效
+- 首个能力节点对应章节及之后：方可使用该能力，觉醒后首次使用必须写明"第一次用"的镜头`;
+  }
+
+  /** 解析主角 JSON：容错链——代码块/name锚定/花括号提取 → 常见 JSON 语病修复 → 中文字段名归一 → 正则抢救；无 name 返回 null */
+  static parseProtagonist(aiText: string): any {
+    const text = aiText ?? '';
+    const attempts: string[] = [];
+    const codeBlock = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (codeBlock) attempts.push(codeBlock[1].trim());
+    const objMatch = text.match(/\{[\s\S]*"name"[\s\S]*\}/);
+    if (objMatch) attempts.push(objMatch[0]);
+    const lastOpen = text.lastIndexOf('{');
+    const lastClose = text.lastIndexOf('}');
+    if (lastOpen >= 0 && lastClose > lastOpen) {
+      attempts.push(text.slice(lastOpen, lastClose + 1));
+    }
+
+    // 中文键名归一（模型常输出 姓名/性别 而非 name/gender）
+    const KEY_ALIAS: Record<string, string> = {
+      姓名: 'name',
+      名字: 'name',
+      性别: 'gender',
+      性格: 'personality',
+      身份: 'identity',
+      背景: 'backstory',
+      动机: 'motivation',
+      口头禅: 'catchphrase',
+      说话风格: 'speech_style',
+      外貌: 'appearance',
+    };
+    const normalize = (raw: any): any => {
+      const obj = Array.isArray(raw) ? raw[0] : raw;
+      if (!obj || typeof obj !== 'object') return null;
+      if (!obj.name) {
+        for (const [k, v] of Object.entries(obj)) {
+          const target = KEY_ALIAS[k];
+          if (target && obj[target] == null) obj[target] = v;
+        }
+      }
+      return obj.name ? obj : null;
+    };
+    // 常见 LLM JSON 语病修复：尾逗号、中文引号、中文冒号
+    const repair = (t: string): string =>
+      t
+        .replace(/,\s*([}\]])/g, '$1')
+        .replace(/[“”]/g, '"')
+        .replace(/([{,]\s*)"([^"]{1,40}?)"\s*：/g, '$1"$2":');
     for (const t of attempts) {
       try {
         const parsed = JSON.parse(t);
-        const obj = Array.isArray(parsed) ? parsed[0] : parsed;
-        if (obj && obj.name) return obj;
+        const obj = normalize(parsed);
+        if (obj) return obj;
       } catch {
         /* 尝试下一个提取 */
       }
+      const repaired = repair(t);
+      if (repaired !== t) {
+        try {
+          const parsed = JSON.parse(repaired);
+          const obj = normalize(parsed);
+          if (obj) return obj;
+        } catch {
+          /* 修复后仍失败，继续 */
+        }
+      }
     }
-    return null;
+    // 正则抢救：从散文中按"字段：值"提取（最少拿到姓名即可保留主角约束）
+    const pick = (label: string) => {
+      const m = text.match(
+        new RegExp(`(?:${label})\\s*[:：]\\s*["']?([^"'，,。\\n]{1,30})`),
+      );
+      return m ? m[1].trim() : '';
+    };
+    const name = pick('姓名') || pick('名字') || pick('name');
+    if (!name) return null;
+    return {
+      name,
+      gender: pick('性别'),
+      personality: pick('性格'),
+      identity: pick('身份'),
+      backstory: pick('背景'),
+      motivation: pick('动机'),
+      catchphrase: pick('口头禅'),
+      speech_style: pick('说话风格'),
+      appearance: pick('外貌'),
+    };
+  }
+
+  /**
+   * 对话长期记忆（引导/写作面板共用）：长对话时把早期"作者的发言"压缩成
+   * 【已确认设定】块注入 system。切割策略：条数设上限、字数设预算，
+   * 两者先到先停，只切在完整消息之间（消息长度方差大：纯条数会让
+   * token 失控，纯字数会切断半句话）。必须在 sanitizeMessages 截断之前调用，
+   * 否则 40 条窗口外的设定会被直接丢弃。
+   */
+  static buildChatMemory(messages: { role: string; content: string }[]): {
+    messages: { role: string; content: string }[];
+    memoryBlock: string;
+  } {
+    const KEEP_MAX_MSGS = 8; // 近窗条数上限：保证对话轮次完整
+    const KEEP_MAX_CHARS = 4000; // 近窗字数预算：保证 token 可控
+    const totalChars = messages.reduce(
+      (s, m) => s + (m.content?.length ?? 0),
+      0,
+    );
+    // 全部历史都在预算内（近窗 4000 + 记忆块 1500 余量）→ 不压缩，保完整连贯
+    if (totalChars <= KEEP_MAX_CHARS + 1500) {
+      return { messages, memoryBlock: '' };
+    }
+    // 近窗：从最新往回取整条消息，字数预算与条数上限先到先停（绝不切半句）
+    let chars = 0;
+    let kept = 0;
+    for (let i = messages.length - 1; i >= 0 && kept < KEEP_MAX_MSGS; i--) {
+      const len = messages[i].content?.length ?? 0;
+      if (kept > 0 && chars + len > KEEP_MAX_CHARS) break;
+      chars += len;
+      kept++;
+    }
+    const recent = messages.slice(messages.length - kept);
+    const userLines = messages
+      .slice(0, messages.length - kept)
+      .filter((m) => m.role === 'user')
+      .map((m) => sanitizePrompt(m.content).replace(/\s+/g, ' ').trim())
+      .filter(Boolean)
+      .map((c) => (c.length > 200 ? c.slice(0, 200) + '…' : c));
+    if (!userLines.length) {
+      return { messages: recent, memoryBlock: '' };
+    }
+    // 记忆块总量封顶 2000 字，从最旧的开始丢（越近的设定越重要）
+    let total = 0;
+    const keptLines: string[] = [];
+    for (let i = userLines.length - 1; i >= 0; i--) {
+      const l = userLines[i];
+      total += l.length;
+      if (total > 2000) break;
+      keptLines.unshift(l); // 保持时间顺序
+    }
+    const memoryBlock = `\n\n【已确认设定——你和作者在前面讨论中敲定的内容，按时间顺序排列；同一事项有多条发言时，以靠后的最新发言为准；若与最近对话中的新指示冲突，一律以最近对话为准】\n${keptLines.join('\n')}\n`;
+    return { messages: recent, memoryBlock };
+  }
+
+  /**
+   * 设定集合并：AI 维护版设定记忆。把作者的新发言合并进现有设定集——
+   * 修改/推翻旧设定时旧条目必须删除（解决静态记忆块"新旧设定并存"的冲突问题）。
+   * 失败返回 null，调用方回退静态压缩块。
+   */
+  private async mergeChatSettings(
+    baseUrl: string,
+    apiKey: string,
+    model: string,
+    existing: string[],
+    newLines: string[],
+  ): Promise<string[] | null> {
+    const prompt = `你是小说设定管理员。把作者的新发言合并进现有设定集。
+
+【现有设定集】${existing.length ? existing.map((s, i) => `${i + 1}. ${s}`).join('\n') : '（空）'}
+
+【新增作者发言】${newLines.map((s, i) => `${i + 1}. ${s}`).join('\n')}
+
+【合并规则】
+1. 只保留对创作有约束力的设定（人物/世界观/剧情方向/写作偏好），闲聊不收录
+2. 新发言修改或推翻旧设定：用新表述替换旧条目，旧条目必须删除，不得新旧并存
+3. 同一事项合并为一条，每条 ≤40 字、具体可执行
+4. 未被推翻的旧条目原样保留
+5. 按时间从旧到新排列，最多 15 条
+【输出】只输出 JSON 字符串数组，不要任何其他文字。`;
+    try {
+      const r = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: prompt },
+            { role: 'user', content: '请输出合并后的设定集。' },
+          ],
+          max_tokens: 1024,
+          temperature: 0.3,
+          thinking: { type: 'disabled' },
+        }),
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (!r.ok) return null;
+      const d = await r.json();
+      const raw = (d.choices?.[0]?.message?.content ?? '').trim();
+      const arrMatch = raw.match(/\[[\s\S]*\]/);
+      if (!arrMatch) return null;
+      const parsed = JSON.parse(arrMatch[0]);
+      if (!Array.isArray(parsed)) return null;
+      const cleaned = parsed
+        .filter((s: any) => typeof s === 'string' && s.trim())
+        .map((s: string) => s.trim().slice(0, 60))
+        .slice(0, 15);
+      return cleaned.length ? cleaned : null;
+    } catch {
+      return null;
+    }
   }
 
   /** 故事前中后三段节选（供书名生成等理解完整故事弧线的场景） */
@@ -5258,6 +5582,15 @@ ${storyText.slice(-800)}`;
           2048,
         );
         protagonist = AiService.parseProtagonist(protText);
+        if (!protagonist) {
+          // 解析失败重试一次：主角约束缺失会拖累大纲/章纲质量，重试成本远低于补救成本
+          const retryText = await aiCall(
+            `${protagonistPrompt}\n\n【上次输出无法解析——本次只输出 JSON 对象】首字符必须是 {，末字符必须是 }，不要代码块、不要解释、不要任何其他文字。`,
+            `题材和想法：${shortPremise}\n\n世界观：${worldText.slice(0, 1500)}\n\n请创作主角。`,
+            2048,
+          );
+          protagonist = AiService.parseProtagonist(retryText);
+        }
         if (protagonist) {
           protagonistText = [
             `姓名：${protagonist.name}`,
@@ -5328,6 +5661,8 @@ ${storyText.slice(-800)}`;
 5. 节点必须体现主角的动机驱动：主角的每个关键选择都能回溯到他的欲望/缺陷/金手指，禁止主角随波逐流
 6. 每个节点必须内置冲突或爽点（打压→反转→打脸，或悬念揭示），摘要用"谁+做了什么+得到什么结果"的直白句式，禁止文艺腔与抽象抒情
 7. 主角道德基线：报复/打脸对象必须是真恶人（对方先作恶），情节不得伤害无辜之人（仆从/路人）；灰色行为须有正当理由
+8. 能力/金手指的觉醒节点必须在对应节点的摘要中明确写出（如"绝境觉醒共鸣+空间双系"），供章纲生成对齐时间线；觉醒节点之前的节点摘要不得出现能力使用，只能写铺垫/伏笔
+9. 反派与配角要有多样动机（立场/苦衷/利益），禁止多个节点连续出现"有人看不起主角→被打脸"的同构循环；节点爽点模式按番茄偏好轮换（规则内/信息差打脸、升级养成、情绪价值、悬念揭示）；权威角色（教师/考官/官员）言行须符合其立场利益，不得无理由敌视主角；节点功能轮换：冲突节点不超过一半，收获（升级/资源）、铺垫（关系线/日常）、揭露（真相/伏笔）节点各至少 1 个，冲突节点之间必须有缓冲节点
 
 【数量要求】
 至少输出 8-12 个情节节点，覆盖前 1-2 卷。标题简洁有力。
@@ -5373,22 +5708,51 @@ ${storyText.slice(-800)}`;
 3. 上一章的钩子=下一章开篇要回答的问题，因果承接
 4. 一章一小冲突，10 章内至少 2 个小高潮
 5. 爽点必须具体（什么被证明/谁被打脸/什么反转），禁止"主角变强"式空话
-6. 表述直白网文化："打脸""捡漏""当众揭穿"式话术优先，禁止文学化修饰
+6. 表述直白网文化，禁止文学化修饰
 7. 打脸/报复对象必须是真恶人（对方先作恶），不得牵连无辜之人
+8. 能力/金手指时间线铁律：以【能力时间线】块为准——首个能力节点之前的章节禁止出现任何异能（连"预判""瞬移"等字眼都不能有），只能埋伏笔；觉醒必须在对应章节作为完整情节写出，不得跳过、不得默认已拥有
+9. 反派动机多样化：反派不能全是"看不起主角"式脸谱，至少一个反派有自己的立场/苦衷/合理动机；同一反派不得连续 3 章作为主要阻碍
+10. 爽点机制按番茄长篇偏好轮换：打脸须升级为规则内打脸/信息差打脸（对手越精明、越站得住，翻盘越爽），禁止"当众嘲讽→当众打脸"同构循环；爽点模式多样化——升级养成快感（变强/解锁/资源）、情绪价值（被理解/被看见）、悬念揭示、智力破局各至少出现一次
+11. 冲突来源多样化：人际、环境与规则、主角内心缺陷三类冲突至少各出现一次，禁止全篇都是"有人找茬→反击"的同构循环
+12. 权威角色理性铁律：教师、考官、官员等权威配角的言行必须符合其身份立场与自身利益——刁难主角只能出于真实利益冲突（名额竞争、隐瞒事故、站队压力），禁止"看不起主角"式无理由贬损；对主角的质疑应为专业存疑而非人身嘲讽；每批章纲中至少一半配角立场中立或善意
+13. 章节功能轮换（核心节奏）：本批章纲必须包含四类功能——冲突章（对抗/考核/战斗）不超过一半且不得连续超过 2 章、收获章（升级/获得资源/奖励兑现）至少 1 章、铺垫章（日常/关系线/感情/内心戏）至少 1 章、揭露章（世界观真相/阴谋推进/伏笔回收）至少 1 章；冲突章之间必须有缓冲章
+14. 钩子类型轮换：禁止连续 3 章"角色放狠话/威胁"式钩子；本批至少 3 章钩子改为信息揭示（物证/真相碎片）、情感悬置（牵挂/误会/失约）或主角主动做出的危险决定
+15. 对立势力行动具体化：对手施加压力必须用实际动作（动手脚/改档案/截资源/设局），禁止只有语言挑衅；同一阴谋逐章递进露出新一层，本批内至少完成一次阴谋的阶段性揭露
+
+${AiService.buildCapabilityTimeline(outlineText)}
 
 只输出 10 行，每行一条章纲，不要编号、不要其他文字。`;
-        const chOutText = await aiCall(
-          chapterOutlinePrompt,
-          `题材和想法：${shortPremise}\n\n世界观：${worldText.slice(0, 1000)}${protagonistText ? `\n\n【主角设定】\n${protagonistText}` : ''}\n\n卷纲：${outlineText.slice(0, 2000)}\n\n请设计前 10 章细纲。`,
-          2048,
-        );
+        const chOutlineUserPrompt = `题材和想法：${shortPremise}\n\n世界观：${worldText.slice(0, 1000)}${protagonistText ? `\n\n【主角设定】\n${protagonistText}` : ''}\n\n卷纲：${outlineText.slice(0, 2000)}\n\n请设计前 10 章细纲。`;
+        let chOutText = await aiCall(chapterOutlinePrompt, chOutlineUserPrompt, 2048);
         chapterOutlines = AiService.parseChapterOutlines(chOutText);
-        send('step', {
-          step: 'chapter-outlines',
-          status: 'done',
-          label: `章纲已生成（${chapterOutlines.length} 章）`,
-          preview: chapterOutlines.slice(0, 3).join('\n'),
-        });
+        // 解析为 0：模型未按格式输出，重试一次
+        if (chapterOutlines.length === 0 && chOutText.trim()) {
+          console.warn(
+            '[quickCreate] chapter outlines parse 0, retrying. raw head:',
+            chOutText.slice(0, 200).replace(/\n/g, '\\n'),
+          );
+          chOutText = await aiCall(
+            chapterOutlinePrompt,
+            chOutlineUserPrompt,
+            2048,
+          );
+          chapterOutlines = AiService.parseChapterOutlines(chOutText);
+        }
+        if (chapterOutlines.length === 0) {
+          send('step', {
+            step: 'chapter-outlines',
+            status: 'done',
+            label: `章纲生成失败（${chOutText.length}字无法解析）——可到写作页点"生成章纲"重试`,
+            preview: chOutText.slice(0, 200),
+          });
+        } else {
+          send('step', {
+            step: 'chapter-outlines',
+            status: 'done',
+            label: `章纲已生成（${chapterOutlines.length} 章）`,
+            preview: chapterOutlines.slice(0, 3).join('\n'),
+          });
+        }
       } catch (e: any) {
         console.error('[quickCreate] chapter outlines failed:', e.message ?? e);
         send('step', {
