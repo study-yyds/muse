@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, authFetch } from "@/services/api";
+import { api, authFetch, fetchQuotaRemaining } from "@/services/api";
 import type { ChapterDetail } from "@muse/shared";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -244,6 +244,15 @@ export function WritingEditor({ bookId, bookType }: Props) {
   // 整章生成：按章纲写完整一章（追加到章末），服务端单轮为主、字数不足补写
   const generateWholeChapter = async () => {
     if (!activeChapterId || generatingChapter) return;
+    // 预估成本提示（整章生成约 4000 字）
+    const remaining = await fetchQuotaRemaining();
+    if (remaining != null) {
+      if (remaining < 4000) {
+        toast({ title: `本月剩余 ${remaining.toLocaleString()} 字，整章生成（约 4000 字）可能超额`, variant: "destructive" });
+      } else {
+        toast({ title: `本次预计消耗约 4000 字（本月剩余 ${remaining.toLocaleString()} 字）` });
+      }
+    }
     setGeneratingChapter(true);
     const controller = new AbortController();
     const token = localStorage.getItem("token");

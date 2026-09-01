@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, authFetch } from "@/services/api";
+import { api, authFetch, fetchQuotaRemaining } from "@/services/api";
 import { WRITING_STYLES } from "@/lib/writing-styles";
 import { ModelSelector, customKeyValue } from "@/components/settings/ModelSelector";
 import type { BookDetail } from "@muse/shared";
@@ -791,6 +791,16 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
 
   // 整章生成循环：按目标章号列表逐个生成（每章独立 SSE 调用，追加式写入）
   const generateChaptersLoop = async (targets: number[], label: string) => {
+    // 预估成本提示（每章约 4000 字）
+    const remaining = await fetchQuotaRemaining();
+    const estimate = targets.length * 4000;
+    if (remaining != null) {
+      if (remaining < estimate) {
+        toast({ title: `本月剩余 ${remaining.toLocaleString()} 字，生成${label}（约 ${estimate.toLocaleString()} 字）可能超额`, variant: "destructive" });
+      } else {
+        toast({ title: `本次预计消耗约 ${estimate.toLocaleString()} 字（本月剩余 ${remaining.toLocaleString()} 字）` });
+      }
+    }
     const um: Msg = { role: "user", content: `生成${label}` };
     const newMsgs = [...msgs, um];
     setMsgs(newMsgs);

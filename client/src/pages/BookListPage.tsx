@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, ApiError, authFetch } from "@/services/api";
+import { api, ApiError, authFetch, fetchQuotaRemaining } from "@/services/api";
 import type { BookListItem } from "@muse/shared";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -312,6 +312,16 @@ export function BookListPage() {
   };
 
   const doQuickCreate = async (premise: string, type: string, guideSummary?: string, guideFullLog?: string) => {
+    // 预估成本提示（长篇全套约 8000 字；短篇梗概三方向约 2500 字，正文另计）
+    const remaining = await fetchQuotaRemaining();
+    const estimate = type === 'short' ? 2500 : 8000;
+    if (remaining != null) {
+      if (remaining < estimate) {
+        toast({ title: `本月剩余 ${remaining.toLocaleString()} 字，本次约需 ${estimate.toLocaleString()} 字，可能超额`, variant: "destructive" });
+      } else {
+        toast({ title: `本次预计消耗约 ${estimate.toLocaleString()} 字（本月剩余 ${remaining.toLocaleString()} 字）` });
+      }
+    }
     setQuickGenerating(true);
     setQuickSteps([]);
     await acquireWakeLock();
@@ -818,6 +828,15 @@ export function BookListPage() {
   // 梗概确认后：调 generate-story 写正文（SSE 进度 + 书名候选）
   const doGenerateStory = async (premiseOverride?: string, resume = false) => {
     if (!quickOutlineBookId) return;
+    // 预估成本提示（短篇三轮正文+事实提取+精修约 12000 字）
+    const remaining = await fetchQuotaRemaining();
+    if (remaining != null) {
+      if (remaining < 12000) {
+        toast({ title: `本月剩余 ${remaining.toLocaleString()} 字，写完整故事约需 12000 字，可能超额`, variant: "destructive" });
+      } else {
+        toast({ title: `本次预计消耗约 12000 字（本月剩余 ${remaining.toLocaleString()} 字）` });
+      }
+    }
     setQuickGenerating(true);
     setQuickSteps([]);
     await acquireWakeLock();

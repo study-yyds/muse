@@ -1,8 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useDeferredValue } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/services/api";
 import { useAuthStore } from "@/stores/auth";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { ArrowLeft, Shield, Ban, CheckCircle, UserRound, FileText, Plus, Trash2, Pencil } from "lucide-react";
@@ -18,9 +19,11 @@ interface UserRow {
   role: string;
   status: string;
   book_limit: number;
+  monthly_words_quota?: number;
   created_at: string;
   total_tokens: number;
   request_count: number;
+  month_words?: number;
 }
 
 interface TemplateRow {
@@ -34,7 +37,7 @@ interface TemplateRow {
   data: any;
 }
 
-type Tab = "users" | "templates";
+type Tab = "users" | "templates" | "audit";
 
 const TYPES = ["character", "world", "outline"] as const;
 const TYPE_LABELS: Record<string, string> = { character: "角色", world: "世界观", outline: "大纲" };
@@ -44,14 +47,20 @@ const TYPE_LABELS: Record<string, string> = { character: "角色", world: "世�
 function UsersPanel() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
+  const me = useAuthStore((s) => s.user);
   const [page, setPage] = useState(1);
+  const [phoneQuery, setPhoneQuery] = useState("");
+  // 搜索防抖：输入框即时响应，查询参数延迟提交（避免每敲一个字就发起一次请求、卡输入）
+  const debouncedQuery = useDeferredValue(phoneQuery);
 
   const { data, isLoading } = useQuery({
-    queryKey: ["admin-users", page],
+    queryKey: ["admin-users", page, debouncedQuery],
     queryFn: () =>
       api.get<{ data: { items: UserRow[]; total: number; page: number } }>(
-        `/admin/users?page=${page}&pageSize=20`
+        `/admin/users?page=${page}&pageSize=20${debouncedQuery.trim() ? `&phone=${encodeURIComponent(debouncedQuery.trim())}` : ""}`
       ),
+    // 搜索词/翻页切换时先保留上一份数据展示，避免骨架屏闪断、输入框重挂载丢焦点
+    placeholderData: (prev: any) => prev,
   });
 
   const users = data?.data?.items ?? [];
@@ -64,26 +73,48 @@ function UsersPanel() {
       body,
     }: {
       userId: string;
-      body: { role?: string; status?: string; book_limit?: number };
+      body: {
+        role?: string;
+        status?: string;
+        book_limit?: number;
+        monthly_words_quota?: number;
+      };
     }) => api.patch(`/admin/users/${userId}`, body),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["admin-users"] });
       toast({ title: "已更新" });
     },
+    onError: (e: any) => {
+      toast({ title: e?.message ?? "操作失败", variant: "destructive" });
+    },
   });
-
-  if (isLoading) return <div className="space-y-2">{Array.from({ length: 5 }).map((_, i) => (<Skeleton key={i} className="h-12 w-full" />))}</div>;
 
   return (
     <>
+      {/* 搜索框常驻渲染：不在 isLoading 分支里，切换搜索词不会重挂载丢焦点 */}
+      <div className="flex items-center gap-2 mb-3">
+        <Input
+          value={phoneQuery}
+          onChange={(e) => { setPhoneQuery(e.target.value); setPage(1); }}
+          placeholder="按手机号搜索..."
+          className="max-w-56"
+        />
+      </div>
+      {isLoading ? (
+        <div className="space-y-2">{Array.from({ length: 5 }).map((_, i) => (<Skeleton key={i} className="h-12 w-full" />))}</div>
+      ) : (
+        <>
       <div className="rounded-lg border border-border overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-muted/50">
             <tr>
               <th className="text-left px-4 py-2 font-medium text-muted-foreground">手机号</th>
+              <th className="text-left px-4 py-2 font-medium text-muted-foreground">注册时间</th>
               <th className="text-left px-4 py-2 font-medium text-muted-foreground">角色</th>
               <th className="text-left px-4 py-2 font-medium text-muted-foreground">状态</th>
-              <th className="text-right px-4 py-2 font-medium text-muted-foreground">配额</th>
+              <th className="text-right px-4 py-2 font-medium text-muted-foreground">作品数</th>
+              <th className="text-right px-4 py-2 font-medium text-muted-foreground">本月字数</th>
+              <th className="text-right px-4 py-2 font-medium text-muted-foreground">字数/月额度</th>
               <th className="text-right px-4 py-2 font-medium text-muted-foreground">Token</th>
               <th className="text-center px-4 py-2 font-medium text-muted-foreground">操作</th>
             </tr>
@@ -92,17 +123,47 @@ function UsersPanel() {
             {users.map((u) => (
               <tr key={u.user_id} className="border-t border-border">
                 <td className="px-4 py-2.5 flex items-center gap-2"><UserRound className="size-3.5 text-muted-foreground" />{u.phone_number}</td>
+                <td className="px-4 py-2.5 text-xs text-muted-foreground">
+                  {u.created_at ? new Date(u.created_at).toLocaleDateString("zh-CN") : "-"}
+                </td>
                 <td className="px-4 py-2.5"><span className={u.role === "admin" ? "text-primary font-medium" : "text-foreground"}>{u.role === "admin" ? "管理员" : "用户"}</span></td>
                 <td className="px-4 py-2.5"><span className={u.status === "active" ? "text-green-600" : u.status === "suspended" ? "text-yellow-600" : "text-red-600"}>{u.status === "active" ? "正常" : u.status === "suspended" ? "暂停" : "封禁"}</span></td>
                 <td className="px-4 py-2.5 text-right">{u.book_limit}</td>
+                <td className="px-4 py-2.5 text-right text-xs text-muted-foreground">
+                  {(u.month_words ?? 0).toLocaleString()}
+                </td>
+                <td className="px-4 py-2.5 text-right">
+                  <input
+                    type="number"
+                    defaultValue={u.monthly_words_quota ?? 30000}
+                    disabled={u.user_id === me?.user_id}
+                    title={
+                      u.user_id === me?.user_id
+                        ? "不能修改自己的账户"
+                        : "月度 AI 字数额度（-1 表示不限）"
+                    }
+                    onBlur={(e) => {
+                      const v = Number(e.target.value);
+                      if (!Number.isFinite(v)) return;
+                      if (v === (u.monthly_words_quota ?? 30000)) return;
+                      updateMutation.mutate({
+                        userId: u.user_id,
+                        body: { monthly_words_quota: v },
+                      });
+                    }}
+                    className="w-24 text-right rounded border border-border bg-background px-2 py-1 text-sm"
+                  />
+                </td>
                 <td className="px-4 py-2.5 text-right text-xs text-muted-foreground">{u.total_tokens?.toLocaleString()}</td>
                 <td className="px-4 py-2.5">
                   <div className="flex justify-center gap-1">
-                    <Button variant="ghost" size="icon-xs" title={u.status === "active" ? "暂停" : "恢复"}
+                    <Button variant="ghost" size="icon-xs" disabled={u.user_id === me?.user_id}
+                      title={u.user_id === me?.user_id ? "不能修改自己的账户" : u.status === "active" ? "暂停" : "恢复"}
                       onClick={() => updateMutation.mutate({ userId: u.user_id, body: { status: u.status === "active" ? "suspended" : "active" } })}>
                       {u.status === "active" ? <Ban className="size-3 text-yellow-600" /> : <CheckCircle className="size-3 text-green-600" />}
                     </Button>
-                    <Button variant="ghost" size="icon-xs" title={u.role === "admin" ? "降级" : "升级"}
+                    <Button variant="ghost" size="icon-xs" disabled={u.user_id === me?.user_id}
+                      title={u.user_id === me?.user_id ? "不能修改自己的账户" : u.role === "admin" ? "降级" : "升级"}
                       onClick={() => updateMutation.mutate({ userId: u.user_id, body: { role: u.role === "admin" ? "user" : "admin" } })}>
                       <Shield className={`size-3 ${u.role === "admin" ? "text-primary" : "text-muted-foreground"}`} />
                     </Button>
@@ -110,7 +171,7 @@ function UsersPanel() {
                 </td>
               </tr>
             ))}
-            {users.length === 0 && <tr><td colSpan={6} className="px-4 py-8 text-center text-muted-foreground">暂无用户</td></tr>}
+            {users.length === 0 && <tr><td colSpan={9} className="px-4 py-8 text-center text-muted-foreground">暂无用户</td></tr>}
           </tbody>
         </table>
       </div>
@@ -120,6 +181,8 @@ function UsersPanel() {
           <span className="text-xs text-muted-foreground">{page} / {totalPages}</span>
           <Button variant="outline" size="xs" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)}>下一页</Button>
         </div>
+      )}
+        </>
       )}
     </>
   );
@@ -366,6 +429,76 @@ function TemplatesPanel() {
   );
 }
 
+// ============== 审计日志 ==============
+
+interface AuditRow {
+  id: string;
+  action: string;
+  detail: any;
+  operator_phone: string;
+  target_phone: string;
+  created_at: string;
+}
+
+function AuditPanel() {
+  const { data, isLoading } = useQuery({
+    queryKey: ["admin-audit"],
+    queryFn: () => api.get<{ data: AuditRow[] }>(`/admin/audit-logs`),
+  });
+  const logs = data?.data ?? [];
+
+  if (isLoading) return <Skeleton className="h-24 w-full" />;
+
+  const detailText = (d: any) => {
+    if (!d || typeof d !== "object") return "-";
+    const parts: string[] = [];
+    const labels: Record<string, string> = {
+      role: "角色",
+      status: "状态",
+      book_limit: "作品数",
+      monthly_words_quota: "字数/月",
+    };
+    for (const [k, v] of Object.entries(d)) {
+      if (k in labels) parts.push(`${labels[k]}=${v}`);
+    }
+    return parts.join("，") || "-";
+  };
+
+  return (
+    <div className="rounded-lg border border-border overflow-hidden">
+      <table className="w-full text-sm">
+        <thead className="bg-muted/50">
+          <tr>
+            <th className="text-left px-4 py-2 font-medium text-muted-foreground">时间</th>
+            <th className="text-left px-4 py-2 font-medium text-muted-foreground">操作者</th>
+            <th className="text-left px-4 py-2 font-medium text-muted-foreground">目标</th>
+            <th className="text-left px-4 py-2 font-medium text-muted-foreground">操作</th>
+            <th className="text-left px-4 py-2 font-medium text-muted-foreground">详情</th>
+          </tr>
+        </thead>
+        <tbody>
+          {logs.map((l) => (
+            <tr key={l.id} className="border-t border-border">
+              <td className="px-4 py-2.5 text-xs text-muted-foreground">
+                {new Date(l.created_at).toLocaleString("zh-CN")}
+              </td>
+              <td className="px-4 py-2.5">{l.operator_phone}</td>
+              <td className="px-4 py-2.5">{l.target_phone}</td>
+              <td className="px-4 py-2.5">
+                {l.action === "update_user" ? "修改用户" : l.action}
+              </td>
+              <td className="px-4 py-2.5 text-xs text-muted-foreground">{detailText(l.detail)}</td>
+            </tr>
+          ))}
+          {logs.length === 0 && (
+            <tr><td colSpan={5} className="px-4 py-8 text-center text-muted-foreground">暂无审计记录</td></tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 // ============== 主页面 ==============
 
 export function AdminPage() {
@@ -432,16 +565,16 @@ export function AdminPage() {
       )}
 
       <div className="flex gap-2 border-b border-border">
-        {(["users", "templates"] as Tab[]).map((t) => (
+        {(["users", "templates", "audit"] as Tab[]).map((t) => (
           <button key={t}
             onClick={() => setTab(t)}
             className={cn("px-4 py-2 text-sm border-b-2 transition-colors", tab === t ? "border-primary text-foreground font-medium" : "border-transparent text-muted-foreground hover:text-foreground")}>
-            {t === "users" ? "用户管理" : "模板管理"}
+            {t === "users" ? "用户管理" : t === "templates" ? "模板管理" : "审计日志"}
           </button>
         ))}
       </div>
 
-      {tab === "users" ? <UsersPanel /> : <TemplatesPanel />}
+      {tab === "users" ? <UsersPanel /> : tab === "templates" ? <TemplatesPanel /> : <AuditPanel />}
     </div>
   );
 }

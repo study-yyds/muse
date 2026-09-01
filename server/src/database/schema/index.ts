@@ -43,6 +43,10 @@ export { user_api_keys } from './api-keys';
 
 // ---- Token 用量 ----
 export { token_usage_records, user_monthly_quota } from './usage';
+export { admin_audit_logs } from './admin-audit';
+
+// ---- 套餐账单 ----
+export { billing_orders } from './billing-order';
 
 // ---- 模板库 ----
 export { templates } from './templates';

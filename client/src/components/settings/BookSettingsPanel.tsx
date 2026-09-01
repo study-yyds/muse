@@ -12,7 +12,9 @@ import { Badge } from "@/components/ui/badge";
 import { ModelSelector, customKeyValue } from "@/components/settings/ModelSelector";
 import { SynopsisSection } from "@/components/settings/SynopsisSection";
 import { PlotThreadsEditor } from "@/components/settings/PlotThreadsEditor";
+import { PlansDialog } from "@/components/settings/PlansDialog";
 import { WRITING_STYLES } from "@/lib/writing-styles";
+import { PLANS, planNameFor } from "@/lib/plans";
 
 interface BookSettings {
   preset_style: string;
@@ -61,6 +63,7 @@ export function BookSettingsPanel({ bookId, book, coverUrl, onCoverChange }: Pro
   const [visualStyle, setVisualStyle] = useState("");
   const [coverLightbox, setCoverLightbox] = useState(false);
   const [coverHistory, setCoverHistory] = useState<string[]>([]);
+  const [plansOpen, setPlansOpen] = useState(false);
 
   const doMimic = async (body: Record<string, any>) => {
     setIsMimicking(true);
@@ -139,7 +142,20 @@ export function BookSettingsPanel({ bookId, book, coverUrl, onCoverChange }: Pro
       {/* 本月 AI 用量（计费口径：生成字数） */}
       {quota && quota.quota_words != null && (
         <div className="space-y-2">
-          <Label className="text-sm font-medium">本月 AI 用量</Label>
+          <div className="flex items-center gap-2">
+            <Label className="text-sm font-medium">本月 AI 用量</Label>
+            <span className="text-xs text-muted-foreground">
+              {planNameFor(quota.quota_words)}
+            </span>
+            <Button
+              size="xs"
+              variant="outline"
+              className="ml-auto"
+              onClick={() => setPlansOpen(true)}
+            >
+              升级套餐
+            </Button>
+          </div>
           <div className="flex items-center gap-2">
             <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
               <div
@@ -155,6 +171,14 @@ export function BookSettingsPanel({ bookId, book, coverUrl, onCoverChange }: Pro
           </div>
         </div>
       )}
+      <PlansDialog
+        open={plansOpen}
+        onOpenChange={setPlansOpen}
+        currentQuotaWords={quota?.quota_words ?? null}
+        onPurchased={() =>
+          queryClient.invalidateQueries({ queryKey: ["ai-quota"] })
+        }
+      />
       <Separator />
       <h2 className="text-base font-semibold text-foreground flex items-center gap-2">
         <Settings className="size-5" />

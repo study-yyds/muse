@@ -104,6 +104,16 @@ export async function authFetch(
   return res;
 }
 
+/** 本月 AI 字数剩余（计费口径=生成字数；null 表示不限或查询失败） */
+export async function fetchQuotaRemaining(): Promise<number | null> {
+  try {
+    const r = await api.get<{ data: { remaining: number | null } }>(`/ai/quota`);
+    return r?.data?.remaining ?? null;
+  } catch {
+    return null;
+  }
+}
+
 export const api = {
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, body?: unknown) =>

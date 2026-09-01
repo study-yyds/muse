@@ -11,6 +11,7 @@ import { TemplatesModule } from './templates/templates.module';
 import { ExportModule } from './export/export.module';
 import { CharTestModule } from './char-test/char-test.module';
 import { AdminModule } from './admin/admin.module';
+import { BillingModule } from './billing/billing.module';
 import { PromoModule } from './promo/promo.module';
 
 @Module({
@@ -27,6 +28,7 @@ import { PromoModule } from './promo/promo.module';
     ExportModule,
     CharTestModule,
     AdminModule,
+    BillingModule,
     PromoModule,
   ],
 })
