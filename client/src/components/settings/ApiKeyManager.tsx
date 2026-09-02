@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { X, Plus } from "lucide-react";
 
+/** BYOK 全量开放：有自有 Key 优先使用；平台额度耗尽后自有 Key 是兜底续写通道 */
 export function ApiKeyManager() {
   const [name, setName] = useState("");
   const [key, setKey] = useState("");
@@ -66,7 +67,8 @@ export function ApiKeyManager() {
       <div>
         <h4 className="text-sm font-medium mb-2">API Key 管理</h4>
         <p className="text-xs text-muted-foreground mb-3">
-          添加你自己的大模型 API Key，留空则使用平台内置 Key
+          添加你自己的大模型 API Key，留空则使用平台内置 Key。配置后优先生效；
+          本月平台字数额度用完后，仍可用自己的 Key 继续写作（不消耗平台额度）。
         </p>
 
         {/* 已有 Key 列表 */}

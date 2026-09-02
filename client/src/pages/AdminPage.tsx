@@ -104,7 +104,7 @@ function UsersPanel() {
         <div className="space-y-2">{Array.from({ length: 5 }).map((_, i) => (<Skeleton key={i} className="h-12 w-full" />))}</div>
       ) : (
         <>
-      <div className="rounded-lg border border-border overflow-hidden">
+      <div className="rounded-lg border border-border overflow-hidden overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-muted/50">
             <tr>
@@ -391,7 +391,7 @@ function TemplatesPanel() {
       {showForm && <TemplateForm onSave={(d) => createMutation.mutate(d)} onCancel={() => setShowForm(false)} />}
       {editing && <TemplateForm initial={editing} onSave={(d) => updateMutation.mutate({ id: editing.template_id, body: d })} onCancel={() => setEditing(null)} />}
 
-      <div className="rounded-lg border border-border overflow-hidden">
+      <div className="rounded-lg border border-border overflow-hidden overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-muted/50">
             <tr>
@@ -465,7 +465,7 @@ function AuditPanel() {
   };
 
   return (
-    <div className="rounded-lg border border-border overflow-hidden">
+    <div className="rounded-lg border border-border overflow-hidden overflow-x-auto">
       <table className="w-full text-sm">
         <thead className="bg-muted/50">
           <tr>
@@ -530,7 +530,7 @@ export function AdminPage() {
   if (!user || user.role !== "admin") return null;
 
   return (
-    <div className="max-w-5xl mx-auto p-6 space-y-4">
+    <div className="max-w-5xl mx-auto p-4 sm:p-6 space-y-4">
       <div className="flex items-center gap-3">
         <Button variant="ghost" size="icon-xs" onClick={() => navigate("/")}><ArrowLeft className="size-4" /></Button>
         <h1 className="text-lg font-semibold text-foreground flex items-center gap-2"><Shield className="size-5 text-primary" />管理后台</h1>

@@ -206,6 +206,63 @@ describe('AiService.resolveApiKey', () => {
     expect(result.apiKey).toBe('');
   });
 
+  // ===== BYOK 专业版门禁 =====
+  const encKeyMaterial = () => {
+    const crypto = require('crypto');
+    const encKey = crypto
+      .createHash('sha256')
+      .update('test-enc-key-32bytes-here!!!')
+      .digest();
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', encKey, iv);
+    let enc = cipher.update('gate-key-123', 'utf8');
+    enc = Buffer.concat([enc, cipher.final()]);
+    const tag = cipher.getAuthTag();
+    return {
+      encrypted: Buffer.concat([tag, enc]).toString('base64'),
+      iv: iv.toString('base64'),
+    };
+  };
+  const keyRow = (usage: string) => {
+    const m = encKeyMaterial(); // 同一 IV 配对，避免两次调用生成不同 IV
+    return {
+      api_key_encrypted: m.encrypted,
+      encryption_iv: m.iv,
+      base_url: 'https://gate.example.com/v1',
+      model_name: 'gpt-4o',
+      usage,
+    };
+  };
+  // where 的 thenable 形态：支持 .limit(1) 链（额度/门禁查询）与直接 await（keys 查询）
+  const tRows = (rows: any[]) => ({
+    limit: jest.fn().mockResolvedValue(rows),
+    then: (fn: any) => Promise.resolve(rows).then(fn),
+  });
+
+  it('BYOK 全量开放：免费用户的自定义 Key 正常使用', async () => {
+    // 额度检查已移到平台分支：自有 Key 路径不触发任何额度查询
+    mockDb.where.mockReturnValueOnce(Promise.resolve([keyRow('chat')]));
+    const result = await (service as any).resolveApiKey('user-123', 'chat');
+    expect(result.apiKey).toBe('gate-key-123');
+  });
+
+  it('额度耗尽 + 无自有 Key：平台 Key 被额度拦截', async () => {
+    mockDb.where
+      .mockReturnValueOnce(Promise.resolve([])) // keys 查询：无自有 Key → 走平台分支
+      .mockReturnValueOnce(tRows([{ used: 30000 }])) // 本月已用满
+      .mockReturnValueOnce(tRows([{ quota: 30000 }])); // 额度 3 万
+    await expect(
+      (service as any).resolveApiKey('user-123', 'chat'),
+    ).rejects.toThrow('额度已用完');
+  });
+
+  it('额度耗尽但有自有 Key：正常使用自有 Key（兜底通道不拦截）', async () => {
+    // 自有 Key 分支不触发额度查询——直接返回 Key
+    mockDb.where.mockReturnValueOnce(Promise.resolve([keyRow('chat')]));
+    const result = await (service as any).resolveApiKey('user-123', 'chat');
+    expect(result.apiKey).toBe('gate-key-123');
+  });
+
   it('生图 usage 匹配自定义 Key', async () => {
     const crypto = require('crypto');
     const encKey = crypto

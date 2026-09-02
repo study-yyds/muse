@@ -74,10 +74,8 @@ export class AiService {
     source: 'user' | 'platform';
   }> {
     const db = getDb();
-    // 月度字数额度拦截：所有 AI 调用统一在此检查（计费口径=生成字数）
-    if (userId) {
-      await this.assertMonthlyQuota(userId);
-    }
+    // 月度字数额度拦截只针对平台 Key（计费口径=生成字数）：
+    // 自有 Key 由用户自付成本、不消耗平台额度，作为额度耗尽后的兜底通道不拦截
     if (userId) {
       // 前端指定了具体 Key：只使用该 Key（校验归属 + 启用 + 用途匹配）
       if (keyId) {
@@ -142,6 +140,7 @@ export class AiService {
     // 千问平台 Key
     const isQwen = modelHint?.startsWith('qwen');
     if (isQwen && process.env.QWEN_API_KEY) {
+      if (userId) await this.assertMonthlyQuota(userId);
       return {
         apiKey: process.env.QWEN_API_KEY,
         baseUrl:
@@ -152,6 +151,7 @@ export class AiService {
       };
     }
 
+    if (userId) await this.assertMonthlyQuota(userId);
     return usage === 'image'
       ? {
           apiKey: process.env.VOLCANO_IMAGE_KEY || '',
@@ -402,6 +402,7 @@ ${AiService.GENRE_KNOWLEDGE}
 【主角画像】仅对话中已提到的信息
 【核心驱动力】推着故事往前走的是什么
 【关键节点】仅对话中已讨论的情节
+【已确认设定】作者明确敲定的设定逐条列出（金手指/人物关系/背景/结局方向），不得遗漏
 【叙事风格】视角 + 节奏
 \`\`\`
 ${context ? `\n【用户的初始想法】\n${context}` : ''}`;
@@ -697,10 +698,11 @@ ${after || '（结尾）'}`;
             const prevLine =
               ch.sort_order > 1 ? chOutlines[ch.sort_order - 2] : undefined;
             const line = chOutlines[ch.sort_order - 1];
+            const nextLines = chOutlines.slice(ch.sort_order, ch.sort_order + 2);
             if (line) {
               chapterOutlineBlock = `${prevLine ? `【上一章章纲——本章开篇应回答其钩子】\n${prevLine}\n` : ''}【本章细纲——目标/阻碍/爽点/钩子，写作必须覆盖】
 ${line}（本章已写 ${ch.content.length} 字）
-`;
+${nextLines.length ? `【后续章节细纲——事件先后参考：其中的事件（如激活/觉醒/关键反转）不得提前写进本章】\n${nextLines.join('\n')}\n` : ''}`;
             }
           }
         } catch {
@@ -712,7 +714,7 @@ ${line}（本章已写 ${ch.content.length} 字）
             ? `【开篇三章专项——本章是第 1 章，严格遵守】
 - 前 300 字内完成：冲突爆发 + 主角登场 + 目标浮现 + 钩子落地
 - 禁止开篇大段世界观说明文（设定靠情节和对话带出）
-- 主角的金手指/能力最晚本章上线
+- 主角的金手指/能力最晚本章上线（若能力时间线/章纲安排金手指在后续章节觉醒/激活，则本章只需埋钩子——如异常现象/神秘物件，不要求能力实际登场）
 - 章末强钩子：让读者必须点开下一章
 `
             : ch.sort_order <= 3
@@ -892,7 +894,8 @@ ${styleBlock}`;
 - 若角色在故事进程中经历了重大事件，其言行要有对应变化
 - 本章目标约 2000-5000 字：一次写不完就写到自然停点，作者会继续
 - 当前大纲节点是剧情大方向（通常需要多章完成），本章只推进其中一段，禁止把整个节点情节压缩进一章
-- 若注入有【本章细纲】，以细纲为本章执行计划（目标/阻碍/爽点/钩子），大纲节点仅作方向参考
+- 若注入有【本章细纲】，以细纲为本章执行计划（目标/阻碍/爽点/钩子），大纲节点仅作方向参考；细纲与节点摘要冲突时（如激活/觉醒时机、事件先后），一律以细纲为准，节点摘要中属于后续阶段的情节（如"夜里激活"）不得提前写进本章；本章细纲未提及的事件（激活/觉醒/关键反转等）一律不得从节点摘要自行补写，后续章节细纲中的事件不得提前写
+- 金手指/系统等载体的声音来源必须单一明确：若系统藏在收音机里，收音机里的人声就是系统在说话，不得出现两个无法区分的声源，也不得让载体自我否认"这不是我"
 - 主角道德基线：可以狠、自保、报复，但对象必须是真恶人（对方确实作恶或先害主角）；不得伤害无辜之人（仆从/路人）；灰色行为必须有正当理由（被逼到绝境/对方作恶在先）；黑化反派型主角也必须有可理解的动机，不得无缘无故作恶`;
 
     const writeReplyFormat = `【回复格式——严格遵守】
@@ -1856,7 +1859,7 @@ ${own?.facts ? `【本章已确立】\n${own.facts}\n` : ''}${recent?.facts ? `�
       const guideSummary = (settings?.extra ?? {}) as Record<string, any>;
       const guideBlock =
         (guideSummary?.guide_summary as string | undefined)?.slice(0, 800) ?? '';
-      const outlineGenPrompt = `你是网文大纲规划助手。根据下面的信息为这部小说设计情节大纲（卷纲），至少 8-12 个节点。
+      const outlineGenPrompt = `你是网文大纲规划助手。根据下面的信息为这部小说设计情节大纲（卷纲），至少 10-14 个节点，必须覆盖到全书结局：前 1-2 卷细节点（8-10 个），后续每卷 1-2 个粗节点，最后一个节点为全书结局（大结局+尾声），禁止只写到中段就停。
 
 【书名】${bookRow?.title ?? '（未命名）'}
 
@@ -1869,6 +1872,8 @@ ${continuityBlock ? `【已写正文参考——大纲必须承接，不重写�
 3. 每个节点必须内置冲突或爽点；爽点按番茄长篇偏好——规则内/信息差打脸（对手不降智）、升级养成快感、情绪价值、悬念揭示；节点功能轮换：冲突节点不超过一半，收获/铺垫/揭露节点各至少 1 个
 4. 摘要用"谁+做了什么+得到什么结果"的直白句式，禁止文艺腔
 5. 能力/金手指的觉醒节点必须在对应节点的摘要中明确写出（如"绝境觉醒共鸣+空间双系"），供章纲生成对齐时间线；觉醒节点之前的节点摘要不得出现能力使用，只能写铺垫/伏笔
+6. 全程骨架式：前 1-2 卷细节点（8-10 个），后续每卷 1-2 个粗节点，最后一个节点必须是全书结局（大结局+尾声）；禁止只写到中段就停
+6. 全程骨架式：前 1-2 卷细节点（8-10 个），后续每卷 1-2 个粗节点，最后一个节点必须是全书结局（大结局+尾声）；禁止只写到中段就停
 
 【输出格式——严格遵守】
 只输出 JSON 数组，不要任何其他文字。title 精炼（8字内），summary 简短（30字内）：
@@ -2034,6 +2039,7 @@ ${existingLines.length ? `【上一批章纲结尾】\n${existingLines.slice(-3)
       model?: string;
       key_id?: string;
       style?: string;
+      replace?: boolean; // true = 覆盖重新生成（视本章为空，从开头写并替换保存）
     },
   ) {
     const db = getDb();
@@ -2087,7 +2093,7 @@ ${existingLines.length ? `【上一批章纲结尾】\n${existingLines.slice(-3)
         .limit(1);
       const extra = (settings?.extra ?? {}) as Record<string, any>;
 
-      // 章纲：当前行 + 上一行（开篇应回答其钩子）
+      // 章纲：当前行 + 上一行（开篇应回答其钩子）+ 后续两行（事件先后参考，防提前写）
       const chOutlines = extra.chapter_outlines as string[] | undefined;
       let chapterPlanBlock = '';
       let planHook = '';
@@ -2095,8 +2101,9 @@ ${existingLines.length ? `【上一批章纲结尾】\n${existingLines.slice(-3)
         const line = chOutlines[ch.sort_order - 1];
         const prevLine =
           ch.sort_order > 1 ? chOutlines[ch.sort_order - 2] : undefined;
+        const nextLines = chOutlines.slice(ch.sort_order, ch.sort_order + 2);
         if (line) {
-          chapterPlanBlock = `${prevLine ? `【上一章章纲——本章开篇应回答其钩子】\n${prevLine}\n` : ''}【本章细纲——目标/阻碍/爽点/钩子，写作必须覆盖】\n${line}\n`;
+          chapterPlanBlock = `${prevLine ? `【上一章章纲——本章开篇应回答其钩子】\n${prevLine}\n` : ''}【本章细纲——目标/阻碍/爽点/钩子，写作必须覆盖】\n${line}\n${nextLines.length ? `【后续章节细纲——事件先后参考：其中的事件（如激活/觉醒/关键反转）不得提前写进本章】\n${nextLines.join('\n')}\n` : ''}`;
           const hookMatch = line.match(/钩子\s*=\s*([^|]*)/);
           planHook = hookMatch ? hookMatch[1].trim() : '';
         }
@@ -2238,18 +2245,20 @@ ${existingLines.length ? `【上一批章纲结尾】\n${existingLines.slice(-3)
       // 黄金三章
       const goldenBlock =
         ch.sort_order === 1
-          ? `【开篇三章专项——本章是第 1 章，严格遵守】\n- 前 300 字内完成：冲突爆发 + 主角登场 + 目标浮现 + 钩子落地\n- 禁止开篇大段世界观说明文（设定靠情节和对话带出）\n- 主角的金手指/能力最晚本章上线\n- 章末强钩子：让读者必须点开下一章\n`
+          ? `【开篇三章专项——本章是第 1 章，严格遵守】\n- 前 300 字内完成：冲突爆发 + 主角登场 + 目标浮现 + 钩子落地\n- 禁止开篇大段世界观说明文（设定靠情节和对话带出）\n- 主角的金手指/能力最晚本章上线（若能力时间线/章纲安排金手指在后续章节觉醒/激活，则本章只需埋钩子——如异常现象/神秘物件，不要求能力实际登场）\n- 章末强钩子：让读者必须点开下一章\n`
           : ch.sort_order <= 3
             ? `【开篇三章专项——本章处于黄金三章内】\n- 本章内必须有具体的小爽点（打压→反转→打脸）或强悬念\n- 章末强钩子\n`
             : '';
 
-      // 已有正文：追加模式
-      const existingContent = (ch.content ?? '').trim();
+      // 已有正文：追加模式；replace=true 时视为空章（覆盖重新生成，保存时替换）
+      const existingContent = params.replace
+        ? ''
+        : (ch.content ?? '').trim();
       const existingTail = existingContent.slice(-1500);
 
       const taskBlock = needsSelfPlan
         ? `【本章任务】\n本章没有细纲约束：第一行先输出"本章目标=… | 冲突=… | 章末钩子=…"（自定本章写作目标），然后空一行写正文。目标约 2000-5000 字，写到自然停点；章末必须以悬念或未完成动作收尾（钩子）。`
-        : `【本章任务】\n按上面的细纲/节点写本章：目标、阻碍、爽点、钩子逐项落实。目标约 2000-5000 字，写到自然停点；章末必须落实章末钩子——以悬念或未完成动作收尾。`;
+        : `【本章任务】\n按上面的细纲/节点写本章：目标、阻碍、爽点、钩子逐项落实。目标约 2000-5000 字，写到自然停点；章末必须落实章末钩子——以悬念或未完成动作收尾。若细纲与节点摘要冲突（如激活/觉醒时机、事件先后），一律以细纲为准；本章细纲未提及的事件（激活/觉醒/关键反转）不得从节点摘要自行补写，【后续章节细纲】中的事件不得提前写进本章。`;
 
       const systemPrompt = `你是专业小说写作助手，正在为作者写完整的一章（第${ch.sort_order}章《${ch.title}》）。
 
@@ -2263,6 +2272,7 @@ ${styleBlock}${memoryBlock}
 - 每 300-500 字推进一次剧情（新信息/冲突/反转），禁止原地描写
 - 对话每句一行，用对话推进剧情
 - 文风与设定要求一致；短句白描优先
+- 金手指/系统等载体的声音来源必须单一明确：若系统藏在收音机里，收音机里的人声就是系统在说话，不得出现两个无法区分的声源，也不得让载体自我否认"这不是我"
 - 主角道德基线：可以狠、自保、报复，但对象必须是真恶人（对方先作恶）；不得伤害无辜之人（仆从/路人）；灰色行为必须有正当理由
 
 ${taskBlock}
@@ -3632,6 +3642,7 @@ ${sample}`;
     return `【能力时间线——按卷纲严格执行】
 ${list}
 - 本批章纲按卷纲节点顺序推进，不得跳过能力节点；每个能力节点必须在对应顺序的某章中完整写出觉醒/获得过程（绝境、触发条件、代价），不得默认主角已拥有
+- 觉醒/激活事件不得整体拖后：节点摘要中写明的激活是其语义核心，必须落在该节点对应章节区间的开头部分——禁止把同一个节点拆成"铺垫数章后才激活"（节点已是规划最小颗粒，激活应尽早落位）
 - 第 ${first.no} 个节点（首个能力节点）之前的章节：主角不得使用任何超自然能力（预判、瞬移、共鸣等异能一律禁用），只能靠体术/头脑/环境；可埋伏笔（旧物发热、异常直觉），但不得点破、不得实际生效
 - 首个能力节点对应章节及之后：方可使用该能力，觉醒后首次使用必须写明"第一次用"的镜头`;
   }
@@ -5418,11 +5429,11 @@ ${storyText.slice(-800)}`;
     const premise = sanitizePrompt(params.premise);
     // 完整创作上下文（用于书名等需要全貌的场景）
     const fullPremise = params.guide_summary
-      ? `【创作方向】\n${params.guide_summary}\n${params.guide_full_log ? `\n【引导讨论记录——参考细节】\n${params.guide_full_log}\n` : ''}\n【用户初始想法】\n${premise}`
+      ? `【创作方向】\n${params.guide_summary}\n${params.guide_full_log ? `\n【引导讨论记录——对话尾部节选，参考细节】\n${params.guide_full_log.slice(-1500)}\n` : ''}\n【用户初始想法】\n${premise}`
       : premise;
     // 精简版（用于需要结构化输出的 world/outline/chars 步骤，避免 prompt 过长导致格式异常）
     const shortPremise = params.guide_summary
-      ? `【创作方向】\n${params.guide_summary.slice(0, 800)}\n${params.guide_full_log ? `【引导讨论记录——请严格参考，其中的人物身份和设定不可修改】\n${params.guide_full_log}\n` : ''}\n【用户初始想法】\n${premise.slice(0, 500)}`
+      ? `【创作方向】\n${params.guide_summary.slice(0, 800)}\n${params.guide_full_log ? `【引导讨论记录——对话尾部节选，请严格参考，其中的人物身份和设定不可修改】\n${params.guide_full_log.slice(-1200)}\n` : ''}\n【用户初始想法】\n${premise.slice(0, 500)}`
       : premise;
 
     res.setHeader('Content-Type', 'text/event-stream');
@@ -5653,6 +5664,10 @@ ${storyText.slice(-800)}`;
       });
       const outlinePrompt = `你是网文大纲规划助手。根据世界观和主角设定，为这部小说设计情节大纲（卷纲）。**只使用用户已提供的信息，可以合理扩展，但不要修改或替换用户已明确的情节。**
 
+【对引导结论的最高优先级——若注入有【创作方向】与【引导讨论记录】】
+- 【创作方向】中的【已确认设定】逐条检查，每一条都必须在大纲中有对应体现，不得遗漏（如金手指类型、核心冲突、结局方向、已确认的人物关系）
+- 大纲不得与已确认设定矛盾；不确定时宁可不扩展，不要替换
+
 【核心要求】
 1. 分卷/分段推进：每段有明确的阶段目标，段末解决并引出下一段
 2. 递进节奏：每个节点应有实质进展（具体是什么取决于故事本身的驱动力）
@@ -5664,8 +5679,12 @@ ${storyText.slice(-800)}`;
 8. 能力/金手指的觉醒节点必须在对应节点的摘要中明确写出（如"绝境觉醒共鸣+空间双系"），供章纲生成对齐时间线；觉醒节点之前的节点摘要不得出现能力使用，只能写铺垫/伏笔
 9. 反派与配角要有多样动机（立场/苦衷/利益），禁止多个节点连续出现"有人看不起主角→被打脸"的同构循环；节点爽点模式按番茄偏好轮换（规则内/信息差打脸、升级养成、情绪价值、悬念揭示）；权威角色（教师/考官/官员）言行须符合其立场利益，不得无理由敌视主角；节点功能轮换：冲突节点不超过一半，收获（升级/资源）、铺垫（关系线/日常）、揭露（真相/伏笔）节点各至少 1 个，冲突节点之间必须有缓冲节点
 
-【数量要求】
-至少输出 8-12 个情节节点，覆盖前 1-2 卷。标题简洁有力。
+【数量要求——全程骨架式，必须覆盖到全书结局】
+至少输出 10-14 个节点：
+- 前 1-2 卷：8-10 个细节点（情节具体、节奏密）
+- 后续各卷：每卷 1-2 个粗节点（只写该卷的阶段目标与结果，如"中段：主角离开新手村进入大舞台"）
+- 最后一个节点必须是全书结局（大结局+尾声：最终矛盾如何解决、主角归宿）
+禁止只写到中段就停。标题简洁有力。
 
 【输出格式——严格遵守】
 只输出 JSON 数组，不要任何其他文字。title 精炼有网文感（8字以内），summary 简短有力（30字以内，写清谁+做了什么+结果）：
@@ -5689,61 +5708,46 @@ ${storyText.slice(-800)}`;
         label: `卷纲已生成（${outlineCount} 个节点）`,
       });
 
+      // 提前保存引导讨论上下文：extendChapterOutlines 从 settings 读取创作方向
+      // （guide_summary），章纲生成必须吃引导结论
+      if (params.guide_summary || params.guide_full_log) {
+        const [s0] = await db
+          .select({ extra: schema.book_settings.extra })
+          .from(schema.book_settings)
+          .where(eq(schema.book_settings.book_id, bookId))
+          .limit(1);
+        const e0 = (s0?.extra ?? {}) as Record<string, any>;
+        if (params.guide_summary) e0.guide_summary = params.guide_summary;
+        if (params.guide_full_log) e0.guide_full_log = params.guide_full_log;
+        await db
+          .update(schema.book_settings)
+          .set({ extra: e0 as any })
+          .where(eq(schema.book_settings.book_id, bookId));
+      }
+
       // Step 3.5: 生成前 10 章章纲（场景级：目标/阻碍/爽点/钩子）
       // 卷纲颗粒度≈10万字/节点，写作时无上位约束会水；章纲补场景级控制
+      // 复用 extendChapterOutlines：与"写作页续生章纲"同一套 prompt 与规则，避免两处维护漂移
       send('step', {
         step: 'chapter-outlines',
         status: 'generating',
         label: '生成前10章章纲',
       });
       try {
-        const chapterOutlinePrompt = `你是网文细纲设计师。根据世界观、主角设定和卷纲，为前 10 章逐章设计细纲。
-
-【每章一行，格式】
-第N章 | 目标=主角本章要达成什么 | 阻碍=什么在挡路（人或事） | 爽点=本章的爽点/反转/打脸点 | 钩子=章末悬念
-
-【硬性要求】
-1. 黄金三章：第 1 章 300 字内必须完成冲突爆发+主角登场+目标浮现；金手指最晚第 1 章上线；第 3 章内出现第一个小爽点
-2. 前 3 章禁大段世界观说明，设定靠情节带出
-3. 上一章的钩子=下一章开篇要回答的问题，因果承接
-4. 一章一小冲突，10 章内至少 2 个小高潮
-5. 爽点必须具体（什么被证明/谁被打脸/什么反转），禁止"主角变强"式空话
-6. 表述直白网文化，禁止文学化修饰
-7. 打脸/报复对象必须是真恶人（对方先作恶），不得牵连无辜之人
-8. 能力/金手指时间线铁律：以【能力时间线】块为准——首个能力节点之前的章节禁止出现任何异能（连"预判""瞬移"等字眼都不能有），只能埋伏笔；觉醒必须在对应章节作为完整情节写出，不得跳过、不得默认已拥有
-9. 反派动机多样化：反派不能全是"看不起主角"式脸谱，至少一个反派有自己的立场/苦衷/合理动机；同一反派不得连续 3 章作为主要阻碍
-10. 爽点机制按番茄长篇偏好轮换：打脸须升级为规则内打脸/信息差打脸（对手越精明、越站得住，翻盘越爽），禁止"当众嘲讽→当众打脸"同构循环；爽点模式多样化——升级养成快感（变强/解锁/资源）、情绪价值（被理解/被看见）、悬念揭示、智力破局各至少出现一次
-11. 冲突来源多样化：人际、环境与规则、主角内心缺陷三类冲突至少各出现一次，禁止全篇都是"有人找茬→反击"的同构循环
-12. 权威角色理性铁律：教师、考官、官员等权威配角的言行必须符合其身份立场与自身利益——刁难主角只能出于真实利益冲突（名额竞争、隐瞒事故、站队压力），禁止"看不起主角"式无理由贬损；对主角的质疑应为专业存疑而非人身嘲讽；每批章纲中至少一半配角立场中立或善意
-13. 章节功能轮换（核心节奏）：本批章纲必须包含四类功能——冲突章（对抗/考核/战斗）不超过一半且不得连续超过 2 章、收获章（升级/获得资源/奖励兑现）至少 1 章、铺垫章（日常/关系线/感情/内心戏）至少 1 章、揭露章（世界观真相/阴谋推进/伏笔回收）至少 1 章；冲突章之间必须有缓冲章
-14. 钩子类型轮换：禁止连续 3 章"角色放狠话/威胁"式钩子；本批至少 3 章钩子改为信息揭示（物证/真相碎片）、情感悬置（牵挂/误会/失约）或主角主动做出的危险决定
-15. 对立势力行动具体化：对手施加压力必须用实际动作（动手脚/改档案/截资源/设局），禁止只有语言挑衅；同一阴谋逐章递进露出新一层，本批内至少完成一次阴谋的阶段性揭露
-
-${AiService.buildCapabilityTimeline(outlineText)}
-
-只输出 10 行，每行一条章纲，不要编号、不要其他文字。`;
-        const chOutlineUserPrompt = `题材和想法：${shortPremise}\n\n世界观：${worldText.slice(0, 1000)}${protagonistText ? `\n\n【主角设定】\n${protagonistText}` : ''}\n\n卷纲：${outlineText.slice(0, 2000)}\n\n请设计前 10 章细纲。`;
-        let chOutText = await aiCall(chapterOutlinePrompt, chOutlineUserPrompt, 2048);
-        chapterOutlines = AiService.parseChapterOutlines(chOutText);
-        // 解析为 0：模型未按格式输出，重试一次
-        if (chapterOutlines.length === 0 && chOutText.trim()) {
-          console.warn(
-            '[quickCreate] chapter outlines parse 0, retrying. raw head:',
-            chOutText.slice(0, 200).replace(/\n/g, '\\n'),
-          );
-          chOutText = await aiCall(
-            chapterOutlinePrompt,
-            chOutlineUserPrompt,
-            2048,
-          );
-          chapterOutlines = AiService.parseChapterOutlines(chOutText);
-        }
+        const r = await this.extendChapterOutlines(
+          params.user_id,
+          bookId,
+          params.model,
+          params.key_id,
+          10,
+          undefined,
+        );
+        chapterOutlines = r.lines ?? [];
         if (chapterOutlines.length === 0) {
           send('step', {
             step: 'chapter-outlines',
             status: 'done',
-            label: `章纲生成失败（${chOutText.length}字无法解析）——可到写作页点"生成章纲"重试`,
-            preview: chOutText.slice(0, 200),
+            label: '章纲生成失败（无法解析）——可到写作页点"生成章纲"重试',
           });
         } else {
           send('step', {
@@ -5841,6 +5845,11 @@ ${AiService.buildCapabilityTimeline(outlineText)}
         .filter(Boolean)
         .slice(0, 5);
       const finalTitle = (titleLines[0] || premise.slice(0, 20)).slice(0, 40);
+      // 书名候选（五种类型各一）：done 事件带出，供前端候选选择区展示
+      const TITLE_STYLES = ['悬念式', '金手指承诺式', '反差式', '爽点式', '情感式'];
+      const titleCandidates = titleLines
+        .slice(0, 5)
+        .map((t, i) => ({ style: TITLE_STYLES[i] ?? '候选', title: t }));
       // 更新书名
       await db
         .update(schema.books)
@@ -5873,8 +5882,12 @@ ${AiService.buildCapabilityTimeline(outlineText)}
           .where(eq(schema.book_settings.book_id, bookId));
       }
 
-      // 完成
-      send('done', { book_id: bookId, title: finalTitle });
+      // 完成：候选 ≥2 时带出候选区（候选不足则走前端"直接进入"兜底）
+      send('done', {
+        book_id: bookId,
+        title: finalTitle,
+        titles: titleCandidates.length > 1 ? titleCandidates : undefined,
+      });
     } catch (err: any) {
       // 回滚：删除已创建的资源
       if (bookId) {

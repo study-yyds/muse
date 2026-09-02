@@ -104,6 +104,7 @@ export class AiController {
       model?: string;
       key_id?: string;
       style?: string;
+      replace?: boolean;
     },
     @Res() res: Response,
     @Req() req: Request,

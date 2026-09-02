@@ -12,9 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { ModelSelector, customKeyValue } from "@/components/settings/ModelSelector";
 import { SynopsisSection } from "@/components/settings/SynopsisSection";
 import { PlotThreadsEditor } from "@/components/settings/PlotThreadsEditor";
-import { PlansDialog } from "@/components/settings/PlansDialog";
 import { WRITING_STYLES } from "@/lib/writing-styles";
-import { PLANS, planNameFor } from "@/lib/plans";
 
 interface BookSettings {
   preset_style: string;
@@ -40,21 +38,6 @@ export function BookSettingsPanel({ bookId, book, coverUrl, onCoverChange }: Pro
 
   const settings = data?.data;
 
-  // 本月 AI 用量（计费口径：生成字数；quota_words 为 null 表示不限）
-  const { data: quotaData } = useQuery({
-    queryKey: ["ai-quota"],
-    queryFn: () =>
-      api.get<{
-        data: {
-          used_words: number;
-          quota_words: number | null;
-          remaining: number | null;
-          month: string;
-        };
-      }>(`/ai/quota`),
-  });
-  const quota = quotaData?.data;
-
   const [presetStyle, setPresetStyle] = useState("default");
   const [wordGoal, setWordGoal] = useState(0);
   const [isMimicking, setIsMimicking] = useState(false);
@@ -63,7 +46,6 @@ export function BookSettingsPanel({ bookId, book, coverUrl, onCoverChange }: Pro
   const [visualStyle, setVisualStyle] = useState("");
   const [coverLightbox, setCoverLightbox] = useState(false);
   const [coverHistory, setCoverHistory] = useState<string[]>([]);
-  const [plansOpen, setPlansOpen] = useState(false);
 
   const doMimic = async (body: Record<string, any>) => {
     setIsMimicking(true);
@@ -139,47 +121,6 @@ export function BookSettingsPanel({ bookId, book, coverUrl, onCoverChange }: Pro
 
   return (
     <div className="max-w-lg mx-auto p-6 space-y-6">
-      {/* 本月 AI 用量（计费口径：生成字数） */}
-      {quota && quota.quota_words != null && (
-        <div className="space-y-2">
-          <div className="flex items-center gap-2">
-            <Label className="text-sm font-medium">本月 AI 用量</Label>
-            <span className="text-xs text-muted-foreground">
-              {planNameFor(quota.quota_words)}
-            </span>
-            <Button
-              size="xs"
-              variant="outline"
-              className="ml-auto"
-              onClick={() => setPlansOpen(true)}
-            >
-              升级套餐
-            </Button>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden">
-              <div
-                className="h-full bg-primary transition-all"
-                style={{
-                  width: `${Math.min(100, (quota.used_words / quota.quota_words) * 100)}%`,
-                }}
-              />
-            </div>
-            <span className="text-xs text-muted-foreground shrink-0">
-              {quota.used_words.toLocaleString()} / {quota.quota_words.toLocaleString()} 字
-            </span>
-          </div>
-        </div>
-      )}
-      <PlansDialog
-        open={plansOpen}
-        onOpenChange={setPlansOpen}
-        currentQuotaWords={quota?.quota_words ?? null}
-        onPurchased={() =>
-          queryClient.invalidateQueries({ queryKey: ["ai-quota"] })
-        }
-      />
-      <Separator />
       <h2 className="text-base font-semibold text-foreground flex items-center gap-2">
         <Settings className="size-5" />
         作品设置
@@ -242,7 +183,7 @@ export function BookSettingsPanel({ bookId, book, coverUrl, onCoverChange }: Pro
 
       {/* 作品简介 */}
       {/* 短篇不需要简介：短篇平台的"简介"就是正文开头三句，不单独生成 */}
-      {book?.type !== "short" && <SynopsisSection bookId={bookId} />}
+      <SynopsisSection bookId={bookId} />
 
       <Separator />
 
