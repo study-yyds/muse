@@ -174,8 +174,11 @@ export function BookListPage() {
   const guideChatRef = useRef<HTMLDivElement>(null);
   const guideUserScrolledUp = useRef(false);
   const guideGotContent = useRef(false);
+  const stopGuideRef = useRef(false); // 手动停止标记：与"退出引导"的中止区分
   const guideStreamAcRef = useRef(""); // 流式累积内容，供定时保存用
   const guideInitSaveRef = useRef<ReturnType<typeof setInterval> | null>(null); // 初始引导消息的定时保存
+  const [editingGuideIdx, setEditingGuideIdx] = useState<number | null>(null);
+  const [editingGuideText, setEditingGuideText] = useState("");
 
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ["books", showDeleted ? "deleted" : "active"],
@@ -334,7 +337,7 @@ export function BookListPage() {
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ premise, type, model: quickModel || undefined, key_id: quickKeyId, guide_summary: guideSummary, guide_full_log: guideFullLog }),
         signal: controller.signal,
-      });
+      }, 30 * 60_000); // 长篇全套约 5-8 分钟：默认 5 分钟超时会在中途掐断 SSE，done 丢失→弹窗永远卡在引导态
       if (!res.ok) throw new Error(`请求失败 (${res.status})`);
       const reader = res.body?.getReader();
       if (!reader) throw new Error("No stream");
@@ -388,6 +391,14 @@ export function BookListPage() {
                   if (outlineList.length > 0) {
                     // 新流程：展示梗概候选，等用户选择后写正文
                     hasPreview = true;
+                    // 生成成功：清理引导会话，防止下次打开弹窗恢复旧对话
+                    if (guideSessionRef.current) {
+                      authFetch(`/api/ai/chat-sessions/${guideSessionRef.current}`, {
+                        method: "DELETE",
+                        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+                      }).catch(() => {});
+                      guideSessionRef.current = null;
+                    }
                     setQuickOutlines(outlineList);
                     setQuickVibes(data.vibes ?? []);
                     setSelectedOutlineIdx(0);
@@ -397,18 +408,23 @@ export function BookListPage() {
                     setOutlineRisks([]);
                     setQuickOutlineBookId(data.book_id);
                   } else if (data.titles?.length > 1) {
-                    // 正文写完：至少 2 个候选才展示选择区
+                    // 书名候选（长篇/短篇通用）：展示选择区，选完点"打开作品"
                     hasTitleCandidates = true;
                     setQuickTitles(data.titles);
                     setQuickCreatedId(data.book_id);
-                    setQuickAppliedTitle(data.title || data.titles[0]);
+                    setQuickAppliedTitle(data.title || data.titles[0]?.title);
+                    // 生成成功：清理引导会话，防止下次打开弹窗恢复旧对话
+                    if (guideSessionRef.current) {
+                      authFetch(`/api/ai/chat-sessions/${guideSessionRef.current}`, {
+                        method: "DELETE",
+                        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+                      }).catch(() => {});
+                      guideSessionRef.current = null;
+                    }
+                    // 引导模式下退出引导界面，露出候选选择区
+                    setQuickGuiding(false);
                   } else if (data.title) {
-                    // 长篇：一步到底无候选环节——展示完成态与打开作品按钮（与短篇同构）
-                    hasTitleCandidates = true;
-                    setQuickTitles([{ style: "已应用", title: data.title }]);
-                    setQuickCreatedId(data.book_id);
-                    setQuickAppliedTitle(data.title);
-                    // 引导模式下退出引导界面，露出完成态与打开作品按钮
+                    // 长篇：一步到底无候选环节——生成完直接进入作品详情（无书名挑选步骤）
                     setQuickGuiding(false);
                   }
                 } else if (eventType === "error") {
@@ -467,137 +483,21 @@ export function BookListPage() {
     guideUserScrolledUp.current = !atBottom;
   }, []);
 
-  // 引导模式：发送消息
-  const sendGuideMsg = async () => {
-    guideUserScrolledUp.current = false;
-    guideGotContent.current = false;
-    const input = quickGuideInput.trim();
-    if (!input || quickGuideLoading) return;
-    setQuickGuideInput("");
-    const newMsgs = [...quickGuideMsgs, { role: "user", content: input }];
-    setQuickGuideMsgs(newMsgs);
+  // 引导 AI 请求核心：msgs 以用户消息结尾；流式追加 AI 回复，支持手动停止
+  const runGuideRequest = async (msgs: Array<{ role: string; content: string }>) => {
     setQuickGuideLoading(true);
     const token = localStorage.getItem("token");
     const controller = new AbortController();
     guideAbortRef.current = controller;
-    // 先保存用户消息（await 确保 DB 已写入），再发 AI 请求
+    stopGuideRef.current = false;
+    // 先保存消息（await 确保 DB 已写入），再发 AI 请求
     if (guideSessionRef.current) {
       await authFetch(`/api/ai/chat-sessions/${guideSessionRef.current}/messages`, {
         method: "PUT",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ messages: newMsgs }),
+        body: JSON.stringify({ messages: msgs }),
       }).catch(() => {});
     }
-    let saveInterval: ReturnType<typeof setInterval> | undefined;
-    try {
-      const res = await authFetch("/api/ai/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          book_id: "",
-          context_type: "write",
-          model: quickModel || undefined, key_id: quickKeyId,
-          message: input,
-          messages: newMsgs.map(m => ({ role: m.role, content: m.content })),
-          guide_mode: true,
-          guide_context: quickPremise || localStorage.getItem("muse_guide_premise"),
-          guide_type: quickType,
-        }),
-        signal: controller.signal,
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const reader = res.body?.getReader();
-      if (!reader) throw new Error("无响应");
-      const decoder = new TextDecoder();
-      let buf = ""; let ac = "";
-      guideStreamAcRef.current = "";
-      // 每 3 秒自动保存当前流式内容，避免刷新丢失 AI 回复
-      saveInterval = setInterval(() => {
-        if (guideSessionRef.current && guideStreamAcRef.current) {
-          const partialMsgs = [...newMsgs, { role: "assistant", content: guideStreamAcRef.current }];
-          authFetch(`/api/ai/chat-sessions/${guideSessionRef.current}/messages`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-            body: JSON.stringify({ messages: partialMsgs }),
-          }).catch(() => {});
-        }
-      }, 3000);
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) { buf += decoder.decode(); break; }
-        buf += decoder.decode(value, { stream: true });
-        const lines = buf.split("\n"); buf = lines.pop() ?? "";
-        let ev = "";
-        for (const line of lines) {
-          if (line.startsWith("event: ")) { ev = line.slice(7); continue; }
-          if (line.startsWith("data: ")) {
-            try { if (ev === "chunk") ac += JSON.parse(line.slice(6)); } catch { if (ev === "chunk") ac += line.slice(6); }
-            if (ev === "error") { const d = JSON.parse(line.slice(6)); throw new Error(d.message); }
-          }
-        }
-        // 只在有内容时才追加/更新 AI 回复，并同步写 localStorage
-        if (ac) {
-          guideGotContent.current = true;
-          guideStreamAcRef.current = ac;
-          setQuickGuideMsgs((prev) => {
-            const updated = [...prev];
-            const last = updated[updated.length - 1];
-            if (last?.role === "assistant") {
-              updated[updated.length - 1] = { role: "assistant", content: ac };
-            } else {
-              updated.push({ role: "assistant", content: ac });
-            }
-            return updated;
-          });
-        }
-      }
-    } catch (err: any) {
-      if (err.name === "AbortError") return;
-      toast({ title: err?.message || "发送失败", variant: "destructive" });
-    } finally {
-      if (saveInterval) clearInterval(saveInterval);
-      guideStreamAcRef.current = "";
-      setQuickGuideLoading(false);
-      setQuickGuideMsgs((prev) => {
-        const next = !guideGotContent.current
-          ? [...prev, { role: "assistant", content: "（AI 未响应，请重试）" }]
-          : prev;
-        // 保存到后端
-        if (guideSessionRef.current) {
-          console.log('[guide] saving', next.length, 'msgs to', guideSessionRef.current);
-          authFetch(`/api/ai/chat-sessions/${guideSessionRef.current}/messages`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("token")}` },
-            body: JSON.stringify({ messages: next }),
-          }).then(r => { if (!r.ok) console.log('[guide] save failed:', r.status); else console.log('[guide] save ok'); })
-            .catch(e => console.log('[guide] save error:', e));
-        } else {
-          console.log('[guide] no session to save to');
-        }
-        return next;
-      });
-      guideAbortRef.current = null;
-    }
-  };
-
-  // 刷新后恢复中断的生成：去掉 sentinel，重新发起 AI 请求
-  const resumeGuideGeneration = async (msgs: Array<{ role: string; content: string }>) => {
-    guideUserScrolledUp.current = false;
-    guideGotContent.current = false;
-    setQuickGuideLoading(true);
-    const token = localStorage.getItem("token");
-    const controller = new AbortController();
-    guideAbortRef.current = controller;
-    // 先保存去掉 sentinel 的消息（含占位，标记"生成中"）
-    const resumeMsgs = [...msgs, { role: "assistant", content: "（生成中...）" }];
-    if (guideSessionRef.current) {
-      authFetch(`/api/ai/chat-sessions/${guideSessionRef.current}/messages`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ messages: resumeMsgs }),
-      }).catch(() => {});
-    }
-    setQuickGuideMsgs(resumeMsgs);
     let saveInterval: ReturnType<typeof setInterval> | undefined;
     try {
       const res = await authFetch("/api/ai/chat", {
@@ -621,6 +521,7 @@ export function BookListPage() {
       const decoder = new TextDecoder();
       let buf = ""; let ac = "";
       guideStreamAcRef.current = "";
+      // 每 3 秒自动保存当前流式内容，避免刷新丢失 AI 回复
       saveInterval = setInterval(() => {
         if (guideSessionRef.current && guideStreamAcRef.current) {
           const partialMsgs = [...msgs, { role: "assistant", content: guideStreamAcRef.current }];
@@ -661,15 +562,32 @@ export function BookListPage() {
       }
     } catch (err: any) {
       if (err.name === "AbortError") return;
-      toast({ title: err?.message || "恢复生成失败", variant: "destructive" });
+      toast({ title: err?.message || "发送失败", variant: "destructive" });
     } finally {
       if (saveInterval) clearInterval(saveInterval);
       guideStreamAcRef.current = "";
       setQuickGuideLoading(false);
       setQuickGuideMsgs((prev) => {
-        const next = !guideGotContent.current
-          ? [...prev, { role: "assistant", content: "（AI 未响应，请重试）" }]
-          : prev;
+        let next = prev;
+        const last = next[next.length - 1];
+        if (stopGuideRef.current) {
+          // 手动停止：半截回复保留并标记；无内容则移除占位（用户消息保持最后一条）
+          if (last?.role === "assistant") {
+            if (guideGotContent.current) {
+              next = [...next.slice(0, -1), { role: "assistant", content: last.content + "\n（已停止）" }];
+            } else {
+              next = next.slice(0, -1);
+            }
+          }
+        } else if (!guideGotContent.current) {
+          // 失败/无响应：占位替换为提示，避免"（生成中...）"残留
+          if (last?.role === "assistant" && last.content === "（生成中...）") {
+            next = [...next.slice(0, -1), { role: "assistant", content: "（AI 未响应，请重试）" }];
+          } else {
+            next = [...next, { role: "assistant", content: "（AI 未响应，请重试）" }];
+          }
+        }
+        stopGuideRef.current = false;
         if (guideSessionRef.current) {
           authFetch(`/api/ai/chat-sessions/${guideSessionRef.current}/messages`, {
             method: "PUT",
@@ -681,6 +599,49 @@ export function BookListPage() {
       });
       guideAbortRef.current = null;
     }
+  };
+
+  // 引导模式：发送消息
+  const sendGuideMsg = async () => {
+    guideUserScrolledUp.current = false;
+    guideGotContent.current = false;
+    const input = quickGuideInput.trim();
+    if (!input || quickGuideLoading) return;
+    setQuickGuideInput("");
+    const newMsgs = [...quickGuideMsgs, { role: "user", content: input }];
+    setQuickGuideMsgs(newMsgs);
+    await runGuideRequest(newMsgs);
+  };
+
+  // 编辑历史消息：截断该消息之后的历史（AI 回复一并作废），用修改后的内容重发
+  const saveEditGuideMsg = async () => {
+    const i = editingGuideIdx;
+    const text = editingGuideText.trim();
+    if (i == null || !text || quickGuideLoading) return;
+    const newMsgs = [...quickGuideMsgs.slice(0, i), { role: "user", content: text }];
+    setQuickGuideMsgs(newMsgs);
+    setEditingGuideIdx(null);
+    setEditingGuideText("");
+    guideUserScrolledUp.current = false;
+    guideGotContent.current = false;
+    await runGuideRequest(newMsgs);
+  };
+
+  // 刷新后恢复中断的生成：去掉 sentinel，重新发起 AI 请求
+  const resumeGuideGeneration = async (msgs: Array<{ role: string; content: string }>) => {
+    guideUserScrolledUp.current = false;
+    guideGotContent.current = false;
+    // 占位标记"生成中"（刷新恢复检测依赖该 sentinel），随后复用统一请求核心
+    const resumeMsgs = [...msgs, { role: "assistant", content: "（生成中...）" }];
+    if (guideSessionRef.current) {
+      authFetch(`/api/ai/chat-sessions/${guideSessionRef.current}/messages`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("token")}` },
+        body: JSON.stringify({ messages: resumeMsgs }),
+      }).catch(() => {});
+    }
+    setQuickGuideMsgs(resumeMsgs);
+    await runGuideRequest(msgs);
   };
 
   // 3 选 1 梗概：选中方向时同步可编辑文本与体检状态
@@ -1046,7 +1007,7 @@ export function BookListPage() {
   };
 
   return (
-    <div className="mx-auto max-w-4xl px-6 py-8">
+    <div className="mx-auto max-w-4xl px-4 py-6 sm:px-6 sm:py-8">
       {/* 标题栏 */}
       <div className="mb-6 flex items-center justify-between">
         <h1 className="text-xl font-semibold text-foreground">我的作品</h1>
@@ -1174,7 +1135,7 @@ export function BookListPage() {
             // 表单阶段：直接关闭
             resetQuickDialog();
           }}>
-            <DialogContent className={quickGuiding ? "max-w-lg h-[520px] flex flex-col" : "max-w-lg sm:max-w-lg max-h-[80vh] flex flex-col"}>
+            <DialogContent className={quickGuiding ? "max-w-lg h-[520px] max-sm:h-[80vh] flex flex-col" : "max-w-lg sm:max-w-lg max-h-[80vh] flex flex-col"}>
               <DialogHeader className="shrink-0">
                 <DialogTitle>{quickGuiding ? "创作引导" : "快捷创作"}</DialogTitle>
                 <DialogDescription>
@@ -1631,15 +1592,29 @@ export function BookListPage() {
                         guideStreamAcRef.current = "";
                         setQuickGuideLoading(false);
                         setQuickGuideMsgs((prev) => {
-                          if (!guideGotContent.current) prev = [...prev, { role: "assistant", content: "（AI 未响应，请重试）" }];
+                          let next = prev;
+                          if (stopGuideRef.current) {
+                            // 手动停止：半截回复保留并标记；无内容则移除 sentinel
+                            const last = prev[prev.length - 1];
+                            if (last?.role === "assistant") {
+                              if (guideGotContent.current) {
+                                next = [...prev.slice(0, -1), { role: "assistant", content: last.content + "\n（已停止）" }];
+                              } else {
+                                next = prev.slice(0, -1);
+                              }
+                            }
+                          } else if (!guideGotContent.current) {
+                            next = [...prev, { role: "assistant", content: "（AI 未响应，请重试）" }];
+                          }
+                          stopGuideRef.current = false;
                           if (guideSessionRef.current) {
                             authFetch(`/api/ai/chat-sessions/${guideSessionRef.current}/messages`, {
                               method: "PUT",
                               headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("token")}` },
-                              body: JSON.stringify({ messages: prev }),
+                              body: JSON.stringify({ messages: next }),
                             }).catch(() => {});
                           }
-                          return prev;
+                          return next;
                         });
                       });
                     }} disabled={quickGenerating || !quickPremise.trim()}>
@@ -1732,14 +1707,47 @@ export function BookListPage() {
                   <div ref={guideChatRef} onScroll={handleGuideScroll} className="flex-1 overflow-y-auto space-y-3 min-h-0 border rounded-lg p-3 bg-muted/20">
                     {quickGuideMsgs.map((m, i) => (
                       <div key={i} className={m.role === "user" ? "flex justify-end" : "flex justify-start"}>
-                        <div className={cn(
-                          "max-w-[85%] rounded-lg px-3 py-2 text-sm",
-                          m.role === "user"
-                            ? "bg-primary text-primary-foreground"
-                            : "bg-card border border-border text-foreground",
-                        )}>
-                          {m.content || (i === quickGuideMsgs.length - 1 && quickGuideLoading ? "思考中..." : "")}
-                        </div>
+                        {editingGuideIdx === i ? (
+                          <div className="w-full space-y-2">
+                            <textarea
+                              autoFocus
+                              value={editingGuideText}
+                              onChange={(e) => setEditingGuideText(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); saveEditGuideMsg(); }
+                                if (e.key === "Escape") { setEditingGuideIdx(null); setEditingGuideText(""); }
+                              }}
+                              rows={3}
+                              className="w-full rounded border border-border bg-background px-3 py-2 text-sm resize-none"
+                            />
+                            <div className="flex justify-end gap-2">
+                              <Button variant="ghost" size="xs" onClick={() => { setEditingGuideIdx(null); setEditingGuideText(""); }}>取消</Button>
+                              <Button size="xs" onClick={saveEditGuideMsg} disabled={!editingGuideText.trim() || quickGuideLoading}>
+                                保存并重发
+                              </Button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="group flex items-start gap-1 max-w-[85%]">
+                            <div className={cn(
+                              "rounded-lg px-3 py-2 text-sm",
+                              m.role === "user"
+                                ? "bg-primary text-primary-foreground"
+                                : "bg-card border border-border text-foreground",
+                            )}>
+                              {m.content || (i === quickGuideMsgs.length - 1 && quickGuideLoading ? "思考中..." : "")}
+                            </div>
+                            {m.role === "user" && !quickGuideLoading && (
+                              <button
+                                className="opacity-0 group-hover:opacity-100 shrink-0 mt-1 text-xs text-muted-foreground hover:text-foreground"
+                                onClick={() => { setEditingGuideIdx(i); setEditingGuideText(m.content); }}
+                                title="编辑并重新发送（该消息之后的内容将作废）"
+                              >
+                                编辑
+                              </button>
+                            )}
+                          </div>
+                        )}
                       </div>
                     ))}
                     {quickGuideLoading && quickGuideMsgs[quickGuideMsgs.length - 1]?.role === "user" && (
@@ -1789,9 +1797,20 @@ export function BookListPage() {
                       rows={3}
                       className="flex-1 rounded border border-border bg-background px-3 py-1.5 text-sm resize-none"
                     />
-                    <Button size="sm" onClick={sendGuideMsg} disabled={quickGuideLoading || !quickGuideInput.trim()}>
-                      <Send className="size-3.5" />
-                    </Button>
+                    {quickGuideLoading && !quickGenerating ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => { stopGuideRef.current = true; guideAbortRef.current?.abort(); }}
+                        title="停止生成（已生成的部分保留）"
+                      >
+                        停止
+                      </Button>
+                    ) : (
+                      <Button size="sm" onClick={sendGuideMsg} disabled={quickGuideLoading || !quickGuideInput.trim()}>
+                        <Send className="size-3.5" />
+                      </Button>
+                    )}
                     <Button size="sm" variant="outline" onClick={async () => {
                       // 先向 AI 发送"开始生成"，获取结构化创作摘要
                       setQuickGuideLoading(true);
@@ -1850,6 +1869,8 @@ export function BookListPage() {
                                                     return prev;
                         });
                       } catch (err: any) {
+                        // 手动停止：静默返回，留在引导界面
+                        if (err?.name === "AbortError") { setQuickGuideLoading(false); return; }
                         toast({ title: "获取摘要失败: " + (err?.message || "未知错误"), variant: "destructive" });
                         setQuickGuideLoading(false);
                         return;

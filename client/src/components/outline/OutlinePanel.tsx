@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, authFetch } from "@/services/api";
+import { defaultModelBody } from "@/lib/default-model";
 import type { OutlineData, OutlineChapterData, ActStructure } from "@muse/shared";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -52,6 +53,7 @@ export function OutlinePanel({ bookId }: Props) {
   const [removeOutlineIdx, setRemoveOutlineIdx] = useState<number | null>(null);
   const [selectedOutlineIdx, setSelectedOutlineIdx] = useState<Set<number>>(new Set());
   const [removeOutlineBatch, setRemoveOutlineBatch] = useState(false);
+  const [removeNode, setRemoveNode] = useState<OutlineChapterData | null>(null);
   const [extendingOutlines, setExtendingOutlines] = useState(false);
   const [extendDialogOpen, setExtendDialogOpen] = useState(false);
   const [extendCount, setExtendCount] = useState(10);
@@ -70,6 +72,7 @@ export function OutlinePanel({ bookId }: Props) {
         },
         body: JSON.stringify({
           book_id: bookId,
+          ...defaultModelBody(),
           ...(count ? { count } : {}),
           ...(nodeId ? { node_id: nodeId } : {}),
         }),
@@ -312,6 +315,7 @@ export function OutlinePanel({ bookId }: Props) {
                         toggleStatusMutation,
                         selectedIds,
                         toggleSelect,
+                        setRemoveNode,
                       )
                     )}
                 </div>
@@ -530,6 +534,19 @@ export function OutlinePanel({ bookId }: Props) {
         }}
       />
 
+      <ConfirmDialog
+        open={removeNode != null}
+        onOpenChange={(o) => !o && setRemoveNode(null)}
+        title="删除大纲节点"
+        description={`确定删除节点"${removeNode?.title ?? ""}"？绑定该节点的章节将失去大纲约束。`}
+        confirmText="删除"
+        destructive
+        onConfirm={() => {
+          if (removeNode) deleteChapterMutation.mutate(removeNode.id);
+          setRemoveNode(null);
+        }}
+      />
+
       <Dialog open={extendDialogOpen} onOpenChange={setExtendDialogOpen}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
@@ -596,6 +613,7 @@ function renderChapter(
   toggleStatusMutation: { mutate: (p: { chapterId: string; status: string }) => void },
   selectedIds?: Set<string>,
   toggleSelect?: (id: string) => void,
+  onRequestDelete?: (ch: OutlineChapterData) => void,
 ) {
   if (editingChapter === ch.id) {
     return (
@@ -666,7 +684,7 @@ function renderChapter(
           variant="ghost"
           size="icon-xs"
           className="text-destructive hover:text-destructive"
-          onClick={() => { if (confirm("删除？")) deleteMutation.mutate(ch.id); }}
+          onClick={() => onRequestDelete?.(ch)}
         >
           <Trash2 className="size-3" />
         </Button>

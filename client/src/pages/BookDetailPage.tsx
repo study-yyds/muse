@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, authFetch, fetchQuotaRemaining } from "@/services/api";
+import { defaultModelBody } from "@/lib/default-model";
 import { WRITING_STYLES } from "@/lib/writing-styles";
 import { ModelSelector, customKeyValue } from "@/components/settings/ModelSelector";
 import type { BookDetail } from "@muse/shared";
@@ -383,6 +384,10 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
   type Ver = { content: string; action?: any; reasoning?: string };
   type Msg = { role: string; content: string; action?: any; adoptedVer?: number; reasoning?: string; versions?: Ver[]; quality?: { count: number; types: string[] } };
   // AI 味检测类型 → 中文提示（与 text-quality-checks.ts 的 issue.type 对应）
+  // 去 AI 味重写的预置方向：复用反馈重写机制（保留情节信息，只改措辞）
+  const DEAI_FEEDBACK =
+    "去AI味改写：保留全部情节、人物与信息，只改措辞——去掉模板化表达与空泛情绪词（忽然/意识到/终于/不禁），主语多样化，情绪用动作/神态/细节呈现，句长节奏有变化，删除段末总结句";
+
   const QUALITY_LABELS: Record<string, string> = {
     "dash-overuse": "破折号过密",
     "binary-shell": '"不是…而是"句式',
@@ -452,6 +457,9 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
   // 反馈重新生成：按消息索引展开输入框
   const [feedbackOpen, setFeedbackOpen] = useState<number | null>(null);
   const [feedbackText, setFeedbackText] = useState("");
+  // 编辑最后一条用户消息（截断重发）
+  const [editLastUserIdx, setEditLastUserIdx] = useState<number | null>(null);
+  const [editLastUserText, setEditLastUserText] = useState("");
   const abortRef = useRef<AbortController | null>(null);
   const scrollBottomRef = useRef<HTMLDivElement | null>(null);
   const msgsRef = useRef<Msg[]>([]);
@@ -851,6 +859,7 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
             body: JSON.stringify({
               book_id: bookId,
               chapter_id: target.chapter_id,
+              ...defaultModelBody(),
             }),
             signal: controller.signal,
           },
@@ -910,7 +919,7 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
     }
   };
 
-  const doSend = async (userMsg: string) => {
+  const doSend = async (userMsg: string, baseMsgs?: Msg[]) => {
     // 错面板提示：在角色/世界观等面板请求写正文时提醒（不阻断发送，AI 侧也会引导）
     if (
       section !== "write" &&
@@ -950,8 +959,10 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
       }
     }
     const um: Msg = { role: "user", content: userMsg };
-    const prevMsgs = [...msgs, um].map((m) => ({ role: m.role, content: m.content }));
-    const newMsgs = [...msgs, um];
+    // 编辑重发时传入截断后的历史（setMsgs 后 msgs 状态仍为旧值，用 baseMsgs 保证一致性）
+    const base = baseMsgs ?? msgsRef.current;
+    const prevMsgs = [...base, um].map((m) => ({ role: m.role, content: m.content }));
+    const newMsgs = [...base, um];
     setMsgs(newMsgs);
     // 立即保存用户消息到 DB（不等 debounce），避免刷新丢失
     if (sessionId) flushSave(sessionId, newMsgs);
@@ -1066,6 +1077,26 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
       ? "【改写以下选中文本】\n" + rewriteCtx.text + "\n\n【用户指令】" + input
       : input;
     doSend(msg);
+  };
+
+  // 编辑最后一条用户消息：截断其后内容（最多一条未采纳的 AI 回复），修改后重发。
+  // 不做任意历史消息编辑——更早的 AI 回复可能已采纳进正文，截断会造成对话与正文脱节。
+  const editLastUserMsg = async () => {
+    if (loading) return;
+    const curMsgs = msgsRef.current;
+    let lastUserIdx = -1;
+    for (let i = curMsgs.length - 1; i >= 0; i--) {
+      if (curMsgs[i].role === "user") { lastUserIdx = i; break; }
+    }
+    if (lastUserIdx < 0 || curMsgs.length - lastUserIdx > 2) return;
+    const text = editLastUserText.trim();
+    if (!text) return;
+    const base = [...curMsgs.slice(0, lastUserIdx), { role: "user", content: text }];
+    setMsgs(base);
+    if (sessionId) flushSave(sessionId, base);
+    setEditLastUserIdx(null);
+    setEditLastUserText("");
+    await doSend(text, base);
   };
 
   const regenerate = (feedback?: string) => {
@@ -1484,6 +1515,16 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
         <ScrollArea className="h-full">
           <div className="p-4 space-y-3">
             {msgs.map((m: Msg, i: number) => {
+              // 最后一条用户消息且其后最多一条 AI 回复：允许编辑重发（截断无副作用）
+              let lastUserIdx = -1;
+              for (let j = msgs.length - 1; j >= 0; j--) {
+                if (msgs[j].role === "user") { lastUserIdx = j; break; }
+              }
+              const isLastUserEditable =
+                m.role === "user" &&
+                i === lastUserIdx &&
+                msgs.length - lastUserIdx <= 2 &&
+                !loading;
               return (
                 <div
                   key={i}
@@ -1495,7 +1536,62 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
                   )}
                 >
                   {m.role === "user" ? (
-                    <div className="whitespace-pre-wrap">{m.content}</div>
+                    <div>
+                      {editLastUserIdx === i ? (
+                        <div className="space-y-2">
+                          <textarea
+                            autoFocus
+                            value={editLastUserText}
+                            onChange={(e) => setEditLastUserText(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" && !e.shiftKey) {
+                                e.preventDefault();
+                                editLastUserMsg();
+                              }
+                              if (e.key === "Escape") {
+                                setEditLastUserIdx(null);
+                                setEditLastUserText("");
+                              }
+                            }}
+                            rows={3}
+                            className="w-full rounded border border-border bg-background px-2 py-1 text-sm resize-none"
+                          />
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              variant="ghost"
+                              size="xs"
+                              onClick={() => {
+                                setEditLastUserIdx(null);
+                                setEditLastUserText("");
+                              }}
+                            >
+                              取消
+                            </Button>
+                            <Button
+                              size="xs"
+                              disabled={!editLastUserText.trim() || loading}
+                              onClick={editLastUserMsg}
+                            >
+                              保存并重发
+                            </Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="whitespace-pre-wrap">{m.content}</div>
+                      )}
+                      {isLastUserEditable && editLastUserIdx !== i && (
+                        <button
+                          className="mt-1 text-xs text-muted-foreground hover:text-foreground"
+                          title="编辑并重新发送（其后的 AI 回复将作废）"
+                          onClick={() => {
+                            setEditLastUserIdx(i);
+                            setEditLastUserText(m.content);
+                          }}
+                        >
+                          编辑
+                        </button>
+                      )}
+                    </div>
                   ) : (() => {
                     const hasVersions = m.versions && m.versions.length > 0;
                     const verIdx = hasVersions ? (activeVer[i] ?? m.versions!.length - 1) : 0;
@@ -1517,8 +1613,19 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
                           <div className="whitespace-pre-wrap">{stripMdHeadings(stripActionJson(curVer.content))}</div>
                         ) : null}
                         {m.quality && !isAdopted && (
-                          <div className="mt-1 text-xs text-destructive">
-                            ⚠ AI 味提示（{m.quality.count} 处）：{m.quality.types.slice(0, 3).map((t) => QUALITY_LABELS[t] ?? t).join("、")}
+                          <div className="mt-1 text-xs text-destructive flex items-center gap-2 flex-wrap">
+                            <span>
+                              ⚠ AI 味提示（{m.quality.count} 处）：{m.quality.types.slice(0, 3).map((t) => QUALITY_LABELS[t] ?? t).join("、")}
+                            </span>
+                            {isLastAi && (
+                              <Button
+                                size="xs"
+                                variant="outline"
+                                onClick={() => regenerate(DEAI_FEEDBACK)}
+                              >
+                                去 AI 味重写
+                              </Button>
+                            )}
                           </div>
                         )}
                         {isAdopted ? (

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, authFetch, fetchQuotaRemaining } from "@/services/api";
+import { defaultModelBody } from "@/lib/default-model";
 import type { ChapterDetail } from "@muse/shared";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -21,6 +22,7 @@ import {
   Video,
   ChevronDown,
   Trash2,
+  RefreshCw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { PromoVideoDialog } from "@/components/promo/PromoVideoDialog";
@@ -89,6 +91,7 @@ export function WritingEditor({ bookId, bookType }: Props) {
   const chapter = chapterData?.data;
   const [editorContent, setEditorContent] = useState("");
   const [isDirty, setIsDirty] = useState(false);
+  const [regenOpen, setRegenOpen] = useState(false);
   const [boundNodeId, setBoundNodeId] = useState<string | null>(null);
   const [extendingOutlines, setExtendingOutlines] = useState(false);
   const [generatingChapter, setGeneratingChapter] = useState(false);
@@ -241,8 +244,8 @@ export function WritingEditor({ bookId, bookType }: Props) {
     setDeleteTarget(ch);
   };
 
-  // 整章生成：按章纲写完整一章（追加到章末），服务端单轮为主、字数不足补写
-  const generateWholeChapter = async () => {
+  // 整章生成：按章纲写完整一章（默认追加到章末；replace=true 覆盖重新生成），服务端单轮为主、字数不足补写
+  const generateWholeChapter = async (replace = false) => {
     if (!activeChapterId || generatingChapter) return;
     // 预估成本提示（整章生成约 4000 字）
     const remaining = await fetchQuotaRemaining();
@@ -265,7 +268,7 @@ export function WritingEditor({ bookId, bookType }: Props) {
             "Content-Type": "application/json",
             Authorization: `Bearer ${token}`,
           },
-          body: JSON.stringify({ book_id: bookId, chapter_id: activeChapterId }),
+          body: JSON.stringify({ book_id: bookId, chapter_id: activeChapterId, ...defaultModelBody(), ...(replace ? { replace: true } : {}) }),
           signal: controller.signal,
         },
         20 * 60_000,
@@ -311,7 +314,7 @@ export function WritingEditor({ bookId, bookType }: Props) {
       if (quality) {
         toast({ title: `AI 味提示（${quality.count} 处）：${quality.types.slice(0, 3).join("、")}` });
       }
-      toast({ title: "本章已生成" });
+      toast({ title: replace ? "本章已重新生成" : "本章已生成" });
     } catch (err: any) {
       if (err?.name !== "AbortError") {
         toast({ title: err?.message || "生成失败", variant: "destructive" });
@@ -562,7 +565,7 @@ export function WritingEditor({ bookId, bookType }: Props) {
                         "Content-Type": "application/json",
                         Authorization: `Bearer ${t}`,
                       },
-                      body: JSON.stringify({ book_id: bookId }),
+                      body: JSON.stringify({ book_id: bookId, ...defaultModelBody() }),
                     });
                     const j = await r.json();
                     if (r.ok && j.code === 200 && j.data?.lines?.length) {
@@ -589,10 +592,29 @@ export function WritingEditor({ bookId, bookType }: Props) {
               <Button
                 size="xs"
                 disabled={generatingChapter}
-                title="按章纲生成完整一章（追加到章末，不覆盖已有内容）"
-                onClick={generateWholeChapter}
+                title={
+                  editorContent.trim()
+                    ? "按章纲继续写本章（追加到章末，不覆盖已有内容）"
+                    : "按章纲生成完整一章"
+                }
+                onClick={() => generateWholeChapter(false)}
               >
-                {generatingChapter ? "生成中..." : "生成本章"}
+                {generatingChapter
+                  ? "生成中..."
+                  : editorContent.trim()
+                    ? "继续写本章"
+                    : "生成本章"}
+              </Button>
+            )}
+            {!isShort && activeChapterId && editorContent.trim() && (
+              <Button
+                size="icon-xs"
+                variant="ghost"
+                disabled={generatingChapter}
+                title="重新生成整章（覆盖现有内容）"
+                onClick={() => setRegenOpen(true)}
+              >
+                <RefreshCw className="size-3" />
               </Button>
             )}
             {!isShort && (
@@ -704,6 +726,19 @@ export function WritingEditor({ bookId, bookType }: Props) {
         onConfirm={() => {
           if (deleteTarget) deleteChapterMutation.mutate(deleteTarget.chapter_id);
           setDeleteTarget(null);
+        }}
+      />
+
+      <ConfirmDialog
+        open={regenOpen}
+        onOpenChange={setRegenOpen}
+        title="重新生成本章"
+        description={`将覆盖本章现有内容（约 ${editorContent.length} 字），确定？`}
+        confirmText="覆盖生成"
+        destructive
+        onConfirm={() => {
+          setRegenOpen(false);
+          generateWholeChapter(true);
         }}
       />
 
