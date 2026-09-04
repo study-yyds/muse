@@ -119,6 +119,8 @@ export function BookListPage() {
 
   // 引导对话 session 管理
   const guideSessionRef = useRef<string | null>(null);
+  // 已使用（生成过作品）的引导会话 id：不自动恢复，仅提供"继续上次引导"入口
+  const [usedGuideSessionId, setUsedGuideSessionId] = useState<string | null>(null);
 
   // 恢复引导会话 / 弹窗状态（含中断生成自动恢复）
   useEffect(() => {
@@ -134,6 +136,13 @@ export function BookListPage() {
         console.log('[guide restore] data:', JSON.stringify(json?.data).slice(0, 200));
         if (res.ok && json?.data?.active?.messages?.length > 0) {
           guideSessionRef.current = json.data.active.id;
+          // 已使用的引导（生成过作品）：不自动恢复，只登记入口，供"继续上次引导"
+          if (localStorage.getItem(`muse_guide_used_${json.data.active.id}`)) {
+            setUsedGuideSessionId(json.data.active.id);
+            guideSessionRef.current = null;
+            setQuickRestored(true);
+            return;
+          }
           // 恢复用户最初输入的脑洞
           const savedPremise = localStorage.getItem("muse_guide_premise");
           if (savedPremise) setQuickPremise(savedPremise);
@@ -271,6 +280,20 @@ export function BookListPage() {
   const runBatchAction = async () => {
     const ids = [...selectedIds];
     const isDelete = batchConfirm === "delete";
+    const isPermanent = isDelete && showDeleted;
+    // 乐观更新（回收站彻底删除）：立即从列表移除选中项，不等接口返回——
+    // 后端已砍到 ~7 次往返，但 UI 不再阻塞才是"感知秒删"的关键；失败时刷新回滚
+    if (isPermanent) {
+      const idSet = new Set(ids);
+      queryClient.setQueryData(["books"], (old: any) => {
+        const list = old?.data;
+        if (!Array.isArray(list)) return old;
+        return { ...old, data: list.filter((b: any) => !idSet.has(b.book_id)) };
+      });
+    }
+    setSelectedIds(new Set());
+    setSelectMode(false);
+    setBatchConfirm(null);
     try {
       if (isDelete) {
         await api.post(
@@ -286,11 +309,8 @@ export function BookListPage() {
     } catch (e: any) {
       toast({ title: e.message || "操作失败", variant: "destructive" });
     }
-    // 无论成败都清理选中并刷新列表（失败时列表未变，刷新无害）
-    setSelectedIds(new Set());
-    setSelectMode(false);
+    // 完成后刷新列表（乐观移除的项在成功时自然消失；失败时被本次刷新恢复）
     queryClient.invalidateQueries({ queryKey: ["books"] });
-    setBatchConfirm(null);
   };
 
   // 长生成期间防止系统睡眠:电脑睡眠会断开 SSE 导致生成中止
@@ -391,12 +411,13 @@ export function BookListPage() {
                   if (outlineList.length > 0) {
                     // 新流程：展示梗概候选，等用户选择后写正文
                     hasPreview = true;
-                    // 生成成功：清理引导会话，防止下次打开弹窗恢复旧对话
+                    // 生成成功：引导会话归档——保留对话本体，标记"已使用"防止自动恢复
                     if (guideSessionRef.current) {
-                      authFetch(`/api/ai/chat-sessions/${guideSessionRef.current}`, {
-                        method: "DELETE",
-                        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
-                      }).catch(() => {});
+                      localStorage.setItem(
+                        `muse_guide_used_${guideSessionRef.current}`,
+                        data.book_id,
+                      );
+                      setUsedGuideSessionId(guideSessionRef.current);
                       guideSessionRef.current = null;
                     }
                     setQuickOutlines(outlineList);
@@ -413,12 +434,13 @@ export function BookListPage() {
                     setQuickTitles(data.titles);
                     setQuickCreatedId(data.book_id);
                     setQuickAppliedTitle(data.title || data.titles[0]?.title);
-                    // 生成成功：清理引导会话，防止下次打开弹窗恢复旧对话
+                    // 生成成功：引导会话归档——保留对话本体，标记"已使用"防止自动恢复
                     if (guideSessionRef.current) {
-                      authFetch(`/api/ai/chat-sessions/${guideSessionRef.current}`, {
-                        method: "DELETE",
-                        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
-                      }).catch(() => {});
+                      localStorage.setItem(
+                        `muse_guide_used_${guideSessionRef.current}`,
+                        data.book_id,
+                      );
+                      setUsedGuideSessionId(guideSessionRef.current);
                       guideSessionRef.current = null;
                     }
                     // 引导模式下退出引导界面，露出候选选择区
@@ -611,6 +633,31 @@ export function BookListPage() {
     const newMsgs = [...quickGuideMsgs, { role: "user", content: input }];
     setQuickGuideMsgs(newMsgs);
     await runGuideRequest(newMsgs);
+  };
+
+  // 继续上次已使用的引导（生成后归档的会话）
+  const resumeUsedGuide = async () => {
+    const token = localStorage.getItem("token");
+    try {
+      const res = await authFetch(`/api/ai/chat-sessions/guide?section=guide`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const json = await res.json();
+      const active = json?.data?.active;
+      if (!active?.messages?.length) {
+        toast({ title: "引导会话已不存在，请重新开始", variant: "destructive" });
+        setUsedGuideSessionId(null);
+        return;
+      }
+      guideSessionRef.current = active.id;
+      localStorage.removeItem(`muse_guide_used_${active.id}`);
+      setUsedGuideSessionId(null);
+      setQuickGuideMsgs(active.messages);
+      setQuickGuiding(true);
+      guideUserScrolledUp.current = false;
+    } catch {
+      toast({ title: "恢复引导失败", variant: "destructive" });
+    }
   };
 
   // 编辑历史消息：截断该消息之后的历史（AI 回复一并作废），用修改后的内容重发
@@ -996,12 +1043,17 @@ export function BookListPage() {
     setSynopsisWorking(false);
     localStorage.removeItem("muse_quick_open");
     localStorage.removeItem("muse_guide_premise");
-    // 删除引导会话
+    // 删除引导会话（已归档的会话保留，供"继续上次引导"）
     if (guideSessionRef.current) {
-      authFetch(`/api/ai/chat-sessions/${guideSessionRef.current}`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
-      }).catch(() => {});
+      const usedMark = localStorage.getItem(
+        `muse_guide_used_${guideSessionRef.current}`,
+      );
+      if (!usedMark) {
+        authFetch(`/api/ai/chat-sessions/${guideSessionRef.current}`, {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
+        }).catch(() => {});
+      }
       guideSessionRef.current = null;
     }
   };
@@ -1140,7 +1192,14 @@ export function BookListPage() {
                 <DialogTitle>{quickGuiding ? "创作引导" : "快捷创作"}</DialogTitle>
                 <DialogDescription>
                   {quickGuiding
-                    ? `第 ${Math.min(quickGuideMsgs.filter(m => m.role === "user").length + 1, 5)} 轮 · AI 帮你梳理想法`
+                    ? (() => {
+                        // 轮数 = 用户消息数 - 1（开场白不算一轮），无上限
+                        const rounds = Math.max(
+                          1,
+                          quickGuideMsgs.filter((m) => m.role === "user").length - 1,
+                        );
+                        return `第 ${rounds} 轮 · AI 帮你梳理想法`;
+                      })()
                     : (quickType === 'short' ? 'AI 一步写完完整短篇故事' : 'AI 自动生成世界观、大纲和角色')}
                 </DialogDescription>
               </DialogHeader>
@@ -1485,6 +1544,11 @@ export function BookListPage() {
                         }}>
                         {inspireLoading ? <Loader2 className="size-3 mr-1 animate-spin" /> : <Sparkles className="size-3 mr-1" />}
                         {inspireLoading ? "生成中..." : "随机灵感"}
+                      </Button>
+                    )}
+                    {usedGuideSessionId && !quickGuiding && (
+                      <Button variant="ghost" onClick={resumeUsedGuide}>
+                        继续上次引导
                       </Button>
                     )}
                     {!quickSynopsisMode && (

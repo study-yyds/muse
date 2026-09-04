@@ -24,6 +24,7 @@ interface UserRow {
   total_tokens: number;
   request_count: number;
   month_words?: number;
+  book_count?: number;
 }
 
 interface TemplateRow {
@@ -128,7 +129,12 @@ function UsersPanel() {
                 </td>
                 <td className="px-4 py-2.5"><span className={u.role === "admin" ? "text-primary font-medium" : "text-foreground"}>{u.role === "admin" ? "管理员" : "用户"}</span></td>
                 <td className="px-4 py-2.5"><span className={u.status === "active" ? "text-green-600" : u.status === "suspended" ? "text-yellow-600" : "text-red-600"}>{u.status === "active" ? "正常" : u.status === "suspended" ? "暂停" : "封禁"}</span></td>
-                <td className="px-4 py-2.5 text-right">{u.book_limit}</td>
+                <td
+                  className="px-4 py-2.5 text-right"
+                  title={u.book_limit === -1 ? "作品上限：不限" : `作品上限：${u.book_limit}`}
+                >
+                  {u.book_count ?? 0}
+                </td>
                 <td className="px-4 py-2.5 text-right text-xs text-muted-foreground">
                   {(u.month_words ?? 0).toLocaleString()}
                 </td>

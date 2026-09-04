@@ -21,7 +21,7 @@ import { useThrottle } from "@/hooks/use-throttle";
 import { SaveAsTemplateDialog } from "@/components/templates/SaveAsTemplateDialog";
 import { cn } from "@/lib/utils";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Plus, Pencil, Trash2, CircleCheck, ListTree, BookmarkPlus } from "lucide-react";
+import { Plus, Pencil, Trash2, CircleCheck, ListTree, BookmarkPlus, Split, Loader2 } from "lucide-react";
 interface Props {
   bookId: string;
 }
@@ -54,6 +54,45 @@ export function OutlinePanel({ bookId }: Props) {
   const [selectedOutlineIdx, setSelectedOutlineIdx] = useState<Set<number>>(new Set());
   const [removeOutlineBatch, setRemoveOutlineBatch] = useState(false);
   const [removeNode, setRemoveNode] = useState<OutlineChapterData | null>(null);
+  // 节点细化：粗节点 → 8-10 个细节点（生成后直接应用，审阅发生在大纲页：行内编辑/批量删除/重新细化）
+  const [refineTarget, setRefineTarget] = useState<OutlineChapterData | null>(null);
+  const [refiningNodeId, setRefiningNodeId] = useState<string | null>(null);
+
+  const doRefineNode = async () => {
+    if (!refineTarget) return;
+    setRefiningNodeId(refineTarget.id);
+    try {
+      const t = localStorage.getItem("token");
+      const res = await authFetch("/api/ai/outline-nodes/refine", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${t}`,
+        },
+        body: JSON.stringify({
+          book_id: bookId,
+          node_id: refineTarget.id,
+          ...defaultModelBody(),
+        }),
+      });
+      const j = await res.json();
+      if (res.ok && j.code === 200 && j.data?.count) {
+        queryClient.invalidateQueries({ queryKey: ["outline", bookId] });
+        toast({
+          title: `已细化 ${j.data.count} 个节点（原节点已替换）`,
+          description:
+            "请在大纲页审阅；若该节点范围内已有章纲，建议清空后重新生成",
+        });
+        setRefineTarget(null);
+      } else {
+        toast({ title: j.message || "细化失败", variant: "destructive" });
+      }
+    } catch {
+      toast({ title: "细化失败", variant: "destructive" });
+    } finally {
+      setRefiningNodeId(null);
+    }
+  };
   const [extendingOutlines, setExtendingOutlines] = useState(false);
   const [extendDialogOpen, setExtendDialogOpen] = useState(false);
   const [extendCount, setExtendCount] = useState(10);
@@ -316,6 +355,8 @@ export function OutlinePanel({ bookId }: Props) {
                         selectedIds,
                         toggleSelect,
                         setRemoveNode,
+                        setRefineTarget,
+                        refiningNodeId,
                       )
                     )}
                 </div>
@@ -344,6 +385,9 @@ export function OutlinePanel({ bookId }: Props) {
                   toggleStatusMutation,
                   selectedIds,
                   toggleSelect,
+                  setRemoveNode,
+                  setRefineTarget,
+                  refiningNodeId,
                 )
               )}
           </div>
@@ -547,6 +591,15 @@ export function OutlinePanel({ bookId }: Props) {
         }}
       />
 
+      <ConfirmDialog
+        open={refineTarget != null}
+        onOpenChange={(o) => !o && setRefineTarget(null)}
+        title="细化节点"
+        description={`把节点"${refineTarget?.title ?? ""}"细化为 8-10 个细节点（原节点将被替换，已写章节不受影响）。生成后请在大纲页审阅，不满意可批量删除后重新细化。`}
+        confirmText={refiningNodeId ? "细化中..." : "细化"}
+        onConfirm={doRefineNode}
+      />
+
       <Dialog open={extendDialogOpen} onOpenChange={setExtendDialogOpen}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
@@ -614,6 +667,8 @@ function renderChapter(
   selectedIds?: Set<string>,
   toggleSelect?: (id: string) => void,
   onRequestDelete?: (ch: OutlineChapterData) => void,
+  onRequestRefine?: (ch: OutlineChapterData) => void,
+  refiningNodeId?: string | null,
 ) {
   if (editingChapter === ch.id) {
     return (
@@ -658,7 +713,14 @@ function renderChapter(
         </div>
         <p className="text-xs text-muted-foreground line-clamp-2">{ch.summary}</p>
       </div>
-      <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+      <div
+        className={cn(
+          "flex gap-0.5 transition-opacity shrink-0",
+          refiningNodeId === ch.id
+            ? "opacity-100" // 细化生成中：加载转圈常驻可见，不依赖悬浮
+            : "opacity-0 group-hover:opacity-100",
+        )}
+      >
         <Button
           variant="ghost"
           size="icon-xs"
@@ -679,6 +741,19 @@ function renderChapter(
         </Button>
         <Button variant="ghost" size="icon-xs" onClick={() => startEdit(ch)}>
           <Pencil className="size-3" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          disabled={refiningNodeId === ch.id}
+          title="细化节点（拆成 8-10 个细节点，生成草稿审阅后才应用）"
+          onClick={() => onRequestRefine?.(ch)}
+        >
+          {refiningNodeId === ch.id ? (
+            <Loader2 className="size-3 animate-spin" />
+          ) : (
+            <Split className="size-3" />
+          )}
         </Button>
         <Button
           variant="ghost"

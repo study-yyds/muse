@@ -95,6 +95,36 @@ export class AiController {
   }
 
   @UseGuards(aiRateLimit)
+  @Post('outline-nodes/refine')
+  async refineNode(
+    @Body()
+    body: {
+      book_id: string;
+      node_id: string;
+      model?: string;
+      key_id?: string;
+    },
+    @Req() req: Request,
+  ) {
+    try {
+      await this.ai.checkBookOwnership(body.book_id, (req as any).userId);
+      const data = await this.ai.refineNode(
+        (req as any).userId,
+        body.book_id,
+        body.node_id,
+        body.model,
+        body.key_id,
+      );
+      return { code: 200, data };
+    } catch (e: any) {
+      // 显式返回真实错误信息：前端 toast 直接展示（定位 500 原因不用翻终端日志）
+      console.error('[refine-node] error:', e?.message ?? e);
+      return { code: 500, message: e?.message ?? '节点细化失败，请重试' };
+    }
+  }
+
+
+  @UseGuards(aiRateLimit)
   @Post('generate-chapter')
   async generateChapter(
     @Body()
