@@ -4,7 +4,10 @@
 import { GENRE_KNOWLEDGE, sanitizePrompt } from './ai-prompts';
 
 // 构建引导模式 system prompt
-export function buildGuideSystemPrompt(context?: string, type?: string): string {
+export function buildGuideSystemPrompt(
+  context?: string,
+  type?: string,
+): string {
   const isShort = type === 'short';
   const typeGuide = isShort
     ? `\n【篇幅注意——短篇】
@@ -71,9 +74,7 @@ export function parseOutlineNodesJson(
       const nodes = parsed
         .filter(
           (n: any) =>
-            n &&
-            typeof n.title === 'string' &&
-            typeof n.summary === 'string',
+            n && typeof n.title === 'string' && typeof n.summary === 'string',
         )
         .map((n: any) => ({
           title: n.title.trim().slice(0, 20),
@@ -95,9 +96,7 @@ export function parseOutlineNodesJson(
 export function buildConditionalRules(premise: string): string {
   const p = premise || '';
   const hasRevenge =
-    /复仇|打脸|虐渣|报复|逆袭|重生|穿越|穿书|预知|怪谈|悬疑|惊悚|反转/.test(
-      p,
-    );
+    /复仇|打脸|虐渣|报复|逆袭|重生|穿越|穿书|预知|怪谈|悬疑|惊悚|反转/.test(p);
   const hasSweet = /甜宠|治愈|温馨|亲情|友情|温暖|救赎|双向奔赴/.test(p);
   const hasVillain = /复仇|打脸|虐渣|背叛|欺负|霸凌|害死|陷害/.test(p);
   const hasRebirth = /重生|回到.{0,6}(前|过去)|穿越|穿书/.test(p);
@@ -266,7 +265,10 @@ export function buildCapabilityTimeline(outlineText: string): string {
   if (!hits.length) return '';
   const first = hits[0];
   const list = hits
-    .map((h) => `- 卷纲第 ${h.no} 个节点为能力节点：${h.e.replace(/^- /, '').slice(0, 80)}`)
+    .map(
+      (h) =>
+        `- 卷纲第 ${h.no} 个节点为能力节点：${h.e.replace(/^- /, '').slice(0, 80)}`,
+    )
     .join('\n');
   return `【能力时间线——按卷纲严格执行】
 ${list}
@@ -368,16 +370,15 @@ export function parseProtagonist(aiText: string): any {
  * token 失控，纯字数会切断半句话）。必须在 sanitizeMessages 截断之前调用，
  * 否则 40 条窗口外的设定会被直接丢弃。
  */
-export function buildChatMemory(messages: { role: string; content: string }[]): {
+export function buildChatMemory(
+  messages: { role: string; content: string }[],
+): {
   messages: { role: string; content: string }[];
   memoryBlock: string;
 } {
   const KEEP_MAX_MSGS = 8; // 近窗条数上限：保证对话轮次完整
   const KEEP_MAX_CHARS = 4000; // 近窗字数预算：保证 token 可控
-  const totalChars = messages.reduce(
-    (s, m) => s + (m.content?.length ?? 0),
-    0,
-  );
+  const totalChars = messages.reduce((s, m) => s + (m.content?.length ?? 0), 0);
   // 全部历史都在预算内（近窗 4000 + 记忆块 1500 余量）→ 不压缩，保完整连贯
   if (totalChars <= KEEP_MAX_CHARS + 1500) {
     return { messages, memoryBlock: '' };
