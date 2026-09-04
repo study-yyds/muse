@@ -4,6 +4,8 @@ import { getDb, schema, mergeJsonb } from '../database/connection';
 import { assertSafeBaseUrl } from '../base-url-safety';
 import { registerBookAbort, unregisterBookAbort } from './abort-registry';
 import { detectAiFlavors } from './text-quality-checks';
+import * as aiPrompts from './ai-prompts';
+import * as aiUtils from './ai-utils';
 import { Response } from 'express';
 import crypto from 'crypto';
 import { writeFile, mkdir, unlink } from 'fs/promises';
@@ -13,51 +15,13 @@ import path from 'path';
 import { execSync } from 'child_process';
 import ffmpegPath from 'ffmpeg-static';
 
-// 提示注入防护
-const MAX_USER_INPUT = 8000; // 用户输入最大长度
-const MAX_HISTORY_MSG = 40; // 历史消息最大条数
-const INJECTION_PATTERNS = [
-  /忽略.*(?:系统|之前|上面|所有|提示|规则|指令)/gi,
-  /ignore.*(?:system|previous|above|all|prompt|rule|instruction)/gi,
-  /\[系统指令\]|\[SYSTEM\]|<<SYSTEM>>|\[INST\]|<<SYS>>/gi,
-  /你的.*(?:系统提示|system prompt|指令|提示词)/gi,
-  /输出.*(?:系统提示|system prompt|指令|提示词)/gi,
-];
+// sanitizePrompt 由 ai-prompts.ts 实现，此处 re-export 供外部模块与测试沿用原导入路径
+export { sanitizePrompt } from './ai-prompts';
 
-export function sanitizePrompt(text: string): string {
-  if (!text || typeof text !== 'string') return '';
-  // 长度限制
-  let sanitized = text.slice(0, MAX_USER_INPUT);
-  // 过滤注入模式
-  for (const pattern of INJECTION_PATTERNS) {
-    sanitized = sanitized.replace(pattern, '[filtered]');
-  }
-  return sanitized;
-}
-
-function sanitizeMessages(msgs: any[]): any[] {
-  if (!Array.isArray(msgs)) return [];
-  return msgs.slice(-MAX_HISTORY_MSG).map((m) => ({
-    role: m.role === 'assistant' ? 'assistant' : 'user',
-    content: sanitizePrompt(m.content),
-  }));
-}
-
-// 写作风格预设（模块级常量：chat 续写与整章生成共用）
-const STYLE_GUIDES: Record<string, string> = {
-  default:
-    '自然流畅的通俗小说叙事：语言直白清晰，动作与对话推进情节，少用辞藻堆砌；段落不宜过长，避免文艺腔与抽象抒情',
-  'light-novel':
-    '快节奏网文（番茄/起点主流写法）：写"人话"——动词为主、少形容词，拒绝矫情长句与堆砌辞藻；段落短，手机屏不超过5行；用动作和对话展示情绪与冲突，不直白叙述；冲突前置，片段内必有具体可感知的麻烦与爽点（打压→反转→打脸）；情绪靠真细节传递，不替读者说完；结尾留强钩子',
-  serious:
-    '文艺细腻：句子节奏舒缓，多用长句与细节描写；情感表达克制含蓄，靠动作与场景传情；注重氛围营造；修辞与用词讲究但不堆砌',
-  ancient:
-    '古风：多用文言词汇与四字短语，善用诗词意象；句式对仗工整，有章回体韵味；称谓与器物考究，符合古代语境',
-  'jj-style':
-    '晋江文风：以人物关系与情感线为叙事核心（言情/纯爱/百合通用，无CP作品则以人物成长与羁绊为主线）；心理描写细腻，氛围感与留白充足；一条主情绪贯穿全篇，情绪转折必须有铺垫；对话含蓄有张力，靠潜台词和细节传递情绪，不把话说满；情节逻辑自洽，情感质感优先于节奏爽感',
-  colloquial:
-    '平实口语：像日常说话一样自然，多用生活化词汇；句式松散灵活，允许口语省略；贴近真实对话节奏，不端着',
-};
+// 本地别名：实例方法内部沿用原调用方式（实现见 ai-prompts.ts）
+const sanitizePrompt = aiPrompts.sanitizePrompt;
+const sanitizeMessages = aiPrompts.sanitizeMessages;
+const STYLE_GUIDES = aiPrompts.STYLE_GUIDES;
 
 @Injectable()
 export class AiService {
@@ -327,86 +291,11 @@ export class AiService {
 
   // 主流题材知识库（引导模式注入）：题材-套路-爽点结构-引导追问点。
   // 覆盖经典热门（模型自有知识，非实时榜单）；时效热点由运营配置维护（预留）
-  static readonly GENRE_KNOWLEDGE = `【题材知识库（2026 年网文市场趋势）——提问与给方向时参考】
-
-【2026 三大风向】
-1. 反套路成为新套路：读者看腻传统套路，开篇 300 字内要给出"反预期"信号；读者能接受慢节奏、重逻辑的深度内容
-2. 跨界融合取代单一题材：爆款多为"题材A+题材B"的化学反应（如末世+种田、玄幻+同人、历史+考据权谋）；追问点：两个题材的情绪反差/化学反应点在哪
-3. 情绪价值压过逻辑爽感："发疯文学""反内卷""躺平流"（摸鱼得奖励）完读率显著更高；从"我要赢"转向"我值得"；追问点：主角的情绪出口是什么、在反抗什么评价体系
-
-【男频赛道（2026）】
-- 都市脑洞/都市日常（新书最多）：日常藏异常+脑洞反转；追问点：核心异常、反转节奏
-- 东方仙侠/都市高武：设定扎实+快节奏；追问点：力量体系代价、越级打脸设计
-- 战神赘婿（仍稳）：老套路但流量稳定，开篇须做反套路微调
-- 系统流都市：新人友好；追问点：系统规则/奖励/代价
-- 都市种田/重生基建：全民参与感+成长线；追问点：开局资源、扩张节奏
-- 无限流智斗：规则怪谈+以智取胜；追问点：规则边界、骚操作设计
-- 历史权谋/考据：硬核深度向；追问点：史实考据点、权谋棋局
-- 同人：斗罗/斗破不可写（版权封禁），海贼/火影等动漫同人起量快
-
-【女频赛道（2026）】
-- 豪门总裁/先婚后爱（最大盘）：甜宠为主，"双洁"是主流刚需，虐越少越好；追问点：契约缘由、误会反转、男主先动心的契机
-- 年代文/高干（榜单半壁江山）：可短期冲爆款，流量周期短，不宜写太长；追问点：时代红利点、家长里短冲突
-- 宫斗宅斗（古言）：追问点：家世格局、斗法层级
-- 追妻火葬场+带球跑：已烂大街，需强反套路才写
-- 蓝海：非遗文化+中女创业、女性科研/科考（航天/考古/海洋）、无CP女性互助群像——作品极少但转化好评率高，番茄对"非遗传承"标签有流量倾斜
-
-【知乎盐选短篇向】
-- 强反转+信息差+道德困境；追问点：核心物证、隐瞒的真相、结局反转方向
-
-【政策红线】
-- 黑化/暴力擦边题材已被屏蔽签约，属高危雷区
-- 平台严打纯 AI 水文：开篇代入感强、主线清晰、人物立得住是收稿硬标准
-
-注意：以上为 2026 年市场趋势参考（非实时榜单，需定期人工更新），是辅助判断不是模板——先听清作者脑洞，再针对性追问；不要替作者选题材。`
+  // 实现见 ai-prompts.ts / ai-utils.ts，此处保留静态入口兼容既有调用与测试
+  static readonly GENRE_KNOWLEDGE = aiPrompts.GENRE_KNOWLEDGE;
 
   // 构建引导模式 system prompt
-  static buildGuideSystemPrompt(context?: string, type?: string): string {
-    const isShort = type === 'short';
-    const typeGuide = isShort
-      ? `\n【篇幅注意——短篇】
-- 作者要写的是短篇（8000-20000字），故事结构应紧凑聚焦
-- 引导时侧重：单一核心冲突、1-3个关键角色、一个强有力的结尾反转`
-      : `\n【篇幅注意——长篇网文】
-- 作者要写的是长篇网络小说。从作者的脑洞中识别这个故事的驱动力，围绕它来提问，不预设模板`;
-
-    return `你是一位创作导师，帮作者把模糊的想法打磨成精彩的故事。${typeGuide}
-
-${AiService.GENRE_KNOWLEDGE}
-
-【怎么做——看例子】
-
-作者："雇主因为女主和他亡妻长得一模一样，找上她做替身"
-❌ 错误："那她是主动去扮演还是被人雇的？" ← 作者已经说了雇主找上她
-✅ 正确："雇主主动找上门的——是私下交易，还是有人牵线？"
-
-作者："女主绑定了平行时空系统，可以学习未来的知识"
-❌ 错误："在信息闭塞的年代，她怎么获取知识？" ← 系统已经解决了
-✅ 正确："系统提供的学习资料是什么样的？她能带进现实世界使用吗？"
-
-作者："我想写一个重生经商的故事"
-❌ 错误："重生文应该有金手指，你的女主金手指是什么？" ← 不要预设
-✅ 正确："她重生回去做什么生意？为什么选这个行业？"
-
-【你的工作方式】
-1. **作者的描述越短，越帮他拆细**。他说"美食"，你问"美食的什么？做菜、经营、评测、还是收集？"他说"做菜"，你问"是系统升级流（做一道学一道），还是现实成长流（学艺拜师开店）？"——每一轮帮他把模糊的想法拆成一个可回答的具体问题
-2. **作者卡住了怎么办**：他不确定主角怎么突破瓶颈、不知道怎么推动剧情、不知道怎么收尾——给他 2-3 个具体的方向选项，附带简短的理由，让他选。不要反问"你想怎么解决"，而是"你可以试试A/B/C，因为..."
-3. **先定引擎，再展开**：确定故事靠什么推着走（升级/复仇/经营/关系/谜团），然后围绕引擎追问：升级路径是什么、关键转折在哪、终点是什么样
-2. 从作者上一轮的回答里找到没说清楚的点，追问
-3. 不确定作者的意思就问"是A还是B？"，不要猜
-3. 反馈 = 一句肯定 + 一句话提炼 + 一个问题，控制在 100 字内
-4. 作者说"开始生成""差不多了"时，立即停止提问，输出摘要。摘要基于对话中已讨论的内容进行总结，可以合理扩展细节，但不要修改或替换作者已明确的设定：
-
-\`\`\`
-【故事主题】基于对话的一句话
-【主角画像】仅对话中已提到的信息
-【核心驱动力】推着故事往前走的是什么
-【关键节点】仅对话中已讨论的情节
-【已确认设定】作者明确敲定的设定逐条列出（金手指/人物关系/背景/结局方向），不得遗漏
-【叙事风格】视角 + 节奏
-\`\`\`
-${context ? `\n【用户的初始想法】\n${context}` : ''}`;
-  }
+  static buildGuideSystemPrompt = aiUtils.buildGuideSystemPrompt;
 
   // 全局 AI 对话（根据菜单切换上下文和动作）
   async chat(
@@ -2030,38 +1919,7 @@ ${existingLines.length ? `【上一批章纲结尾】\n${existingLines.slice(-3)
   }
 
   /** 解析细化节点的 JSON 数组（代码块/裸数组容错）；至少 3 个有效节点才返回 */
-  static parseOutlineNodesJson(
-    aiText: string,
-  ): Array<{ title: string; summary: string }> {
-    const text = aiText ?? '';
-    const attempts: string[] = [];
-    const codeBlock = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (codeBlock) attempts.push(codeBlock[1].trim());
-    const arrMatch = text.match(/\[[\s\S]*\]/);
-    if (arrMatch) attempts.push(arrMatch[0]);
-    for (const t of attempts) {
-      try {
-        const parsed = JSON.parse(t);
-        if (!Array.isArray(parsed)) continue;
-        const nodes = parsed
-          .filter(
-            (n: any) =>
-              n &&
-              typeof n.title === 'string' &&
-              typeof n.summary === 'string',
-          )
-          .map((n: any) => ({
-            title: n.title.trim().slice(0, 20),
-            summary: n.summary.trim().slice(0, 60),
-          }))
-          .filter((n) => n.title && n.summary);
-        if (nodes.length >= 3) return nodes;
-      } catch {
-        /* 尝试下一个 */
-      }
-    }
-    return [];
-  }
+  static parseOutlineNodesJson = aiUtils.parseOutlineNodesJson;
 
   /**
    * 节点细化（第一阶段）：把粗节点拆成 8-10 个细节点，存入草稿（extra.refine_draft），
@@ -3736,327 +3594,16 @@ ${sample}`;
    * 条件规则：根据用户想法中的题材意图，动态生成创作规则段（纯函数，可单测）
    * 复仇/悬疑类注入"信息差不摊牌"；甜宠/治愈类注入"允许坦白"；有加害者题材注入"代价铁律"
    */
-  static buildConditionalRules(premise: string): string {
-    const p = premise || '';
-    const hasRevenge =
-      /复仇|打脸|虐渣|报复|逆袭|重生|穿越|穿书|预知|怪谈|悬疑|惊悚|反转/.test(
-        p,
-      );
-    const hasSweet = /甜宠|治愈|温馨|亲情|友情|温暖|救赎|双向奔赴/.test(p);
-    const hasVillain = /复仇|打脸|虐渣|背叛|欺负|霸凌|害死|陷害/.test(p);
-    const hasRebirth = /重生|回到.{0,6}(前|过去)|穿越|穿书/.test(p);
+  static buildConditionalRules = aiUtils.buildConditionalRules;
+  static buildRecap = aiUtils.buildRecap;
+  static buildTitleFallback = aiUtils.buildTitleFallback;
+  static extractFactors = aiUtils.extractFactors;
+  static selectWorldSections = aiUtils.selectWorldSections;
 
-    if (!hasRevenge && !hasSweet && !hasRebirth) return ''; // 中性题材不加条件规则
-
-    const rules: string[] = [];
-    if (hasRebirth) {
-      rules.push(
-        '重生时间线铁律：前世的物件、证据、文件不随重生带回当前世界，只有主角的记忆回来；当前时间线里的任何证据必须是当前时间线真实发生的事；道具出现时必须交代来源一句（如"轮椅"必须说明她为何坐轮椅）',
-      );
-    }
-    if (hasRevenge && !hasSweet) {
-      rules.push(
-        '信息差是命根子：主角的秘密（重生/穿越/预知）是核心筹码，不主动向任何人摊牌；对方也是重生者时双方各自隐藏、互相试探、话里有话，禁止直接说出底牌',
-      );
-    }
-    if (hasSweet) {
-      rules.push(
-        '允许在情感高潮处坦白（"我重生回来就是为了你"），坦白本身就是甜点',
-      );
-    }
-    if (hasVillain) {
-      rules.push(
-        '加害者必须付出代价：伤害过主角的人要有对应惩罚或赎罪，禁止"杀妻两世最后相安无事"式轻轻放下；若和解必须先有足够的代价铺垫',
-      );
-    }
-    return `【本作题材约束——优先于通用规则】\n${rules.map((r) => `- ${r}`).join('\n')}`;
-  }
-
-  /**
-   * 前情提要文本构建（纯函数，可单测）：
-   * 每章一行「标题：开头 150 字」，注入续写 prompt 保持长篇连贯
-   */
-  static buildRecap(
-    chapters: Array<{
-      title: string;
-      content: string;
-      summary?: string | null;
-    }>,
-  ): string {
-    if (chapters.length === 0) return '';
-    return (
-      '【前情提要——之前章节的梗概，续写时保持连贯】\n' +
-      chapters
-        .map(
-          (c) =>
-            // 优先用章节摘要（剧情梗概）；摘要未生成时回退章节开头
-            `《${c.title}》：${(c.summary || c.content || '').slice(0, 150).replace(/\n/g, ' ')}`,
-        )
-        .join('\n') +
-      '\n\n'
-    );
-  }
-
-  /**
-   * 书名候选兜底：AI 多次失败时，用题材词拼 3 个变体，保证候选区有得选
-   * 纯函数，可单测
-   */
-  static buildTitleFallback(premise: string): string[] {
-    // 干净降级:只返回 1 条(脑洞切片),前端 titles.length>1 才展示选择区,
-    // 不再用网文梗模板拼接("之后我逆天改命"式拼接名是负分)
-    const base = premise.slice(0, 20).trim() || '短篇故事';
-    return [base];
-  }
-
-  /**
-   * 双字滑窗提取文本要素（确定性，零调用）：模型要素提取实测有幻觉
-   * （如从"母亲重生回女儿成人礼当天"提取出"恶毒女配"），不可依赖。
-   * 用 Unicode 码点过滤只保留汉字，避免正则字符类含非 ASCII 字面量
-   */
-  static extractFactors(s: string): string[] {
-    const clean = s
-      .split('')
-      .filter((c) => {
-        const code = c.charCodeAt(0);
-        return code >= 0x4e00 && code <= 0x9fff;
-      })
-      .join('');
-    const set = new Set<string>();
-    for (let i = 0; i + 2 <= clean.length; i++) {
-      set.add(clean.slice(i, i + 2));
-    }
-    return [...set];
-  }
-
-  /**
-   * 世界观分区按需注入：用章节要素给分区打分，按命中数排序取最相关的分区，
-   * 总量 ≤ maxChars。替代全量硬截断——硬截断可能丢掉与本章最相关的规则
-   * （如力量体系分区排在后面就被截掉）。无要素时回退全量拼接截断（旧行为）。
-   */
-  static selectWorldSections(
-    sections: Array<{ name: string; content: string }>,
-    factors: string[],
-    maxChars = 2000,
-  ): string {
-    if (!sections?.length) return '';
-    if (!factors?.length) {
-      return sections
-        .map((s) => `【${s.name}】\n${s.content}`)
-        .join('\n\n')
-        .slice(0, maxChars);
-    }
-    const scored = sections
-      .map((s) => ({
-        s,
-        hits: factors.filter((f) => f.length >= 2 && s.content.includes(f))
-          .length,
-      }))
-      .sort((a, b) => b.hits - a.hits);
-    const picked: typeof scored = [];
-    let used = 0;
-    for (const item of scored) {
-      if (used + item.s.content.length > maxChars && picked.length > 0) break;
-      picked.push(item);
-      used += item.s.content.length;
-    }
-    return picked.map((x) => `【${x.s.name}】\n${x.s.content}`).join('\n\n');
-  }
-
-  /** 解析章纲：每行"第N章 | 目标=... | 阻碍=... | 爽点=... | 钩子=..."，最多 10 行 */
-  static parseChapterOutlines(text: string): string[] {
-    if (!text) return [];
-    return text
-      .split('\n')
-      .map((l) =>
-        l
-          .trim()
-          .replace(/^[-*•]\s*/, '')
-          .replace(/^\d+[.、)）]\s*/, ''),
-      )
-      .filter((l) => /^第[一二三四五六七八九十百\d]+章\s*[|｜：: ]/.test(l))
-      .slice(0, 10);
-  }
-
-  /**
-   * 从卷纲文本提取能力节点，生成显式时间线约束块。
-   * 模型自行推断"觉醒在第几章"不可靠（曾出现第 1 章就用双系、觉醒章被跳过的错误），
-   * 改为把能力节点编号和禁用区间直接写入 prompt。
-   */
-  static buildCapabilityTimeline(outlineText: string): string {
-    const text = outlineText ?? '';
-    let entries: string[] = [];
-    const jsonMatch = text.match(/\[[\s\S]*\]/);
-    if (jsonMatch) {
-      try {
-        const parsed = JSON.parse(jsonMatch[0]);
-        if (Array.isArray(parsed)) {
-          entries = parsed
-            .filter((n: any) => n && (n.title || n.summary))
-            .map((n: any) => `${n.title ?? ''}：${n.summary ?? ''}`);
-        }
-      } catch {
-        entries = [];
-      }
-    }
-    if (!entries.length) {
-      entries = text
-        .split('\n')
-        .map((l) => l.trim())
-        .filter(Boolean);
-    }
-    const hits = entries
-      .map((e, i) => ({ no: i + 1, e }))
-      .filter(({ e }) => /觉醒|获得|解锁|激活|突破/.test(e));
-    if (!hits.length) return '';
-    const first = hits[0];
-    const list = hits
-      .map((h) => `- 卷纲第 ${h.no} 个节点为能力节点：${h.e.replace(/^- /, '').slice(0, 80)}`)
-      .join('\n');
-    return `【能力时间线——按卷纲严格执行】
-${list}
-- 本批章纲按卷纲节点顺序推进，不得跳过能力节点；每个能力节点必须在对应顺序的某章中完整写出觉醒/获得过程（绝境、触发条件、代价），不得默认主角已拥有
-- 觉醒/激活事件不得整体拖后：节点摘要中写明的激活是其语义核心，必须落在该节点对应章节区间的开头部分——禁止把同一个节点拆成"铺垫数章后才激活"（节点已是规划最小颗粒，激活应尽早落位）
-- 第 ${first.no} 个节点（首个能力节点）之前的章节：主角不得使用任何超自然能力（预判、瞬移、共鸣等异能一律禁用），只能靠体术/头脑/环境；可埋伏笔（旧物发热、异常直觉），但不得点破、不得实际生效
-- 首个能力节点对应章节及之后：方可使用该能力，觉醒后首次使用必须写明"第一次用"的镜头`;
-  }
-
-  /** 解析主角 JSON：容错链——代码块/name锚定/花括号提取 → 常见 JSON 语病修复 → 中文字段名归一 → 正则抢救；无 name 返回 null */
-  static parseProtagonist(aiText: string): any {
-    const text = aiText ?? '';
-    const attempts: string[] = [];
-    const codeBlock = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-    if (codeBlock) attempts.push(codeBlock[1].trim());
-    const objMatch = text.match(/\{[\s\S]*"name"[\s\S]*\}/);
-    if (objMatch) attempts.push(objMatch[0]);
-    const lastOpen = text.lastIndexOf('{');
-    const lastClose = text.lastIndexOf('}');
-    if (lastOpen >= 0 && lastClose > lastOpen) {
-      attempts.push(text.slice(lastOpen, lastClose + 1));
-    }
-
-    // 中文键名归一（模型常输出 姓名/性别 而非 name/gender）
-    const KEY_ALIAS: Record<string, string> = {
-      姓名: 'name',
-      名字: 'name',
-      性别: 'gender',
-      性格: 'personality',
-      身份: 'identity',
-      背景: 'backstory',
-      动机: 'motivation',
-      口头禅: 'catchphrase',
-      说话风格: 'speech_style',
-      外貌: 'appearance',
-    };
-    const normalize = (raw: any): any => {
-      const obj = Array.isArray(raw) ? raw[0] : raw;
-      if (!obj || typeof obj !== 'object') return null;
-      if (!obj.name) {
-        for (const [k, v] of Object.entries(obj)) {
-          const target = KEY_ALIAS[k];
-          if (target && obj[target] == null) obj[target] = v;
-        }
-      }
-      return obj.name ? obj : null;
-    };
-    // 常见 LLM JSON 语病修复：尾逗号、中文引号、中文冒号
-    const repair = (t: string): string =>
-      t
-        .replace(/,\s*([}\]])/g, '$1')
-        .replace(/[“”]/g, '"')
-        .replace(/([{,]\s*)"([^"]{1,40}?)"\s*：/g, '$1"$2":');
-    for (const t of attempts) {
-      try {
-        const parsed = JSON.parse(t);
-        const obj = normalize(parsed);
-        if (obj) return obj;
-      } catch {
-        /* 尝试下一个提取 */
-      }
-      const repaired = repair(t);
-      if (repaired !== t) {
-        try {
-          const parsed = JSON.parse(repaired);
-          const obj = normalize(parsed);
-          if (obj) return obj;
-        } catch {
-          /* 修复后仍失败，继续 */
-        }
-      }
-    }
-    // 正则抢救：从散文中按"字段：值"提取（最少拿到姓名即可保留主角约束）
-    const pick = (label: string) => {
-      const m = text.match(
-        new RegExp(`(?:${label})\\s*[:：]\\s*["']?([^"'，,。\\n]{1,30})`),
-      );
-      return m ? m[1].trim() : '';
-    };
-    const name = pick('姓名') || pick('名字') || pick('name');
-    if (!name) return null;
-    return {
-      name,
-      gender: pick('性别'),
-      personality: pick('性格'),
-      identity: pick('身份'),
-      backstory: pick('背景'),
-      motivation: pick('动机'),
-      catchphrase: pick('口头禅'),
-      speech_style: pick('说话风格'),
-      appearance: pick('外貌'),
-    };
-  }
-
-  /**
-   * 对话长期记忆（引导/写作面板共用）：长对话时把早期"作者的发言"压缩成
-   * 【已确认设定】块注入 system。切割策略：条数设上限、字数设预算，
-   * 两者先到先停，只切在完整消息之间（消息长度方差大：纯条数会让
-   * token 失控，纯字数会切断半句话）。必须在 sanitizeMessages 截断之前调用，
-   * 否则 40 条窗口外的设定会被直接丢弃。
-   */
-  static buildChatMemory(messages: { role: string; content: string }[]): {
-    messages: { role: string; content: string }[];
-    memoryBlock: string;
-  } {
-    const KEEP_MAX_MSGS = 8; // 近窗条数上限：保证对话轮次完整
-    const KEEP_MAX_CHARS = 4000; // 近窗字数预算：保证 token 可控
-    const totalChars = messages.reduce(
-      (s, m) => s + (m.content?.length ?? 0),
-      0,
-    );
-    // 全部历史都在预算内（近窗 4000 + 记忆块 1500 余量）→ 不压缩，保完整连贯
-    if (totalChars <= KEEP_MAX_CHARS + 1500) {
-      return { messages, memoryBlock: '' };
-    }
-    // 近窗：从最新往回取整条消息，字数预算与条数上限先到先停（绝不切半句）
-    let chars = 0;
-    let kept = 0;
-    for (let i = messages.length - 1; i >= 0 && kept < KEEP_MAX_MSGS; i--) {
-      const len = messages[i].content?.length ?? 0;
-      if (kept > 0 && chars + len > KEEP_MAX_CHARS) break;
-      chars += len;
-      kept++;
-    }
-    const recent = messages.slice(messages.length - kept);
-    const userLines = messages
-      .slice(0, messages.length - kept)
-      .filter((m) => m.role === 'user')
-      .map((m) => sanitizePrompt(m.content).replace(/\s+/g, ' ').trim())
-      .filter(Boolean)
-      .map((c) => (c.length > 200 ? c.slice(0, 200) + '…' : c));
-    if (!userLines.length) {
-      return { messages: recent, memoryBlock: '' };
-    }
-    // 记忆块总量封顶 2000 字，从最旧的开始丢（越近的设定越重要）
-    let total = 0;
-    const keptLines: string[] = [];
-    for (let i = userLines.length - 1; i >= 0; i--) {
-      const l = userLines[i];
-      total += l.length;
-      if (total > 2000) break;
-      keptLines.unshift(l); // 保持时间顺序
-    }
-    const memoryBlock = `\n\n【已确认设定——你和作者在前面讨论中敲定的内容，按时间顺序排列；同一事项有多条发言时，以靠后的最新发言为准；若与最近对话中的新指示冲突，一律以最近对话为准】\n${keptLines.join('\n')}\n`;
-    return { messages: recent, memoryBlock };
-  }
+  static parseChapterOutlines = aiUtils.parseChapterOutlines;
+  static buildCapabilityTimeline = aiUtils.buildCapabilityTimeline;
+  static parseProtagonist = aiUtils.parseProtagonist;
+  static buildChatMemory = aiUtils.buildChatMemory;
 
   /**
    * 设定集合并：AI 维护版设定记忆。把作者的新发言合并进现有设定集——
@@ -4526,28 +4073,7 @@ ${list}
   /**
    * 解析骨架化输出：骨架行 / 梗概行 / 风险行（纯函数，供单测）
    */
-  static parseSkeletonize(text: string): {
-    skeleton: string;
-    preview: string;
-    risks: string[];
-  } {
-    let skeleton = '';
-    let preview = '';
-    const risks: string[] = [];
-    for (const raw of text.split('\n')) {
-      const line = raw.trim();
-      if (!skeleton && /^骨架[：:=]/.test(line)) skeleton = line;
-      if (!preview && /^梗概[：:]/.test(line)) {
-        preview = line.replace(/^梗概[：:]\s*/, '');
-      }
-      const riskMatch = line.match(/^风险[：:]\s*(.+)$/);
-      if (riskMatch) {
-        const content = riskMatch[1].trim();
-        if (content !== '无') risks.push(content);
-      }
-    }
-    return { skeleton, preview, risks };
-  }
+  static parseSkeletonize = aiUtils.parseSkeletonize;
 
   /**
    * 自写梗概：骨架化 + 逻辑体检（一次调用，非流式）。
