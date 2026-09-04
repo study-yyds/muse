@@ -44,9 +44,9 @@ export class AdminService {
       .limit(pageSize)
       .offset(offset);
 
-    // 聚合查询一次取回全部（避免 N+1）：累计 token + 本月字数
+    // 聚合查询一次取回全部（避免 N+1）：累计 token + 本月字数 + 真实作品数
     const ids = users.map((u) => u.user_id);
-    const aggregates: Record<string, { total_tokens: number; request_count: number; month_words: number }> = {};
+    const aggregates: Record<string, { total_tokens: number; request_count: number; month_words: number; book_count: number }> = {};
     if (ids.length > 0) {
       const now = new Date();
       const curMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
@@ -61,7 +61,7 @@ export class AdminService {
         .where(inIds)
         .groupBy(schema.token_usage_records.user_id);
       for (const r of tokenRows) {
-        aggregates[r.user_id] = { total_tokens: r.total_tokens ?? 0, request_count: r.request_count ?? 0, month_words: 0 };
+        aggregates[r.user_id] = { total_tokens: r.total_tokens ?? 0, request_count: r.request_count ?? 0, month_words: 0, book_count: 0 };
       }
       const monthRows = await db
         .select({
@@ -77,14 +77,34 @@ export class AdminService {
         );
       for (const r of monthRows) {
         if (!aggregates[r.user_id]) {
-          aggregates[r.user_id] = { total_tokens: 0, request_count: 0, month_words: 0 };
+          aggregates[r.user_id] = { total_tokens: 0, request_count: 0, month_words: 0, book_count: 0 };
         }
         aggregates[r.user_id].month_words = r.used_words ?? 0;
+      }
+      // 真实作品数（未删除的作品）
+      const bookRows = await db
+        .select({
+          user_id: schema.books.user_id,
+          book_count: sql<number>`count(*)::int`,
+        })
+        .from(schema.books)
+        .where(
+          and(
+            sql`${schema.books.user_id} IN (${sql.join(ids.map((id) => sql`${id}`), sql`,`)})`,
+            sql`${schema.books.deleted_at} IS NULL`,
+          ),
+        )
+        .groupBy(schema.books.user_id);
+      for (const r of bookRows) {
+        if (!aggregates[r.user_id]) {
+          aggregates[r.user_id] = { total_tokens: 0, request_count: 0, month_words: 0, book_count: 0 };
+        }
+        aggregates[r.user_id].book_count = r.book_count ?? 0;
       }
     }
     const enriched = users.map((u) => ({
       ...u,
-      ...(aggregates[u.user_id] ?? { total_tokens: 0, request_count: 0, month_words: 0 }),
+      ...(aggregates[u.user_id] ?? { total_tokens: 0, request_count: 0, month_words: 0, book_count: 0 }),
     }));
 
     return { items: enriched, total: countRow?.count ?? 0, page, pageSize };

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { eq, and, isNull, desc, sql } from 'drizzle-orm';
-import { getDb, schema } from '../database/connection';
+import { getDb, schema, mergeJsonb } from '../database/connection';
 import { abortBookRequests } from '../ai/abort-registry';
 
 @Injectable()
@@ -188,7 +188,11 @@ export class BooksService {
     return true;
   }
 
-  /** 批量彻底删除：子表并发删除，书本间也并发，大幅提速 */
+  /**
+   * 批量彻底删除：每表一条批量 SQL（IN 列表）+ 跨表并行。
+   * 旧实现是"每本书 × 每张表"一个查询（59 本 ≈ 350+ 次跨洋往返，实测停顿 10s）；
+   * 新实现无论多少本都只有 ~7 次数据库往返。
+   */
   async permanentDeleteBatch(userId: string, bookIds: string[]) {
     const db = getDb();
     if (bookIds.length === 0) return;
@@ -209,28 +213,21 @@ export class BooksService {
     const ownedIds = owned.map((b) => b.book_id);
     if (ownedIds.length === 0) return;
 
-    await Promise.all(
-      ownedIds.map(async (bookId) => {
-        // 子表并发删除（互不依赖），最后删主表
-        await Promise.all([
-          db
-            .delete(schema.characters)
-            .where(eq(schema.characters.book_id, bookId)),
-          db.delete(schema.outlines).where(eq(schema.outlines.book_id, bookId)),
-          db
-            .delete(schema.world_settings)
-            .where(eq(schema.world_settings.book_id, bookId)),
-          db.delete(schema.chapters).where(eq(schema.chapters.book_id, bookId)),
-          db
-            .delete(schema.book_settings)
-            .where(eq(schema.book_settings.book_id, bookId)),
-          db
-            .delete(schema.ai_chat_sessions)
-            .where(eq(schema.ai_chat_sessions.book_id, bookId)),
-        ]);
-        await db.delete(schema.books).where(eq(schema.books.book_id, bookId));
-      }),
-    );
+    // 各表都有同名 book_id 列，用不带表限定符的批量条件
+    const inIds = sql`book_id IN (${sql.join(
+      ownedIds.map((id) => sql`${id}`),
+      sql`,`,
+    )})`;
+    // 事务化：7 张表全部成功或全部回滚（避免部分删除留孤儿数据）
+    await db.transaction(async (tx) => {
+      await tx.delete(schema.characters).where(inIds);
+      await tx.delete(schema.outlines).where(inIds);
+      await tx.delete(schema.world_settings).where(inIds);
+      await tx.delete(schema.chapters).where(inIds);
+      await tx.delete(schema.book_settings).where(inIds);
+      await tx.delete(schema.ai_chat_sessions).where(inIds);
+      await tx.delete(schema.books).where(inIds);
+    });
   }
 
   /** 批量恢复：并发执行，7 天窗口校验，只恢复属于当前用户的 */
@@ -280,32 +277,19 @@ export class BooksService {
     },
   ) {
     const db = getDb();
-    // 构建更新对象，extra 需要合并而非覆盖
     const updateData: any = { updated_at: sql`NOW()` };
     if (data.preset_style !== undefined)
       updateData.preset_style = data.preset_style;
-    if (data.extra) {
-      // 先取当前 extra，合并后再写入
-      const [settings] = await db
-        .select({ extra: schema.book_settings.extra })
-        .from(schema.book_settings)
-        .where(eq(schema.book_settings.book_id, bookId));
-      const currentExtra = (settings?.extra ?? {}) as Record<string, any>;
-      updateData.extra = { ...currentExtra, ...data.extra };
-    }
-    if (data.daily_word_goal !== undefined) {
-      if (!updateData.extra) {
-        const [settings] = await db
-          .select({ extra: schema.book_settings.extra })
-          .from(schema.book_settings)
-          .where(eq(schema.book_settings.book_id, bookId));
-        updateData.extra = {
-          ...((settings?.extra ?? {}) as Record<string, any>),
-          daily_word_goal: data.daily_word_goal,
-        };
-      } else {
-        updateData.extra.daily_word_goal = data.daily_word_goal;
-      }
+    // extra 与 daily_word_goal 用 JSONB 原子合并（|| 操作符）：
+    // 并发写互不覆盖，替代"读-改-写"模式（章纲 CRUD/伏笔/简介等保存都走这里）
+    const extraPatch: Record<string, any> = {
+      ...(data.extra ?? {}),
+      ...(data.daily_word_goal !== undefined
+        ? { daily_word_goal: data.daily_word_goal }
+        : {}),
+    };
+    if (Object.keys(extraPatch).length) {
+      updateData.extra = mergeJsonb(schema.book_settings.extra, extraPatch);
     }
     await db
       .update(schema.book_settings)

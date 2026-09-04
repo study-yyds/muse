@@ -38,13 +38,32 @@ export class AuthGuard implements CanActivate {
     }
 
     // 检查用户状态：封禁/暂停均拒绝访问。
-    // 注意：DB 查询失败必须原样抛出（500），不能吞成 401——
-    // 否则后端/数据库抖动会被前端误判为"登录过期"而清掉登录态
-    const [user] = await getDb()
-      .select({ status: schema.users.status })
-      .from(schema.users)
-      .where(eq(schema.users.user_id, payload.sub))
-      .limit(1);
+    // 网络抖动对策（Neon 海外库间歇性连接超时，实测 10 秒超时导致全站 500）：
+    // 查询失败重试一次；仍失败则放行——JWT 已验真，封禁拦截是次要防线，
+    // 可用性优先（封禁用户在 DB 故障窗口最多多活几分钟）。
+    // 注：不能吞成 401，否则前端会误判"登录过期"清掉登录态。
+    let user: { status: string | null } | undefined;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        [user] = await getDb()
+          .select({ status: schema.users.status })
+          .from(schema.users)
+          .where(eq(schema.users.user_id, payload.sub))
+          .limit(1);
+        break;
+      } catch (e: any) {
+        if (attempt === 1) {
+          console.error(
+            '[AuthGuard] user status query failed after retry, failing open:',
+            e?.message ?? e,
+          );
+          request.userId = payload.sub;
+          return true;
+        }
+        // 重试前等 1 秒（网络抖动通常瞬间恢复）
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+    }
     if (!user) {
       throw new UnauthorizedException('登录已过期，请重新登录');
     }

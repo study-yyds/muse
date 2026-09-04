@@ -8,7 +8,7 @@ jest.mock('node:dns/promises', () => ({
 }));
 
 // Mock DB
-const mockDb = {
+const mockDb: any = {
   select: jest.fn().mockReturnThis(),
   from: jest.fn().mockReturnThis(),
   where: jest.fn().mockReturnThis(),
@@ -20,10 +20,24 @@ const mockDb = {
   set: jest.fn().mockReturnThis(),
   delete: jest.fn().mockReturnThis(),
   orderBy: jest.fn().mockReturnThis(),
+  // 事务 mock：直接以 mockDb 作为 tx 执行回调（链式 mock 语义不变）
+  transaction: jest.fn((fn: any): Promise<any> => fn(mockDb)),
+};
+
+/** 重置链式 mock（保留 transaction 的事务执行语义，勿用 mockReturnThis 覆盖它） */
+const resetMockDb = () => {
+  Object.keys(mockDb).forEach((k) => {
+    if (typeof mockDb[k] === 'function' && k !== 'transaction') {
+      mockDb[k] = jest.fn().mockReturnThis();
+    }
+  });
+  mockDb.transaction = jest.fn((fn: any): Promise<any> => fn(mockDb));
 };
 
 jest.mock('../database/connection', () => ({
   getDb: () => mockDb,
+  mergeJsonb: (column: any, patch: Record<string, any>) => ({ __mergeJsonb: patch }),
+
   schema: {
     user_api_keys: {
       id: 'id',
@@ -579,6 +593,32 @@ describe('parseProtagonist', () => {
     expect(r?.name).toBe('秦昭');
     expect(r?.gender).toBe('女');
     expect(r?.motivation).toBe('考入最高军校');
+  });
+});
+
+describe('AiService.parseOutlineNodesJson', () => {
+  it('裸 JSON 数组解析为节点列表', () => {
+    const r = AiService.parseOutlineNodesJson(
+      '[{"title":"离开新手村","summary":"主角收到消息决定离开"},{"title":"告别","summary":"与师傅告别"},{"title":"出发","summary":"踏上大舞台之路"}]',
+    );
+    expect(r).toHaveLength(3);
+    expect(r[0].title).toBe('离开新手村');
+  });
+
+  it('代码块包裹也能解析', () => {
+    const r = AiService.parseOutlineNodesJson(
+      '```json\n[{"title":"A","summary":"a"},{"title":"B","summary":"b"},{"title":"C","summary":"c"}]\n```',
+    );
+    expect(r).toHaveLength(3);
+  });
+
+  it('不足 3 个有效节点或非数组返回空', () => {
+    expect(
+      AiService.parseOutlineNodesJson(
+        '[{"title":"A","summary":"a"},{"title":"B","summary":"b"}]',
+      ),
+    ).toHaveLength(0);
+    expect(AiService.parseOutlineNodesJson('好的，以下是细化节点')).toHaveLength(0);
   });
 });
 
@@ -1154,11 +1194,7 @@ describe('quickCreateShort rollback', () => {
     jest.clearAllMocks();
 
     // 所有 DB 方法返回 mockDb 自身
-    Object.keys(mockDb).forEach((k) => {
-      if (typeof (mockDb as any)[k] === 'function') {
-        (mockDb as any)[k] = jest.fn().mockReturnThis();
-      }
-    });
+    resetMockDb();
   });
 
   it('失败时回滚删除已创建的 book + settings + chapter', async () => {
@@ -1327,11 +1363,7 @@ describe('parseAndSaveWorld', () => {
   beforeEach(() => {
     service = new AiService();
     jest.clearAllMocks();
-    Object.keys(mockDb).forEach((k) => {
-      if (typeof (mockDb as any)[k] === 'function') {
-        (mockDb as any)[k] = jest.fn().mockReturnThis();
-      }
-    });
+    resetMockDb();
     // update + where 返回可执行的链
     (mockDb as any).rowCount = 1;
   });
@@ -1414,11 +1446,7 @@ describe('parseAndSaveOutline', () => {
   beforeEach(() => {
     service = new AiService();
     jest.clearAllMocks();
-    Object.keys(mockDb).forEach((k) => {
-      if (typeof (mockDb as any)[k] === 'function') {
-        (mockDb as any)[k] = jest.fn().mockReturnThis();
-      }
-    });
+    resetMockDb();
   });
 
   it('从 JSON 数组解析大纲节点', async () => {
@@ -1529,11 +1557,7 @@ describe('parseAndSaveCharacters', () => {
   beforeEach(() => {
     service = new AiService();
     jest.clearAllMocks();
-    Object.keys(mockDb).forEach((k) => {
-      if (typeof (mockDb as any)[k] === 'function') {
-        (mockDb as any)[k] = jest.fn().mockReturnThis();
-      }
-    });
+    resetMockDb();
     mockDb.values = jest.fn().mockReturnThis();
     mockDb.insert = jest.fn().mockReturnThis();
   });
@@ -1592,11 +1616,7 @@ describe('quickCreate rollback', () => {
     process.env.AI_PLATFORM_BASE_URL = 'https://api.test.com/v1';
     process.env.ENCRYPTION_KEY = 'test-enc-key-32bytes-here!!!';
     jest.clearAllMocks();
-    Object.keys(mockDb).forEach((k) => {
-      if (typeof (mockDb as any)[k] === 'function') {
-        (mockDb as any)[k] = jest.fn().mockReturnThis();
-      }
-    });
+    resetMockDb();
   });
 
   it('失败时回滚删除书+设置+大纲+世界观', async () => {
