@@ -2,6 +2,7 @@ import { getDb, schema } from './database/connection';
 import { sql } from 'drizzle-orm';
 import { unlink, readdir, stat } from 'fs/promises';
 import path from 'path';
+import { downgradeExpiredSubscriptions } from './billing/subscription-ops';
 
 /**
  * 临时产物清理：按文件名模式匹配，超龄删除。
@@ -63,6 +64,8 @@ export function startMaintenanceTasks(): NodeJS.Timeout {
         .where(
           sql`${schema.verification_codes.expires_at} < NOW() - INTERVAL '1 day'`,
         );
+      // 订阅到期自动降级（付费用户额度降回免费档）
+      const downgraded = await downgradeExpiredSubscriptions();
       if (removedFiles > 0) {
         console.log(`[maintenance] removed ${removedFiles} temp files`);
       }
@@ -75,6 +78,9 @@ export function startMaintenanceTasks(): NodeJS.Timeout {
         console.log(
           `[maintenance] removed ${removedCodes.rowCount} expired verification codes`,
         );
+      }
+      if (downgraded > 0) {
+        console.log(`[maintenance] downgraded ${downgraded} expired subscriptions`);
       }
     } catch (e: any) {
       console.error('[maintenance] cleanup failed:', e.message);

@@ -15,6 +15,9 @@ export const SERVER_PLANS: Record<
   pro: { name: '专业版', price: '¥49/月', words: 1000000 },
 };
 
+/** 订阅周期：30 天（"¥19/月"按 30 天计，简单可预测；到期自动降级见 subscription-ops.ts） */
+export const PLAN_DURATION_DAYS = 30;
+
 @Injectable()
 export class BillingService {
   /** 创建订单（待支付） */
@@ -62,7 +65,11 @@ export class BillingService {
 
     await db
       .update(schema.billing_orders)
-      .set({ status: 'paid', paid_at: new Date() })
+      .set({
+        status: 'paid',
+        paid_at: new Date(),
+        expires_at: new Date(Date.now() + PLAN_DURATION_DAYS * 24 * 3600 * 1000),
+      })
       .where(eq(schema.billing_orders.id, orderId));
     // 应用额度：替换为档位额度（本月已用字数保留，不清零）
     await db

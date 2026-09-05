@@ -103,6 +103,10 @@ describe('BillingService', () => {
     expect(mockDb.set).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'paid' }),
     );
+    // 订阅到期时间：paid_at + 30 天（到期自动降级依赖此字段）
+    expect(mockDb.set).toHaveBeenCalledWith(
+      expect.objectContaining({ expires_at: expect.any(Date) }),
+    );
     expect(mockDb.set).toHaveBeenCalledWith(
       expect.objectContaining({ monthly_words_quota: 300000 }),
     );

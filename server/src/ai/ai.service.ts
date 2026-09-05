@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { eq, and, sql } from 'drizzle-orm';
 import { getDb, schema } from '../database/connection';
 import { assertSafeBaseUrl } from '../base-url-safety';
+import { downgradeExpiredForUser } from '../billing/subscription-ops';
 import * as aiPrompts from './ai-prompts';
 import * as aiUtils from './ai-utils';
 import { ChatOps } from './chat-ops';
@@ -223,6 +224,8 @@ export class AiService {
    */
   private async assertMonthlyQuota(userId: string) {
     try {
+      // 惰性订阅降级：过期付费用户在额度检查前降回免费档（maintenance 全量扫描之外的即时兜底）
+      await downgradeExpiredForUser(userId);
       const db = getDb();
       const now = new Date();
       const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;

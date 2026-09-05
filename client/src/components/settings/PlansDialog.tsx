@@ -25,6 +25,7 @@ interface OrderRow {
   status: string;
   created_at: string;
   paid_at?: string | null;
+  expires_at?: string | null;
 }
 
 /**
@@ -185,6 +186,12 @@ export function PlansDialog({
                         {PLANS.find((p) => p.id === o.plan_id)?.name ?? o.plan_id}{" "}
                         {o.amount}
                       </span>
+                      {o.status === "paid" && o.expires_at && (
+                        <span className="text-muted-foreground shrink-0">
+                          {new Date(o.expires_at).toLocaleDateString("zh-CN")}{" "}
+                          到期
+                        </span>
+                      )}
                       <span
                         className={
                           o.status === "paid"

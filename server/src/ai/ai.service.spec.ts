@@ -7,6 +7,12 @@ jest.mock('node:dns/promises', () => ({
     .mockResolvedValue([{ address: '93.184.216.34', family: 4 }]),
 }));
 
+// 惰性订阅降级在本 spec 中关闭：其实现独立测试于 billing/subscription-ops.spec.ts，
+// 否则它会额外消费 mockDb.select 的 mockReturnValueOnce 队列，打乱额度用例的 mock 顺序
+jest.mock('../billing/subscription-ops', () => ({
+  downgradeExpiredForUser: jest.fn().mockResolvedValue(false),
+}));
+
 // Mock DB
 const mockDb: any = {
   select: jest.fn().mockReturnThis(),
