@@ -4,7 +4,6 @@ import { api } from "@/services/api";
 import type { WorldSettingData, WorldSection } from "@muse/shared";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
 import { SaveAsTemplateDialog } from "@/components/templates/SaveAsTemplateDialog";

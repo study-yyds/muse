@@ -390,7 +390,6 @@ export function CharacterList({ bookId }: Props) {
               defaultValues={{
                 name: editing.name,
                 gender: editing.gender ?? "",
-                age: editing.age ?? undefined,
                 appearance: editing.appearance ?? "",
                 personality: editing.personality ?? "",
                 catchphrase: editing.catchphrase ?? "",

@@ -23,7 +23,7 @@ import { useForm } from "react-hook-form";
 import { WRITING_STYLES } from "@/lib/writing-styles";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Plus, BookOpen, Loader2, Trash2, Undo2, Sparkles, Check, Send } from "lucide-react";
+import { Plus, BookOpen, Loader2, Trash2, Undo2, Sparkles, Check, Send, Square } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { ModelSelector, customKeyValue } from "@/components/settings/ModelSelector";
@@ -90,6 +90,8 @@ export function BookListPage() {
   const [quickGuideMsgs, setQuickGuideMsgs] = useState<Array<{ role: string; content: string }>>([]);
   const [quickGuideInput, setQuickGuideInput] = useState("");
   const [quickGuideLoading, setQuickGuideLoading] = useState(false);
+  // AI 就绪判定：回复末尾出现 [GUIDE_READY] 时高亮"开始生成"（用户仍可随时手动点击）
+  const [guideReady, setGuideReady] = useState(false);
   // 自写梗概模式：手写梗概 → 骨架化+体检 → 确认(可编辑) → 写正文
   const [quickSynopsisMode, setQuickSynopsisMode] = useState(false);
   const [synopsisEdit, setSynopsisEdit] = useState("");
@@ -131,9 +133,7 @@ export function BookListPage() {
         const res = await authFetch(`/api/ai/chat-sessions/guide?section=guide`, {
           headers: { Authorization: `Bearer ${token}` },
         });
-        console.log('[guide restore] status:', res.status);
         const json = await res.json();
-        console.log('[guide restore] data:', JSON.stringify(json?.data).slice(0, 200));
         if (res.ok && json?.data?.active?.messages?.length > 0) {
           guideSessionRef.current = json.data.active.id;
           // 已使用的引导（生成过作品）：不自动恢复，只登记入口，供"继续上次引导"
@@ -154,7 +154,6 @@ export function BookListPage() {
             setQuickGuideMsgs(resumeMsgs);
             setQuickGuiding(true);
             setQuickOpen(true);
-            console.log('[guide restore] detected interrupted generation, auto-resuming...');
             setQuickRestored(true);
             // 等组件渲染完成后自动继续生成
             setTimeout(() => resumeGuideGeneration(resumeMsgs), 300);
@@ -163,19 +162,18 @@ export function BookListPage() {
           setQuickGuideMsgs(allMsgs);
           setQuickGuiding(true);
           setQuickOpen(true);
-          console.log('[guide restore] restored', allMsgs.length, 'msgs');
         }
-      } catch (e) { console.log('[guide restore] error:', e); }
+      } catch {
+        /* 恢复失败静默：用户可手动新建引导 */
+      }
       setQuickRestored(true);
     })();
   }, []);
 
   // restore 完成后，如果没有引导会话，用 localStorage 恢复弹窗开关
   useEffect(() => {
-    console.log('[quick restore] quickRestored:', quickRestored, 'quickGuiding:', quickGuiding, 'ls:', localStorage.getItem("muse_quick_open"));
     if (quickRestored && !quickGuiding && localStorage.getItem("muse_quick_open") === "1") {
       setQuickOpen(true);
-      console.log('[quick restore] opening dialog from localStorage');
     }
   }, [quickRestored, quickGuiding]);
 
@@ -211,7 +209,7 @@ export function BookListPage() {
       navigate(`/books/${res.data.book_id}`);
     },
     onError: (e) => {
-      setDialogOpen(false);
+      // 失败保持弹窗打开：书名输入不丢失，改完可直接重试
       toast({
         title: e instanceof ApiError ? e.message : "创建失败，请稍后重试",
         variant: "destructive",
@@ -219,46 +217,64 @@ export function BookListPage() {
     },
   });
 
+  /** 单个作品操作的乐观更新：立即从当前列表移除该项，返回失败回滚函数 */
+  const optimisticRemove = (bookId: string) => {
+    const listKey = ["books", showDeleted ? "deleted" : "active"];
+    const prev = queryClient.getQueryData(listKey);
+    queryClient.setQueryData(listKey, (old: any) => {
+      const list = old?.data;
+      if (!Array.isArray(list)) return old;
+      return { ...old, data: list.filter((b: any) => b.book_id !== bookId) };
+    });
+    return () => queryClient.setQueryData(listKey, prev);
+  };
+
   const deleteBook = useMutation({
     mutationFn: (bookId: string) => api.delete(`/books/${bookId}`),
+    onMutate: (bookId) => optimisticRemove(bookId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["books"] });
       toast({ title: "作品已移至回收站" });
     },
-    onError: (e) => {
+    onError: (e, _vars, rollback) => {
+      rollback?.();
       toast({
         title: e instanceof ApiError ? e.message : "删除失败，请稍后重试",
         variant: "destructive",
       });
     },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["books"] }),
   });
 
   const restoreBook = useMutation({
     mutationFn: (bookId: string) => api.post(`/books/${bookId}/restore`),
+    onMutate: (bookId) => optimisticRemove(bookId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["books"] });
       toast({ title: "作品已恢复" });
     },
-    onError: (e) => {
+    onError: (e, _vars, rollback) => {
+      rollback?.();
       toast({
         title: e instanceof ApiError ? e.message : "恢复失败，请稍后重试",
         variant: "destructive",
       });
     },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["books"] }),
   });
 
   const permanentDeleteBook = useMutation({
     mutationFn: (bookId: string) => api.delete(`/books/${bookId}/permanent`),
+    onMutate: (bookId) => optimisticRemove(bookId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["books"] });
       toast({ title: "作品已彻底删除" });
     },
-    onError: (e) => {
+    onError: (e, _vars, rollback) => {
+      rollback?.();
       toast({
         title: e instanceof ApiError ? e.message : "删除失败，请稍后重试",
         variant: "destructive",
       });
     },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["books"] }),
   });
 
   const {
@@ -280,12 +296,13 @@ export function BookListPage() {
   const runBatchAction = async () => {
     const ids = [...selectedIds];
     const isDelete = batchConfirm === "delete";
-    const isPermanent = isDelete && showDeleted;
-    // 乐观更新（回收站彻底删除）：立即从列表移除选中项，不等接口返回——
-    // 后端已砍到 ~7 次往返，但 UI 不再阻塞才是"感知秒删"的关键；失败时刷新回滚
-    if (isPermanent) {
+    // 乐观更新（删除/恢复/彻底删除通用）：立即从当前列表移除选中项，不等接口返回——
+    // 此前 key 写成 ["books"] 与真实查询键 ["books", "active"|"deleted"] 不匹配，
+    // 乐观更新实际从未生效，UI 一直等接口；失败时刷新回滚
+    {
+      const listKey = ["books", showDeleted ? "deleted" : "active"];
       const idSet = new Set(ids);
-      queryClient.setQueryData(["books"], (old: any) => {
+      queryClient.setQueryData(listKey, (old: any) => {
         const list = old?.data;
         if (!Array.isArray(list)) return old;
         return { ...old, data: list.filter((b: any) => !idSet.has(b.book_id)) };
@@ -332,6 +349,18 @@ export function BookListPage() {
       /* 忽略 */
     }
     wakeLockRef.current = null;
+  };
+
+  // 归档引导会话（生成失败时也调用）：叉掉弹窗不删除对话，"继续上次引导"可进入重试
+  const archiveGuideSession = () => {
+    if (guideSessionRef.current) {
+      localStorage.setItem(
+        `muse_guide_used_${guideSessionRef.current}`,
+        "failed",
+      );
+      setUsedGuideSessionId(guideSessionRef.current);
+      guideSessionRef.current = null;
+    }
   };
 
   const doQuickCreate = async (premise: string, type: string, guideSummary?: string, guideFullLog?: string) => {
@@ -465,9 +494,16 @@ export function BookListPage() {
           toast({ title: "创作完成！" });
           navigate(`/books/${bookId}`);
         }
+      } else {
+        // 流正常结束但缺少 done 事件：服务端在最后一步失败（落库/建书），
+        // 明确报错而不是静默回到引导界面，避免"点了生成没反应"的假象
+        archiveGuideSession();
+        toast({ title: "生成在最后一步中断（作品未创建），引导对话已保留，可点\"继续上次引导\"重试", variant: "destructive" });
       }
     } catch (err: any) {
       if (err?.name !== "AbortError") {
+        // 失败也归档引导对话：叉掉弹窗不删除会话，保留重试入口
+        archiveGuideSession();
         // 区分网络中断(睡眠/断网)与普通失败:中断时作品可能已创建但正文为空
         const isNetworkBreak =
           err instanceof TypeError || /network|fetch|中断|aborted/i.test(String(err?.message ?? ''));
@@ -508,6 +544,7 @@ export function BookListPage() {
   // 引导 AI 请求核心：msgs 以用户消息结尾；流式追加 AI 回复，支持手动停止
   const runGuideRequest = async (msgs: Array<{ role: string; content: string }>) => {
     setQuickGuideLoading(true);
+    setGuideReady(false); // 每轮重新判定，本轮未就绪不沿用旧状态
     const token = localStorage.getItem("token");
     const controller = new AbortController();
     guideAbortRef.current = controller;
@@ -582,6 +619,8 @@ export function BookListPage() {
           });
         }
       }
+      // AI 就绪判定：完整回复末尾带标记 → 高亮"开始生成"按钮
+      setGuideReady(ac.includes("[GUIDE_READY]"));
     } catch (err: any) {
       if (err.name === "AbortError") return;
       toast({ title: err?.message || "发送失败", variant: "destructive" });
@@ -650,9 +689,14 @@ export function BookListPage() {
         return;
       }
       guideSessionRef.current = active.id;
-      localStorage.removeItem(`muse_guide_used_${active.id}`);
-      setUsedGuideSessionId(null);
+      // 不删除归档标记：关闭引导后会话仍保留，"继续上次引导"可反复进入
       setQuickGuideMsgs(active.messages);
+      // 恢复脑洞输入：开始生成时作为 premise 传给后端（参与书名/摘要生成，空值会落成"短篇故事"兜底）
+      const savedPremise = localStorage.getItem("muse_guide_premise");
+      if (savedPremise) setQuickPremise(savedPremise);
+      // 恢复时按最后一条 AI 回复重新判定就绪状态
+      const lastAi = [...active.messages].reverse().find((m) => m.role === "assistant");
+      setGuideReady(lastAi?.content?.includes("[GUIDE_READY]") ?? false);
       setQuickGuiding(true);
       guideUserScrolledUp.current = false;
     } catch {
@@ -1043,16 +1087,15 @@ export function BookListPage() {
     setSynopsisWorking(false);
     localStorage.removeItem("muse_quick_open");
     localStorage.removeItem("muse_guide_premise");
-    // 删除引导会话（已归档的会话保留，供"继续上次引导"）
+    // 关闭永不删除会话：未归档的会话打"暂存"标记（不自动恢复、可反复进入），
+    // 过期垃圾会话由服务端 maintenance 按时间清理
     if (guideSessionRef.current) {
-      const usedMark = localStorage.getItem(
-        `muse_guide_used_${guideSessionRef.current}`,
-      );
-      if (!usedMark) {
-        authFetch(`/api/ai/chat-sessions/${guideSessionRef.current}`, {
-          method: "DELETE",
-          headers: { Authorization: `Bearer ${localStorage.getItem("token")}` },
-        }).catch(() => {});
+      if (!localStorage.getItem(`muse_guide_used_${guideSessionRef.current}`)) {
+        localStorage.setItem(
+          `muse_guide_used_${guideSessionRef.current}`,
+          "paused",
+        );
+        setUsedGuideSessionId(guideSessionRef.current);
       }
       guideSessionRef.current = null;
     }
@@ -1177,9 +1220,9 @@ export function BookListPage() {
               resetQuickDialog();
               return;
             }
-            // 引导聊天中：确认后取消
+            // 引导聊天中：确认后取消（对话会保留，可随时从"继续上次引导"进入）
             if (quickGuiding) {
-              if (!confirm("确定退出引导？当前对话将丢失。")) return;
+              if (!confirm("确定退出引导？进行中的生成会停止。对话会保留，可随时从\"继续上次引导\"进入。")) return;
               guideAbortRef.current?.abort();
               resetQuickDialog();
               return;
@@ -1443,13 +1486,24 @@ export function BookListPage() {
                   {/* 操作区：生成完成（书名候选）与梗概选择阶段隐藏，只留对应阶段按钮 */}
                   {!quickCreatedId && quickOutlines.length === 0 && (
                   <div className="flex justify-end gap-2">
-                    <Button
-                      variant="outline"
-                      onClick={resetQuickDialog}
-                      disabled={quickGenerating}
-                    >
-                      取消
-                    </Button>
+                    {quickGenerating ? (
+                      <Button
+                        size="icon"
+                        variant="destructive"
+                        className="rounded-full"
+                        onClick={() => {
+                          quickAbortRef.current?.abort();
+                          resetQuickDialog();
+                        }}
+                        title="停止生成（已生成的部分保留）"
+                      >
+                        <Square className="size-4" />
+                      </Button>
+                    ) : (
+                      <Button variant="outline" onClick={resetQuickDialog}>
+                        取消
+                      </Button>
+                    )}
                     {quickType === 'short' && !quickSynopsisMode && (
                       <Button variant="outline" disabled={quickGenerating || inspireLoading}
                         onClick={async () => {
@@ -1799,7 +1853,12 @@ export function BookListPage() {
                                 ? "bg-primary text-primary-foreground"
                                 : "bg-card border border-border text-foreground",
                             )}>
-                              {m.content || (i === quickGuideMsgs.length - 1 && quickGuideLoading ? "思考中..." : "")}
+                              {(m.role === "assistant"
+                                ? m.content.replaceAll("[GUIDE_READY]", "")
+                                : m.content) ||
+                                (i === quickGuideMsgs.length - 1 && quickGuideLoading
+                                  ? "思考中..."
+                                  : "")}
                             </div>
                             {m.role === "user" && !quickGuideLoading && (
                               <button
@@ -1845,6 +1904,12 @@ export function BookListPage() {
                       )}
                     </div>
                   )}
+                  {/* AI 就绪提示：放输入区上方，避免挤占按钮行 */}
+                  {guideReady && (
+                    <p className="text-xs text-primary px-1" title="AI 判断引导信息已足够；你也可以不理会，随时点击开始生成">
+                      AI 认为信息已足够，可以开始生成
+                    </p>
+                  )}
                   {/* 引导输入 + 操作 */}
                   <div className="flex items-end gap-2">
                     <textarea
@@ -1862,20 +1927,37 @@ export function BookListPage() {
                       className="flex-1 rounded border border-border bg-background px-3 py-1.5 text-sm resize-none"
                     />
                     {quickGuideLoading && !quickGenerating ? (
+                      // AI 回复中：停止当前引导回复（红色圆形图标，与详情页 AI 面板同款）
                       <Button
-                        size="sm"
-                        variant="outline"
+                        size="icon"
+                        variant="destructive"
+                        className="rounded-full shrink-0"
                         onClick={() => { stopGuideRef.current = true; guideAbortRef.current?.abort(); }}
                         title="停止生成（已生成的部分保留）"
                       >
-                        停止
+                        <Square className="size-4" />
+                      </Button>
+                    ) : quickGenerating ? (
+                      // 作品生成中（引导模式）：中止 quick-create
+                      <Button
+                        size="icon"
+                        variant="destructive"
+                        className="rounded-full shrink-0"
+                        onClick={() => { quickAbortRef.current?.abort(); }}
+                        title="停止生成（已生成的部分保留）"
+                      >
+                        <Square className="size-4" />
                       </Button>
                     ) : (
                       <Button size="sm" onClick={sendGuideMsg} disabled={quickGuideLoading || !quickGuideInput.trim()}>
                         <Send className="size-3.5" />
                       </Button>
                     )}
-                    <Button size="sm" variant="outline" onClick={async () => {
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className={guideReady ? "bg-primary text-primary-foreground hover:bg-primary" : ""}
+                      onClick={async () => {
                       // 先向 AI 发送"开始生成"，获取结构化创作摘要
                       setQuickGuideLoading(true);
                       const finalMsg = "开始生成，请输出创作摘要";
@@ -1927,7 +2009,7 @@ export function BookListPage() {
                         if (!ac) {
                           setQuickGuideMsgs([...finalMsgs, { role: "assistant", content: "（AI 未响应，请重试）" }]);
                         }
-                        summary = ac;
+                        summary = ac.replaceAll("[GUIDE_READY]", "");
                         // 摘要流结束，立即保存
                         setQuickGuideMsgs((prev) => {
                                                     return prev;
@@ -1935,6 +2017,8 @@ export function BookListPage() {
                       } catch (err: any) {
                         // 手动停止：静默返回，留在引导界面
                         if (err?.name === "AbortError") { setQuickGuideLoading(false); return; }
+                        // 摘要失败也归档：叉掉弹窗不删除会话，保留重试入口
+                        archiveGuideSession();
                         toast({ title: "获取摘要失败: " + (err?.message || "未知错误"), variant: "destructive" });
                         setQuickGuideLoading(false);
                         return;
@@ -1943,7 +2027,7 @@ export function BookListPage() {
                       // 构建完整对话日志作为参考附录
                       const fullLog = quickGuideMsgs
                         .filter(m => m.role === "user" || m.role === "assistant")
-                        .map(m => `${m.role === "user" ? "作者" : "AI"}: ${m.content}`)
+                        .map(m => `${m.role === "user" ? "作者" : "AI"}: ${m.content.replaceAll("[GUIDE_READY]", "")}`)
                         .join("\n");
                       // 等待 quickCreate 完成；失败时留在引导界面可重试
                       await doQuickCreate(quickPremise, quickType, summary, fullLog);

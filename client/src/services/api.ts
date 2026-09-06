@@ -87,7 +87,11 @@ export async function authFetch(
     ...init,
     signal,
     headers: {
-      ...(init.body ? { "Content-Type": "application/json" } : {}),
+      // FormData 不能设 JSON Content-Type：浏览器需自动生成 multipart boundary
+      // （此前对上传请求强塞 application/json，服务端无法解析 multipart）
+      ...(init.body && !(init.body instanceof FormData)
+        ? { "Content-Type": "application/json" }
+        : {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...init.headers,
     },

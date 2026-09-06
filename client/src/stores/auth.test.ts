@@ -15,7 +15,7 @@ function seedStore(token: string | null, user: { user_id: string } | null) {
   useAuthStore.setState({
     token,
     user: user
-      ? { user_id: user.user_id, phone_number: "138", avatar_path: null }
+      ? { user_id: user.user_id, phone_number: "138", avatar_path: null, role: "user" }
       : null,
     isAuthenticated: !!token,
   });

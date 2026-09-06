@@ -1,0 +1,44 @@
+# Muse server 镜像（NestJS + ffmpeg + 中文字体）
+# 构建：docker compose -f deploy/docker-compose.yml build server
+# 启动入口自动跑 drizzle 迁移（幂等），再起服务
+
+# ---------- 构建阶段 ----------
+FROM node:20-slim AS build
+WORKDIR /app
+RUN npm install -g pnpm@11
+# 先拷贝 workspace 清单安装依赖（利用 Docker 层缓存）
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY shared/package.json shared/
+COPY client/package.json client/
+COPY server/package.json server/
+RUN pnpm install --frozen-lockfile
+# 全量源码构建
+COPY . .
+RUN pnpm --filter @muse/server build
+
+# ---------- 运行阶段 ----------
+FROM node:20-slim
+ENV NODE_ENV=production \
+    TZ=Asia/Shanghai \
+    PORT=3004
+
+# 中文字体（promo 卡片 drawtext 用）；ffmpeg 由 ffmpeg-static npm 包自带，无需 apt 安装
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends fonts-noto-cjk \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+# pnpm workspace 依赖（.pnpm 存储 + 符号链接整体拷贝，保持相对链接有效）
+COPY --from=build /app/node_modules /app/node_modules
+COPY --from=build /app/server/node_modules /app/server/node_modules
+COPY --from=build /app/server/package.json /app/server/package.json
+COPY --from=build /app/server/dist /app/server/dist
+# 迁移文件与配置（启动时 drizzle-kit migrate）
+COPY --from=build /app/server/drizzle /app/server/drizzle
+COPY --from=build /app/server/drizzle.config.ts /app/server/drizzle.config.ts
+# public 初始内容（uploads 由 volume 挂载覆盖）
+COPY --from=build /app/server/public /app/server/public
+
+EXPOSE 3004
+# 先跑 DB 迁移（幂等），成功后再启动服务
+CMD ["sh", "-c", "cd /app/server && npx drizzle-kit migrate && exec node dist/main.js"]

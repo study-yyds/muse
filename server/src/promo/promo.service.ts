@@ -2,6 +2,7 @@ import { Injectable, BadRequestException } from '@nestjs/common';
 import { Response } from 'express';
 import path from 'path';
 import { writeFile, mkdir, unlink, access } from 'fs/promises';
+import { existsSync } from 'fs';
 import crypto from 'crypto';
 import { execSync } from 'child_process';
 import ffmpegStatic from 'ffmpeg-static';
@@ -185,24 +186,60 @@ export class PromoService {
     return ffmpegStatic || 'ffmpeg';
   }
 
+  /**
+   * ffmpeg 在中文 Windows 下 stderr 是 GBK 编码：以 buffer 执行并按 GBK 解码，
+   * 避免错误信息乱码（此前按 utf8 解码出现"������̫����"式乱码）
+   */
+  private execFfmpeg(cmd: string, timeout: number) {
+    try {
+      return execSync(cmd, { timeout, stdio: 'pipe' });
+    } catch (e: any) {
+      const buf = e?.stderr;
+      let stderrStr = '';
+      try {
+        // Windows 中文环境 stderr 为 GBK，Linux 为 UTF-8
+        stderrStr = new TextDecoder(
+          process.platform === 'win32' ? 'gbk' : 'utf-8',
+        ).decode(buf ?? Buffer.from(''));
+      } catch {
+        stderrStr = String(buf ?? '');
+      }
+      const err = new Error(stderrStr || e?.message || 'ffmpeg 执行失败');
+      (err as any).stderrStr = stderrStr;
+      throw err;
+    }
+  }
+
   private getFontPath(): string {
-    return path
-      .join('C:', 'Windows', 'Fonts', 'msyh.ttc')
-      .replace(/\\/g, '/')
-      .replace(/:/g, '\\:');
+    if (process.platform === 'win32') {
+      return path
+        .join('C:', 'Windows', 'Fonts', 'msyh.ttc')
+        .replace(/\\/g, '/')
+        .replace(/:/g, '\\:');
+    }
+    // Linux 容器：镜像内安装 fonts-noto-cjk，按发行版路径探测
+    const candidates = [
+      '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+      '/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf',
+      '/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc',
+      '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+    ];
+    for (const p of candidates) {
+      if (existsSync(p)) return p;
+    }
+    return candidates[0];
   }
 
   /** 检测视频文件是否带音轨（ffmpeg -i 的 stderr 流信息） */
   private hasAudioTrack(filePath: string): boolean {
     const ffmpegPath = this.getFfmpegPath();
     try {
-      execSync(`"${ffmpegPath}" -i "${filePath.replace(/\\/g, '/')}"`, {
-        timeout: 15000,
-        encoding: 'utf8',
-        stdio: 'pipe',
-      });
+      this.execFfmpeg(
+        `"${ffmpegPath}" -i "${filePath.replace(/\\/g, '/')}"`,
+        15000,
+      );
     } catch (e: any) {
-      return /Stream #0:\d+[^\n]*Audio/.test(e.stderr || '');
+      return /Stream #0:\d+[^\n]*Audio/.test(e?.stderrStr || '');
     }
     return false;
   }
@@ -471,14 +508,19 @@ export class PromoService {
       : `[1:a]volume=${voiceVolume}[aout]`;
     const filterComplex = `[0:v]${vfChain}[vout];${audioChain}`;
 
+    // 字幕句数多时 filter_complex 超 Windows 8191 字符命令行限制（"命令行太长"），
+    // 写入脚本文件走 -filter_complex_script；文件名用 concat- 前缀，maintenance 会清理遗留
+    const filterScriptPath = path.join(dir, `concat-${videoId}-fc.txt`);
+    await writeFile(filterScriptPath, filterComplex, 'utf-8');
+
     const cmd = [
       `"${ffmpegPath}"`,
       '-i',
       `"${bgPath.replace(/\\/g, '/')}"`,
       '-i',
       `"${mergedAudioPath.replace(/\\/g, '/')}"`,
-      '-filter_complex',
-      `"${filterComplex}"`,
+      '-filter_complex_script',
+      `"${filterScriptPath.replace(/\\/g, '/')}"`,
       '-map',
       '[vout]',
       '-map',
@@ -499,13 +541,14 @@ export class PromoService {
     ].join(' ');
 
     try {
-      execSync(cmd, { timeout: 180000, encoding: 'utf8', stdio: 'pipe' });
+      this.execFfmpeg(cmd, 180000);
+      unlink(filterScriptPath).catch(() => {});
       return `/uploads/videos/promo-${videoId}.mp4`;
     } catch (e: any) {
-      console.error('[promo] background render failed. stderr:', e.stderr);
-      throw new Error(
-        `背景视频渲染失败：${e.stderr?.slice(0, 800) || e.message?.slice(0, 800)}`,
-      );
+      unlink(filterScriptPath).catch(() => {});
+      const stderr = e?.stderrStr || e?.message || '';
+      console.error('[promo] background render failed. stderr:', stderr);
+      throw new Error(`背景视频渲染失败：${stderr.slice(0, 800)}`);
     }
   }
 

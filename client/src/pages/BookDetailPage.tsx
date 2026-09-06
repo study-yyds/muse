@@ -284,7 +284,7 @@ export function BookDetailPage() {
             <div className="p-4 h-full overflow-y-auto"><WritingStats bookId={bookId} /></div>
           )}
           {section === "settings" && bookId && (
-            <div className="h-full overflow-y-auto"><BookSettingsPanel bookId={bookId} book={book} coverUrl={coverUrl} onCoverChange={setCoverUrl} /></div>
+            <div className="h-full overflow-y-auto"><BookSettingsPanel bookId={bookId} coverUrl={coverUrl} onCoverChange={setCoverUrl} /></div>
           )}
         </div>
 
@@ -380,9 +380,45 @@ async function mergeWorldSections(
   return merged;
 }
 
+/**
+ * 世界观兜底解析：模型漏输出结尾 JSON action 时，按"分区名\n内容\n\n分区名\n内容"
+ * 结构从正文解析分区（空行分段，段首行=分区名，余下=内容）。返回 [] 表示不构成分区结构。
+ */
+function parseWorldSections(
+  text: string,
+): Array<{ name: string; content: string }> {
+  // 逐行清理 markdown 符号：标题 #、列表符 -/*/•、加粗 **（分区名与正文都要干净落库）
+  const cleanLine = (l: string) =>
+    l
+      .replace(/^#{1,6}\s*/, "")
+      .replace(/^[-*•]\s*/, "")
+      .replace(/\*\*/g, "")
+      .replace(/^[>|]\s*/, "")
+      .trim();
+  const sections: Array<{ name: string; content: string }> = [];
+  const blocks = text.split(/\n{2,}/);
+  for (const block of blocks) {
+    const lines = block
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    if (lines.length < 2) continue;
+    const name = cleanLine(lines[0]);
+    const content = lines
+      .slice(1)
+      .map(cleanLine)
+      .join("\n")
+      .trim();
+    if (name && name.length <= 20 && content) {
+      sections.push({ name, content });
+    }
+  }
+  return sections;
+}
+
 function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookId: string; initialStyle?: string }) {
   type Ver = { content: string; action?: any; reasoning?: string };
-  type Msg = { role: string; content: string; action?: any; adoptedVer?: number; reasoning?: string; versions?: Ver[]; quality?: { count: number; types: string[] } };
+  type Msg = { role: string; content: string; action?: any; adoptedVer?: number; reasoning?: string; versions?: Ver[]; quality?: { count: number; types: string[] }; guide?: boolean };
   // AI 味检测类型 → 中文提示（与 text-quality-checks.ts 的 issue.type 对应）
   // 去 AI 味重写的预置方向：复用反馈重写机制（保留情节信息，只改措辞）
   const DEAI_FEEDBACK =
@@ -471,6 +507,11 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
   const reasoningRef = useRef("");
   // 会话 ID ref：卸载保存时读取最新值（此前闭包捕获的是首次渲染的 null，导致保存逻辑从未生效）
   const sessionIdRef = useRef<string | null>(null);
+  // 会话历史缓存：切 tab 命中缓存立即显示、后台刷新（此前每次切 tab 都等一次跨洋往返）
+  const sessionsCacheRef = useRef<
+    Record<string, { sessionId: string | null; msgs: Msg[]; sessions: any[] }>
+  >({});
+  const [sessionLoading, setSessionLoading] = useState(false);
   useEffect(() => { msgsRef.current = msgs; }, [msgs]);
   useEffect(() => { streamingRef.current = streaming; }, [streaming]);
   useEffect(() => { reasoningRef.current = reasoning; }, [reasoning]);
@@ -482,6 +523,24 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
   // 会导致整个 AI 面板重渲染。事件处理里按需 getState() 读取即可
   const { toast } = useToast();
   const queryClient = useQueryClient();
+
+  // 预取各 tab 数据：进详情页时并行拉一次，切换 tab 命中缓存秒开
+  // （此前每次切 tab 组件才挂载发请求，跨洋往返叠加导致"加载很久"）
+  useEffect(() => {
+    if (!bookId) return;
+    const prefetch = (key: string[], url: string) =>
+      queryClient.prefetchQuery({
+        queryKey: key,
+        queryFn: () => api.get(url),
+      });
+    prefetch(["chapters", bookId], `/books/${bookId}/chapters`);
+    prefetch(["outline", bookId], `/books/${bookId}/outline`);
+    prefetch(["book-settings", bookId], `/books/${bookId}/settings`);
+    prefetch(["characters", bookId], `/books/${bookId}/characters`);
+    prefetch(["world-setting", bookId], `/books/${bookId}/world-setting`);
+    prefetch(["stats", bookId], `/books/${bookId}/stats`);
+  }, [bookId, queryClient]);
+
   // 笔风分析结果：存在时风格下拉出现"我的笔风"选项
   const { data: settingsData } = useQuery({
     queryKey: ["book-settings", bookId],
@@ -494,24 +553,50 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
   const mimicAnalysis = settingsData?.data?.extra?.mimic_style_analysis ?? null;
   const token = localStorage.getItem("token");
 
-  // 从后端加载会话
-  const loadSessions = async () => {
+  // 拉取指定 tab 的会话（applyState=false 时只写缓存，供预取）
+  const fetchSessions = async (targetSection: string, applyState: boolean) => {
     try {
       const res = await fetch(
-        `/api/ai/chat-sessions/${bookId}?section=${encodeURIComponent(section)}`,
+        `/api/ai/chat-sessions/${bookId}?section=${encodeURIComponent(targetSection)}`,
         { headers: { Authorization: `Bearer ${token}` } },
       );
       const json = await res.json();
       const data = json?.data;
-      if (data?.active) {
-        setSessionId(data.active.id);
-        setMsgs(data.active.messages ?? []);
-      } else {
-        setSessionId(null);
-        setMsgs([]);
+      const entry = {
+        sessionId: (data?.active?.id as string | null) ?? null,
+        msgs: (data?.active?.messages ?? []) as Msg[],
+        sessions: (data?.sessions ?? []) as any[],
+      };
+      sessionsCacheRef.current[targetSection] = entry;
+      if (applyState) {
+        setSessionId(entry.sessionId);
+        setMsgs(entry.msgs);
+        msgsRef.current = entry.msgs;
+        setSessions(entry.sessions);
       }
-      setSessions(data?.sessions ?? []);
-    } catch { /* ignore */ }
+      return entry;
+    } catch {
+      return null;
+    }
+  };
+
+  // 加载当前 tab 会话：命中缓存立即显示（后台刷新），未命中先清空并显示加载态
+  const loadSessions = async () => {
+    const cached = sessionsCacheRef.current[section];
+    if (cached) {
+      setSessionId(cached.sessionId);
+      setMsgs(cached.msgs);
+      msgsRef.current = cached.msgs;
+      setSessions(cached.sessions);
+      fetchSessions(section, false);
+      return;
+    }
+    setSessionLoading(true);
+    setMsgs([]);
+    msgsRef.current = [];
+    setSessionId(null);
+    await fetchSessions(section, true);
+    setSessionLoading(false);
   };
 
   useEffect(() => {
@@ -552,6 +637,15 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
       }
     };
   }, [bookId, section]);
+
+  // 预取其他 tab 的会话历史（只写缓存，切换时秒开）
+  useEffect(() => {
+    if (!bookId) return;
+    for (const s of ["write", "outline", "characters", "world", "settings"] as const) {
+      if (s !== section) fetchSessions(s, false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bookId]);
 
   // 消息变化时自动滚到底部
   useEffect(() => {
@@ -667,6 +761,20 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
     if (idx < 0) idx = t.lastIndexOf('{"action"');
     if (idx === 0) return ""; // 整个文本就是 JSON
     if (idx > 0) return t.slice(0, idx).trim();
+    // 兜底：末尾行首 { 或 [ 开始的整块合法 JSON 也切掉
+    // （模型偶发幻觉出非 action 字段，如 {"下次更新钩子式":...}，不属于正文）
+    const lines = t.split('\n');
+    for (let i = lines.length - 1; i >= Math.max(0, lines.length - 6); i--) {
+      const line = lines[i].trim();
+      if (!line || !/^[\[{]/.test(line)) continue;
+      const block = lines.slice(i).join('\n').trim();
+      try {
+        JSON.parse(block);
+        return lines.slice(0, i).join('\n').trim();
+      } catch {
+        return t; // 行首像 JSON 但不是合法 JSON：视为正文，不动
+      }
+    }
     return t;
   };
 
@@ -958,10 +1066,14 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
         }
       }
     }
-    const um: Msg = { role: "user", content: userMsg };
+    const um: Msg = { role: "user", content: userMsg, guide: guideMode || undefined };
     // 编辑重发时传入截断后的历史（setMsgs 后 msgs 状态仍为旧值，用 baseMsgs 保证一致性）
     const base = baseMsgs ?? msgsRef.current;
-    const prevMsgs = [...base, um].map((m) => ({ role: m.role, content: m.content }));
+    const prevMsgs = [...base, um].map((m) => ({
+      role: m.role,
+      content: m.content,
+      ...(m.guide ? { guide: true } : {}),
+    }));
     const newMsgs = [...base, um];
     setMsgs(newMsgs);
     // 立即保存用户消息到 DB（不等 debounce），避免刷新丢失
@@ -1046,7 +1158,7 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
       if (sid) {
         const curContent = streamingRef.current;
         const curReasoning = reasoningRef.current;
-        const partialMsgs = [...newMsgs, { role: "assistant", content: curContent || "（生成中...）", reasoning: curReasoning || undefined }];
+        const partialMsgs = [...newMsgs, { role: "assistant", content: curContent || "（生成中...）", reasoning: curReasoning || undefined, guide: guideMode || undefined }];
         flushSave(sid, partialMsgs);
       }
     }, 3000);
@@ -1054,7 +1166,7 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
       const result = await streamOnce(userMsg, prevMsgs, bodyExtra, controller.signal);
       clearInterval(autoSaveIntervalRef.current);
       setStreaming(""); setReasoning("");
-      const finalMsgs = [...newMsgs, { role: "assistant", content: result.content, action: result.action, reasoning: result.reasoning || undefined, quality: result.quality }];
+      const finalMsgs = [...newMsgs, { role: "assistant", content: result.content, action: result.action, reasoning: result.reasoning || undefined, quality: result.quality, guide: guideMode || undefined }];
       setMsgs(finalMsgs);
       if (sid) flushSave(sid, finalMsgs);
     } catch (e: any) {
@@ -1091,7 +1203,10 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
     if (lastUserIdx < 0 || curMsgs.length - lastUserIdx > 2) return;
     const text = editLastUserText.trim();
     if (!text) return;
-    const base = [...curMsgs.slice(0, lastUserIdx), { role: "user", content: text }];
+    const base = [
+      ...curMsgs.slice(0, lastUserIdx),
+      { role: "user", content: text, guide: curMsgs[lastUserIdx]?.guide },
+    ];
     setMsgs(base);
     if (sessionId) flushSave(sessionId, base);
     setEditLastUserIdx(null);
@@ -1114,7 +1229,11 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
     const userMsg = feedback?.trim()
       ? `${curMsgs[lastUserIdx].content}\n\n【重写方向】${feedback.trim()}`
       : curMsgs[lastUserIdx].content;
-    const prevMsgs = curMsgs.slice(0, lastUserIdx + 1).map((m) => ({ role: m.role, content: m.content }));
+    const prevMsgs = curMsgs.slice(0, lastUserIdx + 1).map((m) => ({
+      role: m.role,
+      content: m.content,
+      ...(m.guide ? { guide: true } : {}),
+    }));
 
     setLoading(true); isRegeneratingRef.current = true;
     clearInterval(autoSaveIntervalRef.current);
@@ -1131,8 +1250,9 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
       bodyExtra.chapter_id = activeCh;
       bodyExtra.cursor_position = rewriteCtx ? rewriteCtx.start : useEditorStore.getState().cursorPosition;
       bodyExtra.style = chatStyle;
-      // 选中改写标记：服务端据此切换改写指引（保事实换形式，不推进剧情）
-      bodyExtra.rewrite = !!rewriteCtx;
+      // 选中改写标记：服务端据此切换改写指引（保事实换形式，不推进剧情）。
+      // 去ai味/重写方向重发时选中可能已清除，但消息里仍含改写原文标记——同样走改写语义
+      bodyExtra.rewrite = !!rewriteCtx || userMsg.includes('【改写以下选中文本】');
       // 记录请求时的章节与光标位置，采纳时精确插入（防止插入到错误章节/位置）
       useEditorStore.getState().setPendingRequest({
         chapterId: activeCh,
@@ -1514,6 +1634,12 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
       <div className="flex-1 min-h-0 overflow-hidden">
         <ScrollArea className="h-full">
           <div className="p-4 space-y-3">
+            {sessionLoading && msgs.length === 0 && (
+              <div className="text-xs text-muted-foreground italic py-2">
+                <Loader2 className="inline size-3 animate-spin mr-1" />
+                加载会话历史...
+              </div>
+            )}
             {msgs.map((m: Msg, i: number) => {
               // 最后一条用户消息且其后最多一条 AI 回复：允许编辑重发（截断无副作用）
               let lastUserIdx = -1;
@@ -1601,11 +1727,17 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
                     const isLastAi = i === msgs.length - 1 && m.role === "assistant";
                     const isAdopted = m.adoptedVer !== undefined;
                     const hasAction = !!curVer.action;
-                    // 模型偶发漏输出结尾 JSON：写作面板有正文即可采纳（按 insert_content 处理）
+                    // 模型偶发漏输出结尾 JSON：写作面板有正文即可采纳（按 insert_content 处理）；
+                    // 世界观面板按"分区名+内容"结构兜底解析（按分区名合并，不会误清空其他分区）
+                    const worldFallbackSections =
+                      section === "world" && !hasAction
+                        ? parseWorldSections(stripActionJson(curVer.content || ""))
+                        : [];
                     const adoptFallback =
-                      section === "write" &&
-                      !hasAction &&
-                      !!stripActionJson(curVer.content || "").trim();
+                      (section === "write" &&
+                        !hasAction &&
+                        !!stripActionJson(curVer.content || "").trim()) ||
+                      worldFallbackSections.length > 0;
 
                     return (
                       <div>
@@ -1632,7 +1764,7 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
                           <div className="mt-2 pt-2 border-t border-border text-xs text-muted-foreground text-center">
                             已采纳
                           </div>
-                        ) : isLastAi ? (
+                        ) : isLastAi && !m.guide ? (
                           <div className="mt-2 pt-2 border-t border-border flex items-center gap-2 flex-wrap">
                             {(hasAction || adoptFallback) && (
                               <Button
@@ -1642,7 +1774,9 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
                                   adopt(
                                     hasAction
                                       ? curVer.action!
-                                      : { action: "insert_content", content: stripActionJson(curVer.content) },
+                                      : worldFallbackSections.length > 0
+                                        ? { action: "update_sections", sections: worldFallbackSections }
+                                        : { action: "insert_content", content: stripActionJson(curVer.content) },
                                     i,
                                   )
                                 }
@@ -1693,7 +1827,7 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
                                 disabled={loading}
                                 onClick={() => { setFeedbackOpen(i); setFeedbackText(""); }}
                               >
-                                重新生成
+                                {loading ? "重新生成中..." : "重新生成"}
                               </Button>
                             )}
                             {hasVersions && m.versions!.length > 1 && (
@@ -1736,10 +1870,10 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
                 </div>
               </div>
             )}
-            {loading && !streaming && !isRegeneratingRef.current && (
+            {loading && !streaming && (
               <div className="text-xs text-muted-foreground italic px-3">
                 <Loader2 className="inline size-3 animate-spin mr-1" />
-                生成中...
+                {isRegeneratingRef.current ? "重新生成中..." : "生成中..."}
               </div>
             )}
             <div ref={scrollBottomRef} />
@@ -1815,7 +1949,11 @@ function AIChatPanel({ section, bookId, initialStyle }: { section: string; bookI
               <span className="text-xs text-muted-foreground select-none">引导</span>
             </label>
             {loading ? (
-              <button onClick={stop} className="ml-auto size-8 flex items-center justify-center rounded-full bg-destructive text-white">
+              <button
+                onClick={stop}
+                title="停止生成（已生成的部分保留）"
+                className="ml-auto size-8 flex items-center justify-center rounded-full bg-destructive text-white"
+              >
                 <Square className="size-4" />
               </button>
             ) : (

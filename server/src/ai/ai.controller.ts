@@ -123,6 +123,32 @@ export class AiController {
     }
   }
 
+  @UseGuards(aiRateLimit)
+  @Post('outline/regenerate')
+  async regenerateOutline(
+    @Body()
+    body: {
+      book_id: string;
+      model?: string;
+      key_id?: string;
+    },
+    @Req() req: Request,
+  ) {
+    try {
+      await this.ai.checkBookOwnership(body.book_id, (req as any).userId);
+      const data = await this.ai.regenerateOutline(
+        (req as any).userId,
+        body.book_id,
+        body.model,
+        body.key_id,
+      );
+      return { code: 200, data };
+    } catch (e: any) {
+      console.error('[outline-regenerate] error:', e?.message ?? e);
+      return { code: 500, message: e?.message ?? '卷纲重新生成失败，请重试' };
+    }
+  }
+
 
   @UseGuards(aiRateLimit)
   @Post('generate-chapter')

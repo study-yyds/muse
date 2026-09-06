@@ -52,6 +52,7 @@ ${sample}`;
             { role: 'user', content: sample },
           ],
           max_tokens: 1500,
+          thinking: { type: 'disabled' },
         }),
         signal: AbortSignal.timeout(60000),
       });
@@ -940,6 +941,7 @@ ${aiUtils.buildConditionalRules(premise)}
                 ],
                 max_tokens: 24576,
                 temperature: 0.8,
+                thinking: { type: 'disabled' },
               }),
               signal: genSignal(600_000),
             });
@@ -1133,6 +1135,7 @@ ${factText}
                 ],
                 max_tokens: 24576,
                 temperature: 0.8,
+                thinking: { type: 'disabled' },
               }),
               signal: genSignal(600_000),
             });
@@ -1219,6 +1222,7 @@ ${factText}
               ],
               max_tokens: 24576,
               temperature: 0.8,
+              thinking: { type: 'disabled' },
             }),
             signal: genSignal(600_000),
           });
@@ -1679,6 +1683,9 @@ ${storyText.slice(-800)}`;
               ],
               max_tokens: maxTokens,
               temperature: 0.7,
+              // 推理模型关闭思考链：不关的话思考会耗尽 max_tokens，content 返回空串
+              // （书名 500 token 全被思考吃掉 → 3 次重试全空的根因）
+              thinking: { type: 'disabled' },
             }),
             signal: AbortSignal.timeout(120_000),
           });
@@ -1884,10 +1891,11 @@ ${storyText.slice(-800)}`;
 3. 格局扩展：故事舞台逐步扩大
 4. 每个节点应能制造悬念或期待，让读者想看下一章
 5. 节点必须体现主角的动机驱动：主角的每个关键选择都能回溯到他的欲望/缺陷/金手指，禁止主角随波逐流
-6. 每个节点必须内置冲突或爽点（打压→反转→打脸，或悬念揭示），摘要用"谁+做了什么+得到什么结果"的直白句式，禁止文艺腔与抽象抒情
+6. 每个节点必须内置冲突或高光（困境→破局，或悬念揭示），摘要用"谁+做了什么+得到什么结果"的直白句式，禁止文艺腔与抽象抒情
 7. 主角道德基线：报复/打脸对象必须是真恶人（对方先作恶），情节不得伤害无辜之人（仆从/路人）；灰色行为须有正当理由
 8. 能力/金手指的觉醒节点必须在对应节点的摘要中明确写出（如"绝境觉醒异能"），供章纲生成对齐时间线；觉醒节点之前的节点摘要不得出现能力使用，只能写铺垫/伏笔
 9. 反派与配角要有多样动机（立场/苦衷/利益），禁止多个节点连续出现"有人看不起主角→被打脸"的同构循环；节点爽点模式按番茄偏好轮换（规则内/信息差打脸、升级养成、情绪价值、悬念揭示）；权威角色（教师/考官/官员）言行须符合其立场利益，不得无理由敌视主角；节点功能轮换：冲突节点不超过一半，收获（升级/资源）、铺垫（关系线/日常）、揭露（真相/伏笔）节点各至少 1 个，冲突节点之间必须有缓冲节点
+10. 设定边界：只能使用【创作方向】与世界观/主角设定中已确认的设定；不得发明神秘道具、身世谜团、幕后势力、阴谋组织、死亡倒计时等作者未确认的设定；不得凭空添加有戏份的新角色（背景路人除外）；已确认设定之外不得自行开启阴谋线/暗线；针对主角的暗箱操作（改数据/递纸条/暗中监视）只在已确认对立势力存在时方可写，执行者必须有名有姓、动机充分、手段符合其身份，禁止匿名纸条、查无此人的幕后推手；背景性事实（主角在设定中本就知道的事，如班级资源差距、学校制度）不得写成"发现/揭露"类情节事件，只能作为动机与处境
 
 【数量要求——全程骨架式，必须覆盖到全书结局】
 至少输出 10-14 个节点：
@@ -1935,6 +1943,7 @@ ${storyText.slice(-800)}`;
             }),
           })
           .where(eq(schema.book_settings.book_id, bookId));
+        console.log('[quickCreate] guide context saved');
       }
 
       // Step 3.5: 生成前 10 章章纲（场景级：目标/阻碍/爽点/钩子）
@@ -2057,6 +2066,13 @@ ${storyText.slice(-800)}`;
           l
             .replace(/^\d+[.、]\s*/, '')
             .replace(/^[-*•]\s*/, '')
+            // 模型常按"五种类型"输出"悬念式：xxx"式标签，冒号会把整行误杀——先剥标签
+            .replace(
+              /^(悬念式|金手指承诺式|反差式|爽点式|情感式)[：:]\s*/,
+              '',
+            )
+            // 书名里的引号/书名号全部剥离（书名本身不应含这些字符）
+            .replace(/[「」“”"'《》]/g, '')
             .trim(),
         )
         .filter((l) => {
@@ -2068,7 +2084,18 @@ ${storyText.slice(-800)}`;
           return true;
         })
         .slice(0, 5);
-      const fallbackTitles = aiUtils.buildTitleFallback(premise);
+      // 诊断：每次生成都打书名原始返回（书名候选缺失时定位是解析误杀还是模型输出问题）
+      console.log(
+        `[quickCreate] title raw (${titleText.length} chars, ${titleLines.length} valid):`,
+        titleText.slice(0, 400).replace(/\n/g, ' | '),
+      );
+      // 兜底书名：premise 为空（恢复会话等场景）时从摘要的【故事主题】提取，避免落到"短篇故事"
+      const topicMatch = (params.guide_summary ?? '').match(
+        /【故事主题】\s*([^\n【]+)/,
+      );
+      const fallbackTitles = aiUtils.buildTitleFallback(
+        premise.trim() || topicMatch?.[1]?.trim() || '未命名作品',
+      );
       const finalTitle = (
         titleLines[0] ||
         fallbackTitles[0] ||
@@ -2126,6 +2153,8 @@ ${storyText.slice(-800)}`;
         titles: titleCandidates.length > 1 ? titleCandidates : undefined,
       });
     } catch (err: any) {
+      // 定位静默失败：此前外层 catch 不打日志，落库环节抛错时服务端控制台无任何线索
+      console.error('[quickCreate] failed:', err?.message ?? err, err?.stack ?? '');
       // 回滚：删除已创建的资源
       if (bookId) {
         try {
@@ -2356,10 +2385,11 @@ ${storyText.slice(-800)}`;
         .where(eq(schema.outlines.book_id, bookId))
         .limit(1);
       if (outline) {
-        // 事务化：N 条节点插入全部成功或全部回滚（避免中途失败留半套大纲）
-        await db.transaction(async (tx) => {
+        // neon-http 驱动不支持事务（drizzle 运行时抛 "No transactions support"），
+        // 改为顺序插入 + 失败补偿：中途失败清空已插节点，让外层 rollback 收尾
+        try {
           for (let i = 0; i < nodes.length; i++) {
-            await tx.insert(schema.outline_chapters).values({
+            await db.insert(schema.outline_chapters).values({
               outline_id: outline.outline_id,
               title: nodes[i].title,
               status: 'planned',
@@ -2367,7 +2397,14 @@ ${storyText.slice(-800)}`;
               sort_order: i + 1,
             });
           }
-        });
+        } catch (e) {
+          await db
+            .delete(schema.outline_chapters)
+            .where(eq(schema.outline_chapters.outline_id, outline.outline_id))
+            .catch(() => {});
+          throw e;
+        }
+        console.log('[quickCreate] outline saved:', nodes.length, 'nodes');
       }
     }
     return nodes.length;

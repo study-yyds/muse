@@ -113,7 +113,7 @@ export function CharacterForm({ defaultValues, onSubmit, onCancel, isPending }: 
             ) : (
               <Input
                 id={field.name}
-                type={field.type ?? "text"}
+                type="text"
                 {...form.register(field.name)}
               />
             )}

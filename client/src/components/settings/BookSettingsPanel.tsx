@@ -7,8 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
-import { Settings, Loader2, Check, X } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
+import { Settings, Loader2, Check } from "lucide-react";
 import { ModelSelector, customKeyValue } from "@/components/settings/ModelSelector";
 import { SynopsisSection } from "@/components/settings/SynopsisSection";
 import { PlotThreadsEditor } from "@/components/settings/PlotThreadsEditor";
@@ -21,13 +20,12 @@ interface BookSettings {
 
 interface Props {
   bookId: string;
-  book?: { title: string; type?: string };
   coverUrl?: string | null;
   onCoverChange?: (url: string) => void;
   onCoverHistory?: (history: string[]) => void;
 }
 
-export function BookSettingsPanel({ bookId, book, coverUrl, onCoverChange }: Props) {
+export function BookSettingsPanel({ bookId, coverUrl, onCoverChange }: Props) {
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
@@ -527,106 +525,5 @@ function CoverGenerateButton({
         </div>
       )}
     </>
-  );
-}
-
-function ApiKeyForm({ bookId: _ }: { bookId: string }) {
-  const [name, setName] = useState("");
-  const [key, setKey] = useState("");
-  const [baseUrl, setBaseUrl] = useState("https://api.deepseek.com/v1");
-  const [modelName, setModelName] = useState("deepseek-v4-flash");
-  const [usage, setUsage] = useState("chat");
-  const [keys, setKeys] = useState<any[]>([]);
-  const { toast } = useToast();
-
-  // 加载已有 Key 列表
-  const loadKeys = async () => {
-    const token = localStorage.getItem("token");
-    try {
-      const res = await authFetch("/api/user/api-keys", {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (res.ok) {
-        const json = await res.json();
-        setKeys(json.data || []);
-      }
-    } catch { /* ignore */ }
-  };
-
-  useEffect(() => { loadKeys(); }, []);
-
-  const saveKey = async () => {
-    if (!name.trim() || !key.trim()) return;
-    const token = localStorage.getItem("token");
-    try {
-      const res = await authFetch("/api/user/api-keys", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ name, api_key: key, base_url: baseUrl, model_name: modelName, usage }),
-      });
-      if (res.ok) {
-        toast({ title: "API Key 已保存" });
-        setName(""); setKey(""); loadKeys();
-      } else {
-        toast({ title: "保存失败", variant: "destructive" });
-      }
-    } catch {
-      toast({ title: "保存失败", variant: "destructive" });
-    }
-  };
-
-  const deleteKey = async (id: string) => {
-    const token = localStorage.getItem("token");
-    try {
-      await authFetch(`/api/user/api-keys/${id}`, {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      loadKeys();
-      toast({ title: "已删除" });
-    } catch { toast({ title: "删除失败", variant: "destructive" }); }
-  };
-
-  return (
-    <div className="space-y-3">
-      {/* 已有 Key 列表 */}
-      {keys.length > 0 && (
-        <div className="space-y-1">
-          {keys.map((k: any) => (
-            <div key={k.id} className="flex items-center gap-2 text-xs py-1 px-2 rounded bg-muted/30">
-              <span className="font-medium">{k.name}</span>
-              <span className="text-muted-foreground">{k.model_name}</span>
-              <Badge variant="secondary" className="text-xs">{k.usage}</Badge>
-              <button onClick={() => deleteKey(k.id)} className="ml-auto text-muted-foreground hover:text-destructive">
-                <X className="size-3" />
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* 新增表单 */}
-      <div className="space-y-2 pt-2 border-t border-border">
-        <div className="flex gap-2">
-          <input placeholder="名称" value={name} onChange={(e) => setName(e.target.value)}
-            className="w-28 rounded border border-border bg-background px-2 py-1 text-xs" />
-          <input placeholder="API Key" value={key} onChange={(e) => setKey(e.target.value)}
-            className="flex-1 rounded border border-border bg-background px-2 py-1 text-xs" />
-        </div>
-        <div className="flex gap-2">
-          <input placeholder="Base URL" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)}
-            className="flex-1 rounded border border-border bg-background px-2 py-1 text-xs" />
-          <input placeholder="Model" value={modelName} onChange={(e) => setModelName(e.target.value)}
-            className="w-36 rounded border border-border bg-background px-2 py-1 text-xs" />
-          <select value={usage} onChange={(e) => setUsage(e.target.value)}
-            className="w-18 rounded border border-border bg-background px-1 py-1 text-xs">
-            <option value="chat">文本</option>
-            <option value="image">生图</option>
-            <option value="both">通用</option>
-          </select>
-          <Button size="xs" onClick={saveKey}>保存</Button>
-        </div>
-      </div>
-    </div>
   );
 }

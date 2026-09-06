@@ -64,6 +64,12 @@ export function startMaintenanceTasks(): NodeJS.Timeout {
         .where(
           sql`${schema.verification_codes.expires_at} < NOW() - INTERVAL '1 day'`,
         );
+      // 清理 30 天未更新的引导会话（关闭弹窗不再删除会话，防垃圾会话堆积）
+      const removedSessions = await db
+        .delete(schema.ai_chat_sessions)
+        .where(
+          sql`${schema.ai_chat_sessions.section} = 'guide' AND ${schema.ai_chat_sessions.updated_at} < NOW() - INTERVAL '30 days'`,
+        );
       // 订阅到期自动降级（付费用户额度降回免费档）
       const downgraded = await downgradeExpiredSubscriptions();
       if (removedFiles > 0) {
@@ -77,6 +83,11 @@ export function startMaintenanceTasks(): NodeJS.Timeout {
       if (removedCodes.rowCount > 0) {
         console.log(
           `[maintenance] removed ${removedCodes.rowCount} expired verification codes`,
+        );
+      }
+      if (removedSessions.rowCount > 0) {
+        console.log(
+          `[maintenance] removed ${removedSessions.rowCount} stale guide sessions`,
         );
       }
       if (downgraded > 0) {

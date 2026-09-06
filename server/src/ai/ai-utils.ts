@@ -3,10 +3,33 @@
 
 import { GENRE_KNOWLEDGE, sanitizePrompt } from './ai-prompts';
 
+/**
+ * 从引导摘要中按段提取（slice 截断会把中部的【关键节点】/【已确认设定】丢掉，
+ * 导致下游生成颠倒阶段顺序、越过设定边界——必须按段提取）
+ */
+export function extractGuideSections(summary: string): {
+  theme: string;
+  keyNodes: string;
+  confirmed: string;
+} {
+  const extract = (marker: string) => {
+    const m = (summary ?? '').match(
+      new RegExp(`${marker}】([\\s\\S]*?)(?=【[^】]+】|$)`),
+    );
+    return (m?.[1] ?? '').trim();
+  };
+  return {
+    theme: extract('【故事主题'),
+    keyNodes: extract('【关键节点'),
+    confirmed: extract('【已确认设定'),
+  };
+}
+
 // 构建引导模式 system prompt
 export function buildGuideSystemPrompt(
   context?: string,
   type?: string,
+  contextLabel = '用户的初始想法',
 ): string {
   const isShort = type === 'short';
   const typeGuide = isShort
@@ -51,7 +74,15 @@ ${GENRE_KNOWLEDGE}
 【已确认设定】作者明确敲定的设定逐条列出（金手指/人物关系/背景/结局方向），不得遗漏
 【叙事风格】视角 + 节奏
 \`\`\`
-${context ? `\n【用户的初始想法】\n${context}` : ''}`;
+
+【摘要硬约束——输出摘要前逐条核对，违反即为失败】
+1. **只写作者确认过的内容**：作者在对话中否定过、或后来推翻改掉的说法一律不得写入；同一事项有多轮说法时，以对话中作者最新的决定为准
+2. **时间线忠实于作者给出的顺序**：不得自行插入阶段、颠倒先后、混淆阶段归属（如把"考入大学"写成"考入高中"、把觉醒/排位战/高考的先后写反这类硬错误）
+3. **能力与金手指只按作者最终的定义写**：不得添加作者没提过的能力形态、来源、代价或身世谜团（作者没说过"预知"，就不要写出预知碎片；作者没提过身世线，就不要编来历）
+4. **不得继承旧摘要**：如果对话中已出现过摘要文本，输出新摘要时必须基于对话最新结论重新整理，逐条重写，不得复制旧摘要的表述；作者后来推翻过的设定，即使出现在旧摘要或早期讨论中，也一律不得写入新摘要
+
+5. **就绪标记**：当摘要所需的【主题/主角/驱动力/关键节点/结局方向】都已明确、足够支撑生成时，在回复的最后单独一行输出标记 \`[GUIDE_READY]\`（只输出标记本身，不要解释）；信息还不足、或用户刚推翻了设定时不要输出。这只是提示——用户随时可以自己点击"开始生成"，无需等待标记
+${context ? `\n【${contextLabel}】\n${context}` : ''}`;
 }
 
 /**

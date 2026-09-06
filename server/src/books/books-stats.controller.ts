@@ -18,24 +18,27 @@ export class BooksStatsController {
   @Get()
   async getStats(@Param('bookId') bookId: string) {
     const db = getDb();
-    const chapters = await db
-      .select({
-        word_count: schema.chapters.word_count,
-        updated_at: schema.chapters.updated_at,
-      })
-      .from(schema.chapters)
-      .where(eq(schema.chapters.book_id, bookId));
+    // 两个查询并行：此前顺序执行，叠加跨洋往返让统计 tab 加载明显变慢
+    const [chapters, [settings]] = await Promise.all([
+      db
+        .select({
+          word_count: schema.chapters.word_count,
+          updated_at: schema.chapters.updated_at,
+        })
+        .from(schema.chapters)
+        .where(eq(schema.chapters.book_id, bookId)),
+      db
+        .select({ extra: schema.book_settings.extra })
+        .from(schema.book_settings)
+        .where(eq(schema.book_settings.book_id, bookId))
+        .limit(1),
+    ]);
 
     const total = chapters.reduce((sum, c) => sum + (c.word_count ?? 0), 0);
     const chapterCount = chapters.length;
 
     // 每日字数：优先用增量日志（保存时记录，编辑旧章节不会重写历史）。
     // 无日志的作品（升级前写的）回退到旧逻辑（按章节最后更新日全量归属）
-    const [settings] = await db
-      .select({ extra: schema.book_settings.extra })
-      .from(schema.book_settings)
-      .where(eq(schema.book_settings.book_id, bookId))
-      .limit(1);
     const log = ((settings?.extra ?? {}) as Record<string, any>)
       ?.daily_word_log as Record<string, number> | undefined;
 

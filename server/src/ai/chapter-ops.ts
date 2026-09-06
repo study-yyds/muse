@@ -182,6 +182,21 @@ export class ChapterOps {
     const existing = ((settings?.extra ?? {}) as Record<string, any>)
       ?.chapter_outlines as string[] | undefined;
     const existingLines = existing ?? [];
+    // 引导摘要按段提取：slice(0,1500) 会把中部的【关键节点】截掉，导致章纲颠倒阶段顺序
+    // （实测"先月测后觉醒、入学写在觉醒后"）——必须按段注入，关键节点单独成块
+    const guideSummary =
+      (((settings?.extra ?? {}) as Record<string, any>)?.guide_summary as
+        | string
+        | undefined) ?? '';
+    const {
+      theme: guideTheme,
+      keyNodes: guideKeyNodes,
+      confirmed: guideConfirmed,
+    } = aiUtils.extractGuideSections(guideSummary);
+    const guideBlock = [guideTheme, guideConfirmed]
+      .filter(Boolean)
+      .map((s) => s.slice(0, 800))
+      .join('\n');
     const startNo = existingLines.length + 1;
     // 本批章数（1-30，默认 10）
     const genCount = Math.min(Math.max(count ?? 10, 1), 30);
@@ -242,6 +257,7 @@ export class ChapterOps {
       return outline
         ? await db
             .select({
+              id: schema.outline_chapters.id,
               title: schema.outline_chapters.title,
               summary: schema.outline_chapters.summary,
             })
@@ -254,10 +270,15 @@ export class ChapterOps {
 
     // 手动建书无卷纲：先用书名+引导摘要+已写正文自动生成卷纲，再展开章纲
     if (nodes.length === 0) {
-      const guideSummary = (settings?.extra ?? {}) as Record<string, any>;
-      const guideBlock =
-        (guideSummary?.guide_summary as string | undefined)?.slice(0, 800) ??
-        '';
+      const sections = aiUtils.extractGuideSections(
+        (((settings?.extra ?? {}) as Record<string, any>)?.guide_summary as
+          | string
+          | undefined) ?? '',
+      );
+      const guideBlock = [sections.theme, sections.keyNodes, sections.confirmed]
+        .filter(Boolean)
+        .map((s) => s.slice(0, 800))
+        .join('\n');
       const outlineGenPrompt = `你是网文大纲规划助手。根据下面的信息为这部小说设计情节大纲（卷纲），至少 10-14 个节点，必须覆盖到全书结局：前 1-2 卷细节点（8-10 个），后续每卷 1-2 个粗节点，最后一个节点为全书结局（大结局+尾声），禁止只写到中段就停。
 
 【书名】${bookRow?.title ?? '（未命名）'}
@@ -272,7 +293,7 @@ ${continuityBlock ? `【已写正文参考——大纲必须承接，不重写�
 4. 摘要用"谁+做了什么+得到什么结果"的直白句式，禁止文艺腔
 5. 能力/金手指的觉醒节点必须在对应节点的摘要中明确写出（如"绝境觉醒异能"），供章纲生成对齐时间线；觉醒节点之前的节点摘要不得出现能力使用，只能写铺垫/伏笔
 6. 全程骨架式：前 1-2 卷细节点（8-10 个），后续每卷 1-2 个粗节点，最后一个节点必须是全书结局（大结局+尾声）；禁止只写到中段就停
-6. 全程骨架式：前 1-2 卷细节点（8-10 个），后续每卷 1-2 个粗节点，最后一个节点必须是全书结局（大结局+尾声）；禁止只写到中段就停
+7. 设定边界：只能使用【创作方向】已确认的设定；不得发明神秘道具、身世谜团、幕后势力、阴谋组织、死亡倒计时等作者未确认的设定；不得凭空添加有戏份的新角色（背景路人除外）；已确认设定之外不得自行开启阴谋线/暗线
 
 【输出格式——严格遵守】
 只输出 JSON 数组，不要任何其他文字。title 精炼（8字内），summary 简短（30字内）：
@@ -318,26 +339,19 @@ ${continuityBlock ? `【已写正文参考——大纲必须承接，不重写�
       nodes = await loadOutlineNodes();
     }
 
-    // 指定目标节点：卷纲聚焦该节点（+前后邻居作衔接），并加聚焦约束
-    let focusNodeBlock = '';
+    // 指定目标节点：全量卷纲注入（标注重点节点）——AI 结合节点在全卷纲中的位置
+    // 与摘要文字判断粒度（卷纲前段=细节点密集、后段=粗节点概述），并加聚焦约束
     let focusRequirement = '';
-    if (nodeId) {
-      const idx = nodes.findIndex((n: any) => n.id === nodeId);
-      if (idx >= 0) {
-        const focusNodes = nodes.slice(Math.max(0, idx - 1), idx + 2);
-        focusNodeBlock = focusNodes
-          .map(
-            (n: any, i: number) =>
-              `${i === idx - Math.max(0, idx - 1) ? '【重点节点——本批章纲围绕它展开】' : ''}- ${n.title}：${n.summary}`,
-          )
-          .join('\n');
-        focusRequirement = `本批 ${genCount} 章全部围绕重点节点展开：目标/阻碍/爽点/钩子服务于该节点的情节，不要跳入后续节点的剧情`;
-      }
+    if (nodeId && nodes.some((n: any) => n.id === nodeId)) {
+      focusRequirement = `本批最多 ${genCount} 章，全部围绕【重点节点】展开：结合该节点在全卷纲中的位置与摘要判断其粒度——细节点（具体事件）通常 1-4 章，写完该节点即停；若重点节点是概述性粗节点（阶段级大节点，其摘要不含具体事件），说明该节点应先在"细化节点"里拆成 8-10 个细节点再写章纲，本批只写该阶段的开头过渡章（1-2 章），不得强行把整个阶段塞进章纲；禁止为凑满章数注水、拖延或重复相似冲突，每章必须有实质情节推进，节点收束后不得开写后续节点的剧情`;
     }
     const outlineText =
-      focusNodeBlock ||
-      nodes.map((n) => `- ${n.title}：${n.summary}`).join('\n') ||
-      '（无大纲）';
+      nodes
+        .map((n: any) => {
+          const isFocus = nodeId && n.id === nodeId;
+          return `${isFocus ? '【重点节点——本批章纲围绕它展开】' : ''}- ${n.title}：${n.summary}`;
+        })
+        .join('\n') || '（无大纲）';
     // 能力时间线约束用全量卷纲提取（聚焦块可能不含觉醒节点），显式告诉模型觉醒在第几个节点
     const timelineBlock = aiUtils.buildCapabilityTimeline(
       nodes.map((n) => `- ${n.title}：${n.summary}`).join('\n'),
@@ -347,16 +361,19 @@ ${continuityBlock ? `【已写正文参考——大纲必须承接，不重写�
     const requirements = [
       '一章一小冲突，10 章内至少 2 个小高潮；爽点必须具体（什么被证明/谁被打脸/什么反转），禁止"主角变强"式空话',
       '表述直白网文化，禁止文学化修饰',
-      '打脸/报复对象必须是真恶人（对方先作恶），不得牵连无辜之人',
+      '冲突与反击的对象必须是真恶人（对方先作恶），不得牵连无辜之人',
       '能力/金手指时间线铁律：以【能力时间线】块为准——首个能力节点之前的章节禁止出现任何异能（连"预判""瞬移"等字眼都不能有），只能埋伏笔；觉醒必须在对应章节作为完整情节写出，不得跳过、不得默认已拥有',
       '反派动机多样化：不能全是"看不起主角"式脸谱，至少一个反派有自己的立场/苦衷/合理动机；同一反派不得连续 3 章作为主要阻碍',
-      '爽点机制按番茄长篇偏好轮换：打脸须升级为规则内打脸/信息差打脸（对手越精明、越站得住，翻盘越爽），禁止"当众嘲讽→当众打脸"同构循环；爽点模式多样化——升级养成快感、情绪价值（被理解/被看见）、悬念揭示、智力破局各至少出现一次',
+      '爽点机制按番茄长篇偏好轮换：高光时刻须升级为规则内证明/信息差破局（对手越精明、越站得住，翻盘越精彩），禁止"当众嘲讽→当众回击"同构循环；爽点模式多样化——升级养成快感、情绪价值（被理解/被看见）、悬念揭示、智力破局各至少出现一次',
       '章节功能轮换（核心节奏）：冲突章（对抗/考核/战斗）不超过本批一半且不得连续超过 2 章，收获章（升级/资源/奖励兑现）、铺垫章（日常/关系线/感情/内心戏）、揭露章（世界观真相/阴谋推进/伏笔回收）各至少 1 章；冲突章之间必须有缓冲章',
       '钩子类型轮换：禁止连续 3 章"角色放狠话/威胁"式钩子；本批至少 3 章钩子改为信息揭示（物证/真相碎片）、情感悬置（牵挂/误会/失约）或主角主动做出的危险决定',
       '若注入有【能力时间线】块（即本作存在觉醒/激活/获得金手指的设定）：激活的节奏与长度按卷纲节点执行（单章或多章任务式皆可，如百天打卡），但禁止把激活句拆成逐字谜题（如"我"字→"想"字）、禁止激活句/主题台词无必要地反复出现；道具设定不得因拼字/谜题需要而改动',
-      '对立势力行动具体化：对手施加压力必须用实际动作（动手脚/改档案/截资源/设局），禁止只有语言挑衅；同一阴谋逐章递进露出新一层，本批内至少完成一次阴谋的阶段性揭露',
+      '若【创作方向】或【卷纲】中已存在对立势力/阴谋线：对手施加压力必须用实际动作（动手脚/改档案/截资源/设局），禁止只有语言挑衅；同一阴谋逐章递进露出新一层。若不存在，禁止自行开启阴谋线。针对主角的暗箱操作（改数据/递纸条/暗中监视）只在已确认对立势力存在时方可写，执行者必须有名有姓、动机充分、手段符合其身份；禁止匿名纸条、查无此人的幕后推手',
+      '设定边界铁律：只能使用【创作方向】已确认的设定与卷纲信息；不得发明神秘道具、身世谜团、幕后势力、阴谋组织、死亡倒计时等作者未确认的设定；不得凭空添加有戏份的新角色（背景路人除外）；背景性事实（主角本就知道的事）不得写成"发现/揭露"类情节事件，只能作为动机与处境',
       '冲突来源多样化：人际、环境与规则、主角内心缺陷三类冲突至少各出现一次，禁止全篇都是"有人找茬→反击"的同构循环',
       '权威角色理性铁律：教师、考官、官员等权威配角的言行必须符合其身份立场与自身利益——刁难主角只能出于真实利益冲突（名额竞争、隐瞒事故、站队压力），禁止"看不起主角"式无理由贬损；对主角的质疑应为专业存疑而非人身嘲讽；本批内至少一半配角立场中立或善意',
+      '情节阶段顺序必须与【硬性时间线】一致，禁止颠倒（如觉醒在入学前、高考在排位战后）；若未注入时间线块，以卷纲节点顺序为准',
+      '人际阻碍（对手找茬/刁难）不超过本批三分之一；人际阻碍的对手禁止"当众放话/嘲讽/看不起"式开场，必须用实际动作制造阻碍（抢先消耗资源、抢占场地、规则内压制等）',
       nodes.length
         ? '卷纲是大方向：新章纲推进的情节必须落在卷纲范围内'
         : '暂无大纲：剧情从已写正文自然延伸，不要凭空引入与正文无关的设定',
@@ -379,13 +396,14 @@ ${bookRow?.title ? `【书名】${bookRow.title}` : ''}
 【硬性要求】
 ${requirements}
 
+${guideBlock ? `【创作方向——已确认设定，章纲情节必须遵守，不得越界】\n${guideBlock}\n` : ''}${guideKeyNodes ? `【硬性时间线——各阶段先后顺序，章纲必须按此推进，不得颠倒】\n${guideKeyNodes.slice(0, 800)}\n` : ''}
 【卷纲】
 ${outlineText.slice(0, 2000) || '（无大纲）'}
 
 ${timelineBlock}
 ${continuityBlock}
 ${existingLines.length ? `【上一批章纲结尾】\n${existingLines.slice(-3).join('\n')}\n` : ''}
-只输出 ${genCount} 行，每行一条章纲，不要编号、不要其他文字。`;
+${nodeId ? `只输出实际需要的章数（最多 ${genCount} 行），每行一条章纲，不要编号、不要其他文字。` : `只输出 ${genCount} 行，每行一条章纲，不要编号、不要其他文字。`}`;
 
     const r = await fetch(`${resolvedUse.baseUrl}/chat/completions`, {
       method: 'POST',
@@ -399,7 +417,9 @@ ${existingLines.length ? `【上一批章纲结尾】\n${existingLines.slice(-3)
           { role: 'system', content: prompt },
           {
             role: 'user',
-            content: `请生成第 ${startNo} 到第 ${startNo + genCount - 1} 章的细纲。`,
+            content: nodeId
+              ? `请围绕【重点节点】生成章纲（最多 ${genCount} 章，按情节自然收束，写完即停）。`
+              : `请生成第 ${startNo} 到第 ${startNo + genCount - 1} 章的细纲。`,
           },
         ],
         max_tokens: 2048,
@@ -415,15 +435,57 @@ ${existingLines.length ? `【上一批章纲结尾】\n${existingLines.slice(-3)
     const lines = aiUtils.parseChapterOutlines(rawText);
     if (!lines.length) throw new Error('章纲续生解析为空');
 
-    // 追加保存（只接在已有批次后面，覆盖重复续生）——JSONB 原子合并，并发写不互相覆盖
+    // 自动绑定：章纲行 → 卷纲节点（聚焦模式全部绑到目标节点；顺序模式按节点顺序分配，每节点最多 4 章）
+    const bindingMap: Record<string, string> = {};
+    if (nodes.length > 0) {
+      let nodeCursor = nodeId
+        ? Math.max(0, nodes.findIndex((n: any) => n.id === nodeId))
+        : 0;
+      const perNodeMax = nodeId ? lines.length : 4;
+      let usedInNode = 0;
+      for (let i = 0; i < lines.length && nodes[nodeCursor]; i++) {
+        bindingMap[String(startNo + i)] = nodes[nodeCursor].id;
+        usedInNode++;
+        if (!nodeId && usedInNode >= perNodeMax) {
+          nodeCursor = Math.min(nodeCursor + 1, nodes.length - 1);
+          usedInNode = 0;
+        }
+      }
+    }
+
+    // 追加保存（只接在已有批次后面，覆盖重复续生）——JSONB 原子合并，并发写不互相覆盖；
+    // 行→节点映射一并保存，供后续建章时自动绑定（免手动绑定）
+    const bindingPatch: Record<string, string> = {};
+    if (Object.keys(bindingMap).length) {
+      const prev =
+        (((settings?.extra ?? {}) as Record<string, any>)
+          ?.chapter_node_binding as Record<string, string> | undefined) ?? {};
+      Object.assign(bindingPatch, prev, bindingMap);
+    }
     await db
       .update(schema.book_settings)
       .set({
         extra: mergeJsonb(schema.book_settings.extra, {
           chapter_outlines: [...existingLines, ...lines],
+          ...(Object.keys(bindingPatch).length
+            ? { chapter_node_binding: bindingPatch }
+            : {}),
         }),
       })
       .where(eq(schema.book_settings.book_id, bookId));
+
+    // 立即绑定已存在的章节（章纲行号 ↔ 章节 sort_order）
+    for (const [sortNo, nid] of Object.entries(bindingMap)) {
+      await db
+        .update(schema.chapters)
+        .set({ bound_outline_node_id: nid })
+        .where(
+          and(
+            eq(schema.chapters.book_id, bookId),
+            eq(schema.chapters.sort_order, Number(sortNo)),
+          ),
+        );
+    }
     await this.host.recordUsage({
       userId,
       bookId,
@@ -433,6 +495,203 @@ ${existingLines.length ? `【上一批章纲结尾】\n${existingLines.slice(-3)
       usageType: resolvedUse.source === 'user' ? 'user_key' : 'platform_key',
     });
     return { lines, startNo };
+  }
+
+  /**
+   * 重新生成卷纲：按作品保存的引导摘要 + 世界观 + 主角 + 已写正文，重写整套大纲节点。
+   * 替换顺序（neon-http 无事务，按数据损失最小化排序）：
+   * 先插新节点（负数临时排序）→ 解绑章节 → 删旧节点 → 新节点归位 1..N；
+   * 任一步失败时补偿删除本次已插入的新节点（生成失败不破坏旧大纲）。
+   */
+  async regenerateOutline(
+    userId: string,
+    bookId: string,
+    model?: string,
+    keyId?: string,
+  ) {
+    const db = getDb();
+    const resolved = await this.host.resolveApiKey(userId, 'chat', model, keyId);
+
+    const [bookRow] = await db
+      .select({ title: schema.books.title })
+      .from(schema.books)
+      .where(eq(schema.books.book_id, bookId))
+      .limit(1);
+    const [settings] = await db
+      .select({ extra: schema.book_settings.extra })
+      .from(schema.book_settings)
+      .where(eq(schema.book_settings.book_id, bookId))
+      .limit(1);
+    const extra = (settings?.extra ?? {}) as Record<string, any>;
+    const guideSummary = (extra.guide_summary as string | undefined) ?? '';
+    const guideLog = (extra.guide_full_log as string | undefined) ?? '';
+    // 世界观分区
+    const [world] = await db
+      .select({ sections: schema.world_settings.sections })
+      .from(schema.world_settings)
+      .where(eq(schema.world_settings.book_id, bookId))
+      .limit(1);
+    const worldBlock = ((world?.sections ?? []) as Array<{
+      name: string;
+      content: string;
+    }>)
+      .map((s) => `【${s.name}】\n${s.content}`)
+      .join('\n\n')
+      .slice(0, 2000);
+    // 主角（is_main）
+    const [prot] = await db
+      .select()
+      .from(schema.characters)
+      .where(
+        and(
+          eq(schema.characters.book_id, bookId),
+          eq(schema.characters.is_main, true),
+        ),
+      )
+      .limit(1);
+    const protagonistBlock = prot
+      ? `【主角设定——情节必须服务于主角的动机、缺陷与金手指】\n姓名：${prot.name ?? ''}；性别：${prot.gender ?? ''}；性格：${prot.personality ?? ''}；身份：${prot.identity ?? ''}；动机：${prot.motivation ?? ''}`
+      : '';
+    // 已写章节（大纲必须承接，不重写已发生事件）
+    const recentChs = await db
+      .select({ title: schema.chapters.title, summary: schema.chapters.summary })
+      .from(schema.chapters)
+      .where(
+        and(
+          eq(schema.chapters.book_id, bookId),
+          isNotNull(schema.chapters.summary),
+        ),
+      )
+      .orderBy(desc(schema.chapters.sort_order))
+      .limit(3);
+    const continuityBlock = recentChs.length
+      ? `【已写正文参考——大纲必须承接，不重写已发生事件】\n${recentChs
+          .map((c) => `《${c.title}》${(c.summary || '').slice(0, 120)}`)
+          .join('\n')}`
+      : '';
+
+    const prompt = `你是网文大纲规划助手。根据下面的信息为这部小说重新设计情节大纲（卷纲）。**只使用用户已提供的信息，可以合理扩展，但不要修改或替换用户已明确的情节。**
+
+【书名】${bookRow?.title ?? '（未命名）'}
+
+${guideSummary ? `【创作方向——严格遵循】\n${guideSummary.slice(0, 1500)}\n` : ''}${guideLog ? `【引导讨论记录——对话尾部节选，参考细节】\n${guideLog.slice(-1500)}\n` : ''}${worldBlock ? `【世界观】\n${worldBlock}\n` : ''}${protagonistBlock ? `${protagonistBlock}\n` : ''}${continuityBlock ? `${continuityBlock}\n` : ''}
+【核心要求】
+1. 分卷/分段推进：每段有明确的阶段目标，段末解决并引出下一段
+2. 递进节奏：每个节点应有实质进展（具体是什么取决于故事本身的驱动力）
+3. 格局扩展：故事舞台逐步扩大
+4. 每个节点应能制造悬念或期待，让读者想看下一章
+5. 节点必须体现主角的动机驱动：主角的每个关键选择都能回溯到他的欲望/缺陷/金手指，禁止主角随波逐流
+6. 每个节点必须内置冲突或高光（困境→破局，或悬念揭示），摘要用"谁+做了什么+得到什么结果"的直白句式，禁止文艺腔与抽象抒情
+7. 主角道德基线：冲突与反击的对象必须是真恶人（对方先作恶），情节不得伤害无辜之人（仆从/路人）；灰色行为须有正当理由
+8. 能力/金手指的觉醒节点必须在对应节点的摘要中明确写出（如"绝境觉醒异能"），供章纲生成对齐时间线；觉醒节点之前的节点摘要不得出现能力使用，只能写铺垫/伏笔
+9. 反派与配角要有多样动机（立场/苦衷/利益），禁止多个节点连续出现"有人看不起主角→被打脸"的同构循环；节点高光模式按番茄偏好轮换（规则内/信息差破局、升级养成、情绪价值、悬念揭示）；权威角色（教师/考官/官员）言行须符合其立场利益，不得无理由敌视主角；节点功能轮换：冲突节点不超过一半，收获（升级/资源）、铺垫（关系线/日常）、揭露（真相/伏笔）节点各至少 1 个，冲突节点之间必须有缓冲节点
+10. 设定边界：只能使用【创作方向】与世界观/主角设定中已确认的设定；不得发明神秘道具、身世谜团、幕后势力、阴谋组织、死亡倒计时等作者未确认的设定；不得凭空添加有戏份的新角色（背景路人除外）；已确认设定之外不得自行开启阴谋线/暗线；针对主角的暗箱操作（改数据/递纸条/暗中监视）只在已确认对立势力存在时方可写，执行者必须有名有姓、动机充分、手段符合其身份，禁止匿名纸条、查无此人的幕后推手；背景性事实（主角在设定中本就知道的事）不得写成"发现/揭露"类情节事件，只能作为动机与处境
+
+【数量要求——全程骨架式，必须覆盖到全书结局】
+至少输出 10-14 个节点：
+- 前 1-2 卷：8-10 个细节点（情节具体、节奏密）
+- 后续各卷：每卷 1-2 个粗节点（只写该卷的阶段目标与结果）
+- 最后一个节点必须是全书结局（大结局+尾声：最终矛盾如何解决、主角归宿）
+禁止只写到中段就停。标题简洁有力。
+
+【输出格式——严格遵守】
+只输出 JSON 数组，不要任何其他文字。title 精炼有网文感（8字以内），summary 简短有力（30字以内，写清谁+做了什么+结果）：
+[{"title":"意外之喜","summary":"主角在山洞中发现前人遗留的秘籍，从此走上修行之路"}]`;
+
+    const r = await fetch(`${resolved.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${resolved.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: resolved.model,
+        messages: [
+          { role: 'system', content: prompt },
+          { role: 'user', content: '请重新设计这部小说的卷纲。' },
+        ],
+        max_tokens: 4096,
+        temperature: 0.7,
+        thinking: { type: 'disabled' },
+      }),
+      signal: AbortSignal.timeout(120_000),
+    });
+    if (!r.ok) throw new Error(`regenerate outline status ${r.status}`);
+    const d = await r.json();
+    const rawText = (d.choices?.[0]?.message?.content ?? '').trim();
+    const nodes = aiUtils.parseOutlineNodesJson(rawText);
+    if (nodes.length < 3) throw new Error('卷纲重新生成解析失败，请重试');
+
+    // 替换：先插新（负数临时排序，避免与旧节点正数 sort_order 冲突）→ 解绑 → 删旧 → 归位
+    let [outline] = await db
+      .select({ outline_id: schema.outlines.outline_id })
+      .from(schema.outlines)
+      .where(eq(schema.outlines.book_id, bookId))
+      .limit(1);
+    if (!outline) {
+      [outline] = await db
+        .insert(schema.outlines)
+        .values({ book_id: bookId })
+        .returning({ outline_id: schema.outlines.outline_id });
+    }
+    const newIds: string[] = [];
+    try {
+      for (const [i, n] of nodes.entries()) {
+        const [ins] = await db
+          .insert(schema.outline_chapters)
+          .values({
+            outline_id: outline.outline_id,
+            title: n.title,
+            summary: n.summary,
+            status: 'planned',
+            sort_order: -1 - i,
+          })
+          .returning({ id: schema.outline_chapters.id });
+        newIds.push(ins.id);
+      }
+      // 解绑已绑定旧节点的章节（正文保留，绑定关系随旧节点失效）
+      await db
+        .update(schema.chapters)
+        .set({ bound_outline_node_id: null })
+        .where(eq(schema.chapters.book_id, bookId));
+      // 删旧节点（保留本次新插入的负数节点）
+      await db
+        .delete(schema.outline_chapters)
+        .where(
+          sql`${schema.outline_chapters.outline_id} = ${outline.outline_id} AND ${schema.outline_chapters.id} <> ALL(${newIds}::uuid[])`,
+        );
+      // 新节点归位 1..N（旧节点已删，无唯一约束冲突）
+      for (let i = 0; i < newIds.length; i++) {
+        await db
+          .update(schema.outline_chapters)
+          .set({ sort_order: i + 1 })
+          .where(eq(schema.outline_chapters.id, newIds[i]));
+      }
+    } catch (e) {
+      // 补偿：删除本次已插入的新节点，不残留负数临时节点
+      if (newIds.length > 0) {
+        await db
+          .delete(schema.outline_chapters)
+          .where(
+            sql`${schema.outline_chapters.id} IN (${sql.join(
+              newIds.map((id) => sql`${id}`),
+              sql`,`,
+            )})`,
+          )
+          .catch(() => {});
+      }
+      throw e;
+    }
+
+    await this.host.recordUsage({
+      userId,
+      bookId,
+      model: resolved.model,
+      inChars: prompt.length,
+      outChars: rawText.length,
+      usageType: resolved.source === 'user' ? 'user_key' : 'platform_key',
+    });
+    return { count: nodes.length, nodes };
   }
 
   /**
@@ -493,9 +752,14 @@ ${existingLines.length ? `【上一批章纲结尾】\n${existingLines.slice(-3)
       .where(eq(schema.book_settings.book_id, bookId))
       .limit(1);
     const extra = (settings?.extra ?? {}) as Record<string, any>;
-    const guideBlock = (extra.guide_summary as string | undefined)
-      ?.replace(/【关键节点】[^【]*/g, '')
-      .slice(0, 800);
+    // 细化是节点内情节展开：不带关键节点（prev/next 节点已给区间），但必须带已确认设定防越界
+    const refineSections = aiUtils.extractGuideSections(
+      (extra.guide_summary as string | undefined) ?? '',
+    );
+    const guideBlock = [refineSections.theme, refineSections.confirmed]
+      .filter(Boolean)
+      .map((s) => s.slice(0, 800))
+      .join('\n');
     const chOutlines = (extra.chapter_outlines as string[] | undefined) ?? [];
     const recentWritten = chOutlines.slice(-3).join('\n');
     const timelineBlock = aiUtils.buildCapabilityTimeline(
@@ -551,26 +815,29 @@ ${prev ? `【上一节点——细化后的第 1 个节点必须承接其结果�
       usageType: resolved.source === 'user' ? 'user_key' : 'platform_key',
     });
 
-    // 持久化入事务：备份 + 替换 + 插入 + 重排，中途失败自动回滚
+    // neon-http 驱动不支持事务：顺序执行 + 失败补偿。
+    // 补偿目标：恢复原节点内容、删除已插入的新节点、恢复原排序
     // （此前无事务时两次踩过半应用状态：孤儿行、原节点内容被换）
-    await db.transaction(async (tx) => {
-      await tx
-        .update(schema.book_settings)
-        .set({
-          extra: mergeJsonb(schema.book_settings.extra, {
-            refine_last_original: { title: node.title, summary: node.summary },
-          }),
-        })
-        .where(eq(schema.book_settings.book_id, bookId));
+    await db
+      .update(schema.book_settings)
+      .set({
+        extra: mergeJsonb(schema.book_settings.extra, {
+          refine_last_original: { title: node.title, summary: node.summary },
+        }),
+      })
+      .where(eq(schema.book_settings.book_id, bookId));
 
+    const insertedIds: string[] = [];
+    const before = nodes.slice(0, idx).map((n) => n.id);
+    const after = nodes.slice(idx + 1).map((n) => n.id);
+    try {
       // 替换原节点：第一个细化节点复用原 id，其余插入；最后统一重排 sort_order
-      await tx
+      await db
         .update(schema.outline_chapters)
         .set({ title: refined[0].title, summary: refined[0].summary })
         .where(eq(schema.outline_chapters.id, nodeId));
-      const insertedIds: string[] = [];
       for (const [i, rn] of refined.slice(1).entries()) {
-        const [ins] = await tx
+        const [ins] = await db
           .insert(schema.outline_chapters)
           .values({
             outline_id: outline.outline_id,
@@ -583,24 +850,52 @@ ${prev ? `【上一节点——细化后的第 1 个节点必须承接其结果�
           .returning({ id: schema.outline_chapters.id });
         insertedIds.push(ins.id);
       }
-      const before = nodes.slice(0, idx).map((n) => n.id);
-      const after = nodes.slice(idx + 1).map((n) => n.id);
       const newOrder = [...before, nodeId, ...insertedIds, ...after];
       // 两阶段重排：先全部移到临时负数（避免"目标值仍被旧节点占用"的唯一约束瞬时冲突），
       // 再按新顺序赋 1..N 正序
       for (let i = 0; i < newOrder.length; i++) {
-        await tx
+        await db
           .update(schema.outline_chapters)
           .set({ sort_order: -1000 - i })
           .where(eq(schema.outline_chapters.id, newOrder[i]));
       }
       for (let i = 0; i < newOrder.length; i++) {
-        await tx
+        await db
           .update(schema.outline_chapters)
           .set({ sort_order: i + 1 })
           .where(eq(schema.outline_chapters.id, newOrder[i]));
       }
-    });
+    } catch (e) {
+      try {
+        // 恢复原节点内容
+        await db
+          .update(schema.outline_chapters)
+          .set({ title: node.title, summary: node.summary })
+          .where(eq(schema.outline_chapters.id, nodeId));
+        // 删除已插入的新节点
+        if (insertedIds.length > 0) {
+          await db
+            .delete(schema.outline_chapters)
+            .where(
+              sql`${schema.outline_chapters.id} IN (${sql.join(
+                insertedIds.map((id) => sql`${id}`),
+                sql`,`,
+              )})`,
+            );
+        }
+        // 恢复原排序（1..N）
+        const originalOrder = nodes.map((n) => n.id);
+        for (let i = 0; i < originalOrder.length; i++) {
+          await db
+            .update(schema.outline_chapters)
+            .set({ sort_order: i + 1 })
+            .where(eq(schema.outline_chapters.id, originalOrder[i]));
+        }
+      } catch {
+        /* 补偿失败不掩盖原始错误 */
+      }
+      throw e;
+    }
     return { count: refined.length, nodes: refined };
   }
 

@@ -133,11 +133,15 @@ interface Props {
   bookId: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** 无选中文字时的兜底脚本（短篇全文生成推文视频用） */
+  defaultScript?: string;
 }
 
-export function PromoVideoDialog({ bookId, open, onOpenChange }: Props) {
+export function PromoVideoDialog({ bookId, open, onOpenChange, defaultScript }: Props) {
   const { toast } = useToast();
   const selectedText = useEditorStore((s) => s.selectedText);
+  // 脚本来源：优先编辑器选中，其次兜底全文（短篇无选中也能生成推文视频）
+  const scriptSource = selectedText || defaultScript || '';
   const abortRef = useRef<AbortController | null>(null);
 
   const [stage, setStage] = useState<'input' | 'script' | 'rendering' | 'done'>('input');
@@ -179,7 +183,7 @@ export function PromoVideoDialog({ bookId, open, onOpenChange }: Props) {
   }, [open]);
 
   const generateScript = async () => {
-    if (!selectedText.trim()) return;
+    if (!scriptSource.trim()) return;
     setLoading(true);
     setError('');
 
@@ -191,8 +195,8 @@ export function PromoVideoDialog({ bookId, open, onOpenChange }: Props) {
         body: JSON.stringify({
           book_id: bookId,
           context_type: 'promo',
-          message: `请将以下小说原文改写成推文脚本：\n\n${selectedText.slice(0, 2000)}`,
-          messages: [{ role: 'user', content: `请将以下小说原文改写成推文脚本：\n\n${selectedText.slice(0, 2000)}` }],
+          message: `请将以下小说原文改写成推文脚本：\n\n${scriptSource.slice(0, 2000)}`,
+          messages: [{ role: 'user', content: `请将以下小说原文改写成推文脚本：\n\n${scriptSource.slice(0, 2000)}` }],
         }),
       });
 
@@ -412,13 +416,13 @@ export function PromoVideoDialog({ bookId, open, onOpenChange }: Props) {
             <div>
               <label className="text-sm font-medium">选中原文</label>
               <div className="mt-1 rounded border border-border bg-muted/20 p-3 text-sm max-h-32 overflow-y-auto whitespace-pre-wrap">
-                {selectedText || '(请先在编辑器中选中文字)'}
+                {scriptSource || '(请先在编辑器中选中文字)'}
               </div>
             </div>
             {error && <p className="text-sm text-destructive">{error}</p>}
             <Button
               onClick={generateScript}
-              disabled={loading || !selectedText.trim()}
+              disabled={loading || !scriptSource.trim()}
               className="w-full"
             >
               {loading ? <Loader2 className="size-4 animate-spin mr-1" /> : <Sparkles className="size-4 mr-1" />}
@@ -427,12 +431,12 @@ export function PromoVideoDialog({ bookId, open, onOpenChange }: Props) {
             <Button
               variant="outline"
               onClick={() => {
-                const lines = selectedText.split('\n').filter((l) => l.trim());
+                const lines = scriptSource.split('\n').filter((l) => l.trim());
                 setScriptLines(lines);
-                setEditableScript(selectedText);
+                setEditableScript(scriptSource);
                 setStage('script');
               }}
-              disabled={loading || !selectedText.trim()}
+              disabled={loading || !scriptSource.trim()}
               className="w-full"
             >
               直接用原文配音

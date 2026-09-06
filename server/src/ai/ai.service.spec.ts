@@ -758,6 +758,21 @@ describe('buildGuideSystemPrompt', () => {
     expect(result).toContain('【叙事风格】');
   });
 
+  it('包含就绪标记规则（AI 辅助判断 + 用户可随时手动点击）', () => {
+    const result = AiService.buildGuideSystemPrompt();
+    expect(result).toContain('[GUIDE_READY]');
+    expect(result).toContain('用户随时可以自己点击"开始生成"');
+  });
+
+  it('包含摘要硬约束（正确性禁令：忠实对话结论/时间线/能力定义/不继承旧摘要）', () => {
+    const result = AiService.buildGuideSystemPrompt();
+    expect(result).toContain('【摘要硬约束');
+    expect(result).toContain('作者在对话中否定过、或后来推翻改掉的说法一律不得写入');
+    expect(result).toContain('不得自行插入阶段、颠倒先后');
+    expect(result).toContain('不得添加作者没提过的能力形态');
+    expect(result).toContain('不得继承旧摘要');
+  });
+
   it('包含 2026 题材知识库（三大风向+赛道+政策红线）', () => {
     const result = AiService.buildGuideSystemPrompt();
     expect(result).toContain('【题材知识库（2026 年网文市场趋势）');

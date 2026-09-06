@@ -3,7 +3,7 @@ import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Loader2, Send } from "lucide-react";
+import { Loader2, Send, Square } from "lucide-react";
 import type { CharacterData } from "@muse/shared";
 
 interface Message {
@@ -26,6 +26,7 @@ export function CharacterTestDialog({ char, bookId }: Props) {
   const customLabel = customKey ? `自定义 (${customKey.model_name || "?"})` : "自定义（未配置）";
   const [model, setModel] = useState("deepseek-v4-flash");
   const sessionRef = useRef<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const token = localStorage.getItem("token");
 
   // 初始化：获取或创建测试会话，加载历史消息
@@ -60,6 +61,9 @@ export function CharacterTestDialog({ char, bookId }: Props) {
     setInput("");
     setIsLoading(true);
     setStreaming("");
+    const controller = new AbortController();
+    abortRef.current = controller;
+    let ac = "";
 
     try {
       const r = await authFetch(
@@ -76,7 +80,9 @@ export function CharacterTestDialog({ char, bookId }: Props) {
             api_key: model === "__custom__" ? customKey?.api_key : undefined,
             base_url: model === "__custom__" ? customKey?.base_url : undefined,
           }),
+          signal: controller.signal,
         },
+        null,
       );
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
 
@@ -84,7 +90,7 @@ export function CharacterTestDialog({ char, bookId }: Props) {
       if (!reader) throw new Error("无响应");
 
       const decoder = new TextDecoder();
-      let buf = ""; let ac = "";
+      let buf = "";
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -105,9 +111,17 @@ export function CharacterTestDialog({ char, bookId }: Props) {
       if (ac.trim()) {
         setMessages((prev) => [...prev, { role: "assistant", content: ac.trim() }]);
       }
-    } catch {
-      setMessages((prev) => [...prev, { role: "assistant", content: "（对话失败，请重试）" }]);
+    } catch (e: any) {
+      if (e?.name === "AbortError") {
+        // 手动停止：已生成部分保留
+        if (ac.trim()) {
+          setMessages((prev) => [...prev, { role: "assistant", content: ac.trim() + "（已停止）" }]);
+        }
+      } else {
+        setMessages((prev) => [...prev, { role: "assistant", content: "（对话失败，请重试）" }]);
+      }
     }
+    abortRef.current = null;
     setIsLoading(false);
     setStreaming("");
   };
@@ -188,9 +202,21 @@ export function CharacterTestDialog({ char, bookId }: Props) {
             }
           }}
         />
-        <Button size="icon" onClick={send} disabled={isLoading || !input.trim()}>
-          <Send className="size-4" />
-        </Button>
+        {isLoading ? (
+          <Button
+            size="icon"
+            variant="destructive"
+            className="rounded-full shrink-0"
+            onClick={() => abortRef.current?.abort()}
+            title="停止生成（已生成的部分保留）"
+          >
+            <Square className="size-4" />
+          </Button>
+        ) : (
+          <Button size="icon" onClick={send} disabled={!input.trim()}>
+            <Send className="size-4" />
+          </Button>
+        )}
       </div>
     </div>
   );

@@ -197,12 +197,18 @@ export class CharTestService {
           messages,
           stream: true,
           max_tokens: 2048,
+          // 关闭思考链：不关的话 reasoning_content 会以思考过程流给前端，
+          // 且思考消耗 max_tokens 导致对白为空（与快捷生成同款病）
+          thinking: { type: 'disabled' },
         }),
         signal: AbortSignal.timeout(60000),
       });
 
       if (!response.ok) {
         // 携带上游状态码：前端可区分 401/403（Key 失效）与 429（限流）
+        console.log(
+          `[char-test] AI error status ${response.status}, model ${model}`,
+        );
         res.write(
           `event: error\ndata: ${JSON.stringify({ message: 'AI 请求失败', status: response.status })}\n\n`,
         );
@@ -235,7 +241,8 @@ export class CharTestService {
           if (line.startsWith('data: ') && line.slice(6) !== '[DONE]') {
             try {
               const delta = JSON.parse(line.slice(6)).choices?.[0]?.delta;
-              const content = delta?.content || delta?.reasoning_content;
+              // 只转发对白正文：reasoning_content 是思考过程，泄露给用户会看到角色内心独白
+              const content = delta?.content;
               if (content) {
                 fullContent += content;
                 // JSON.stringify：chunk 含换行时按 SSE 规范编码，客户端解析不丢换行
@@ -246,6 +253,10 @@ export class CharTestService {
             }
           }
         }
+      }
+
+      if (!fullContent) {
+        console.log(`[char-test] empty reply (model ${model}), msg:`, message.slice(0, 50));
       }
 
       // 保存 AI 回复到历史

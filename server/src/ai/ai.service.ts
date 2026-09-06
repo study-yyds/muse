@@ -385,6 +385,16 @@ export class AiService {
     );
   }
 
+  /** 重新生成卷纲：按引导摘要+世界观+主角重写整套大纲节点（替换旧节点，章节解绑） */
+  async regenerateOutline(
+    userId: string,
+    bookId: string,
+    model?: string,
+    keyId?: string,
+  ) {
+    return this.chapterOps.regenerateOutline(userId, bookId, model, keyId);
+  }
+
   /** 解析细化节点的 JSON 数组（代码块/裸数组容错）；至少 3 个有效节点才返回 */
   static parseOutlineNodesJson = aiUtils.parseOutlineNodesJson;
 

@@ -61,10 +61,31 @@ export class ChaptersService {
       })
       .from(schema.chapters)
       .where(eq(schema.chapters.book_id, bookId));
+    const sortOrder = (last?.max ?? 0) + 1;
+
+    // 自动绑定：章纲生成时保存的行→节点映射（快捷生成作品免手动绑定）
+    let boundNode: string | null = null;
+    try {
+      const [settings] = await db
+        .select({ extra: schema.book_settings.extra })
+        .from(schema.book_settings)
+        .where(eq(schema.book_settings.book_id, bookId))
+        .limit(1);
+      const binding = ((settings?.extra ?? {}) as Record<string, any>)
+        ?.chapter_node_binding as Record<string, string> | undefined;
+      boundNode = binding?.[String(sortOrder)] ?? null;
+    } catch {
+      /* 绑定查询失败不阻断建章 */
+    }
 
     const [ch] = await db
       .insert(schema.chapters)
-      .values({ book_id: bookId, title, sort_order: (last?.max ?? 0) + 1 })
+      .values({
+        book_id: bookId,
+        title,
+        sort_order: sortOrder,
+        ...(boundNode ? { bound_outline_node_id: boundNode } : {}),
+      })
       .returning();
     return ch;
   }

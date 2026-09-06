@@ -56,7 +56,11 @@ export class BooksService {
       .from(schema.users)
       .where(eq(schema.users.user_id, userId));
 
-    if (user && count.count >= user.book_limit) {
+    // 作品数配额：NULL 或 -1 表示无限（users 表注释语义）。
+    // 此前直接 count >= book_limit 判断，-1 时恒成立——所有默认用户都会撞上"已达上限"的假上限
+    const limit = user?.book_limit;
+    const unlimited = limit == null || limit < 0;
+    if (user && !unlimited && count.count >= (limit as number)) {
       throw new Error('已达到免费作品数上限');
     }
 
@@ -139,25 +143,24 @@ export class BooksService {
       .where(eq(schema.books.book_id, bookId));
   }
 
-  /** 批量软删除：并发执行；取消进行中的 AI 生成；只删属于当前用户且未删除的 */
+  /** 批量软删除：一条 UPDATE 完成（N 本只 1 次数据库往返，旧实现逐本 N 次跨洋往返）；只删属于当前用户且未删除的 */
   async softDeleteBatch(userId: string, bookIds: string[]) {
     const db = getDb();
     if (bookIds.length === 0) return;
-    await Promise.all(
-      bookIds.map(async (bookId) => {
-        abortBookRequests(bookId);
-        await db
-          .update(schema.books)
-          .set({ deleted_at: sql`NOW()` })
-          .where(
-            and(
-              eq(schema.books.book_id, bookId),
-              eq(schema.books.user_id, userId),
-              isNull(schema.books.deleted_at),
-            ),
-          );
-      }),
-    );
+    for (const bookId of bookIds) abortBookRequests(bookId);
+    await db
+      .update(schema.books)
+      .set({ deleted_at: sql`NOW()` })
+      .where(
+        and(
+          eq(schema.books.user_id, userId),
+          isNull(schema.books.deleted_at),
+          sql`${schema.books.book_id} IN (${sql.join(
+            bookIds.map((id) => sql`${id}`),
+            sql`,`,
+          )})`,
+        ),
+      );
   }
 
   // 永久删除（显式清理子表，保底 DB FK 可能未配置）
@@ -218,37 +221,37 @@ export class BooksService {
       ownedIds.map((id) => sql`${id}`),
       sql`,`,
     )})`;
-    // 事务化：7 张表全部成功或全部回滚（避免部分删除留孤儿数据）
-    await db.transaction(async (tx) => {
-      await tx.delete(schema.characters).where(inIds);
-      await tx.delete(schema.outlines).where(inIds);
-      await tx.delete(schema.world_settings).where(inIds);
-      await tx.delete(schema.chapters).where(inIds);
-      await tx.delete(schema.book_settings).where(inIds);
-      await tx.delete(schema.ai_chat_sessions).where(inIds);
-      await tx.delete(schema.books).where(inIds);
-    });
+    // neon-http 驱动不支持事务：子表并行删除（6 张表收敛为 1 波延迟），主表最后删（FK 保底顺序）。
+    // 所有 DELETE 均幂等，中途失败可再次执行补齐剩余表，不会产生重复删除问题
+    await Promise.all([
+      db.delete(schema.characters).where(inIds),
+      db.delete(schema.outlines).where(inIds),
+      db.delete(schema.world_settings).where(inIds),
+      db.delete(schema.chapters).where(inIds),
+      db.delete(schema.book_settings).where(inIds),
+      db.delete(schema.ai_chat_sessions).where(inIds),
+    ]);
+    await db.delete(schema.books).where(inIds);
   }
 
-  /** 批量恢复：并发执行，7 天窗口校验，只恢复属于当前用户的 */
+  /** 批量恢复：一条 UPDATE（N 本 1 次往返）；7 天窗口校验，只恢复属于当前用户的 */
   async restoreBatch(userId: string, bookIds: string[]) {
     const db = getDb();
     if (bookIds.length === 0) return;
-    await Promise.all(
-      bookIds.map(async (bookId) => {
-        await db
-          .update(schema.books)
-          .set({ deleted_at: null })
-          .where(
-            and(
-              eq(schema.books.book_id, bookId),
-              eq(schema.books.user_id, userId),
-              sql`${schema.books.deleted_at} IS NOT NULL`,
-              sql`${schema.books.deleted_at} > NOW() - INTERVAL '7 days'`,
-            ),
-          );
-      }),
-    );
+    await db
+      .update(schema.books)
+      .set({ deleted_at: null })
+      .where(
+        and(
+          eq(schema.books.user_id, userId),
+          sql`${schema.books.deleted_at} IS NOT NULL`,
+          sql`${schema.books.deleted_at} > NOW() - INTERVAL '7 days'`,
+          sql`${schema.books.book_id} IN (${sql.join(
+            bookIds.map((id) => sql`${id}`),
+            sql`,`,
+          )})`,
+        ),
+      );
   }
 
   // 恢复（7 天窗口内），返回是否成功

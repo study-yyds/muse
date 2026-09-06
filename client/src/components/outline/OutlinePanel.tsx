@@ -21,7 +21,7 @@ import { useThrottle } from "@/hooks/use-throttle";
 import { SaveAsTemplateDialog } from "@/components/templates/SaveAsTemplateDialog";
 import { cn } from "@/lib/utils";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Plus, Pencil, Trash2, CircleCheck, ListTree, BookmarkPlus, Split, Loader2 } from "lucide-react";
+import { Plus, Pencil, Trash2, CircleCheck, ListTree, BookmarkPlus, Split, Loader2, RefreshCw } from "lucide-react";
 interface Props {
   bookId: string;
 }
@@ -57,6 +57,9 @@ export function OutlinePanel({ bookId }: Props) {
   // 节点细化：粗节点 → 8-10 个细节点（生成后直接应用，审阅发生在大纲页：行内编辑/批量删除/重新细化）
   const [refineTarget, setRefineTarget] = useState<OutlineChapterData | null>(null);
   const [refiningNodeId, setRefiningNodeId] = useState<string | null>(null);
+  // 重新生成卷纲：按引导对话的设定重写整套大纲节点
+  const [regenOpen, setRegenOpen] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
 
   const doRefineNode = async () => {
     if (!refineTarget) return;
@@ -95,7 +98,7 @@ export function OutlinePanel({ bookId }: Props) {
   };
   const [extendingOutlines, setExtendingOutlines] = useState(false);
   const [extendDialogOpen, setExtendDialogOpen] = useState(false);
-  const [extendCount, setExtendCount] = useState(10);
+  const [extendCount] = useState(10);
   const [extendNodeId, setExtendNodeId] = useState("");
 
   // 生成/续生章纲（无卷纲时服务端会自动先补卷纲；可选章数与目标节点）
@@ -261,6 +264,29 @@ export function OutlinePanel({ bookId }: Props) {
     setSelectedIds(new Set());
   });
 
+  // 按引导对话的设定重新生成整套卷纲（替换现有节点）
+  const regenerateOutline = async () => {
+    setRegenerating(true);
+    try {
+      const res = await authFetch("/api/ai/outline/regenerate", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${localStorage.getItem("token")}`,
+        },
+        body: JSON.stringify({ book_id: bookId }),
+      });
+      const d = await res.json();
+      if (d.code !== 200) throw new Error(d.message || "重新生成失败");
+      toast({ title: `卷纲已重新生成（${d.data?.count ?? 0} 个节点）` });
+      queryClient.invalidateQueries({ queryKey: ["outline", bookId] });
+    } catch (e: any) {
+      toast({ title: e?.message || "重新生成失败，请重试", variant: "destructive" });
+    } finally {
+      setRegenerating(false);
+    }
+  };
+
   const addChapter = useThrottle(() => {
     if (addChapterMutation.isPending) return;
     counterRef.current += 1;
@@ -299,6 +325,16 @@ export function OutlinePanel({ bookId }: Props) {
               <BookmarkPlus className="size-4" />保存为模板
             </Button>
           )}
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={regenerating}
+            onClick={() => setRegenOpen(true)}
+            title="按引导对话的设定重新生成整套大纲节点（替换现有节点）"
+          >
+            <RefreshCw className={cn("size-4", regenerating && "animate-spin")} />
+            {regenerating ? "生成中..." : "重新生成卷纲"}
+          </Button>
           <Button size="sm" onClick={addChapter} disabled={addChapterMutation.isPending}>
             <Plus className="size-4" />添加节点
           </Button>
@@ -350,7 +386,6 @@ export function OutlinePanel({ bookId }: Props) {
                         setEditingChapter,
                         startEdit,
                         saveEdit,
-                        deleteChapterMutation,
                         toggleStatusMutation,
                         selectedIds,
                         toggleSelect,
@@ -381,7 +416,6 @@ export function OutlinePanel({ bookId }: Props) {
                   setEditingChapter,
                   startEdit,
                   saveEdit,
-                  deleteChapterMutation,
                   toggleStatusMutation,
                   selectedIds,
                   toggleSelect,
@@ -450,89 +484,89 @@ export function OutlinePanel({ bookId }: Props) {
             </p>
           )}
           {chapterOutlines.length > 0 && outlinesOpen && (
-                <div className="space-y-1.5">
-                  {chapterOutlines.map((line, i) => (
-                    <div
-                      key={i}
-                      className="group flex items-start gap-2 rounded-md px-3 py-2 bg-muted/30"
+            <div className="space-y-1.5">
+              {chapterOutlines.map((line, i) => (
+                <div
+                  key={i}
+                  className="group flex items-start gap-2 rounded-md px-3 py-2 bg-muted/30"
+                >
+                  <Checkbox
+                    checked={selectedOutlineIdx.has(i)}
+                    onChange={() => toggleOutlineSelect(i)}
+                    className="mt-0.5 shrink-0"
+                    title="选择"
+                  />
+                  <span className="shrink-0 text-xs font-medium text-primary mt-0.5">
+                    第{i + 1}章
+                  </span>
+                  {outlineEditIdx === i ? (
+                    <textarea
+                      autoFocus
+                      value={outlineEditText}
+                      onChange={(e) => setOutlineEditText(e.target.value)}
+                      onBlur={() => {
+                        const v = outlineEditText.trim();
+                        const next = [...chapterOutlines];
+                        next[i] = v ? `第${i + 1}章 | ${v}` : next[i];
+                        saveChapterOutlines(next);
+                        setOutlineEditIdx(null);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") {
+                          setOutlineEditIdx(null);
+                          setOutlineEditText("");
+                        }
+                      }}
+                      rows={3}
+                      placeholder="目标= | 阻碍= | 爽点= | 钩子="
+                      className="flex-1 min-w-0 bg-transparent text-xs text-muted-foreground outline-none resize-none"
+                    />
+                  ) : (
+                    <span className="flex-1 min-w-0 text-xs text-muted-foreground whitespace-pre-wrap">
+                      {stripOutlinePrefix(line)}
+                    </span>
+                  )}
+                  <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      title="编辑"
+                      onClick={() => {
+                        setOutlineEditIdx(i);
+                        setOutlineEditText(stripOutlinePrefix(line));
+                      }}
                     >
-                      <Checkbox
-                        checked={selectedOutlineIdx.has(i)}
-                        onChange={() => toggleOutlineSelect(i)}
-                        className="mt-0.5 shrink-0"
-                        title="选择"
-                      />
-                      <span className="shrink-0 text-xs font-medium text-primary mt-0.5">
-                        第{i + 1}章
-                      </span>
-                      {outlineEditIdx === i ? (
-                        <textarea
-                          autoFocus
-                          value={outlineEditText}
-                          onChange={(e) => setOutlineEditText(e.target.value)}
-                          onBlur={() => {
-                            const v = outlineEditText.trim();
-                            const next = [...chapterOutlines];
-                            next[i] = v ? `第${i + 1}章 | ${v}` : next[i];
-                            saveChapterOutlines(next);
-                            setOutlineEditIdx(null);
-                          }}
-                          onKeyDown={(e) => {
-                            if (e.key === "Escape") {
-                              setOutlineEditIdx(null);
-                              setOutlineEditText("");
-                            }
-                          }}
-                          rows={3}
-                          placeholder="目标= | 阻碍= | 爽点= | 钩子="
-                          className="flex-1 min-w-0 bg-transparent text-xs text-muted-foreground outline-none resize-none"
-                        />
-                      ) : (
-                        <span className="flex-1 min-w-0 text-xs text-muted-foreground whitespace-pre-wrap">
-                          {stripOutlinePrefix(line)}
-                        </span>
-                      )}
-                      <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-                        <Button
-                          variant="ghost"
-                          size="icon-xs"
-                          title="编辑"
-                          onClick={() => {
-                            setOutlineEditIdx(i);
-                            setOutlineEditText(stripOutlinePrefix(line));
-                          }}
-                        >
-                          <Pencil className="size-3" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon-xs"
-                          className="text-destructive hover:text-destructive"
-                          title="删除"
-                          onClick={() => setRemoveOutlineIdx(i)}
-                        >
-                          <Trash2 className="size-3" />
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
-                  <Button
-                    variant="outline"
-                    size="xs"
-                    onClick={() => {
-                      const next = [
-                        ...chapterOutlines,
-                        `第${chapterOutlines.length + 1}章 | 目标= | 阻碍= | 爽点= | 钩子=`,
-                      ];
-                      saveChapterOutlines(next);
-                      setOutlineEditIdx(next.length - 1);
-                      setOutlineEditText("目标= | 阻碍= | 爽点= | 钩子=");
-                    }}
-                  >
-                    添加一章
-                  </Button>
+                      <Pencil className="size-3" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      className="text-destructive hover:text-destructive"
+                      title="删除"
+                      onClick={() => setRemoveOutlineIdx(i)}
+                    >
+                      <Trash2 className="size-3" />
+                    </Button>
+                  </div>
                 </div>
-              )}
+              ))}
+              <Button
+                variant="outline"
+                size="xs"
+                onClick={() => {
+                  const next = [
+                    ...chapterOutlines,
+                    `第${chapterOutlines.length + 1}章 | 目标= | 阻碍= | 爽点= | 钩子=`,
+                  ];
+                  saveChapterOutlines(next);
+                  setOutlineEditIdx(next.length - 1);
+                  setOutlineEditText("目标= | 阻碍= | 爽点= | 钩子=");
+                }}
+              >
+                添加一章
+              </Button>
+            </div>
+          )}
         </ScrollArea>
       )}
 
@@ -579,6 +613,18 @@ export function OutlinePanel({ bookId }: Props) {
       />
 
       <ConfirmDialog
+        open={regenOpen}
+        onOpenChange={(o) => !o && setRegenOpen(false)}
+        title="重新生成卷纲"
+        description="将按引导对话的设定重新生成整套大纲节点，替换现有全部节点（章纲与正文不受影响，已绑定节点的章节会解绑）。确定重新生成？"
+        confirmText="重新生成"
+        onConfirm={async () => {
+          setRegenOpen(false);
+          await regenerateOutline();
+        }}
+      />
+
+      <ConfirmDialog
         open={removeNode != null}
         onOpenChange={(o) => !o && setRemoveNode(null)}
         title="删除大纲节点"
@@ -607,16 +653,12 @@ export function OutlinePanel({ bookId }: Props) {
           </DialogHeader>
           <div className="space-y-3">
             <div className="space-y-1.5">
-              <Label className="text-sm">章数</Label>
-              <select
-                value={extendCount}
-                onChange={(e) => setExtendCount(Number(e.target.value))}
-                className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm"
-              >
-                <option value={5}>5 章</option>
-                <option value={10}>10 章</option>
-                <option value={15}>15 章</option>
-              </select>
+
+              {extendNodeId && (
+                <p className="text-xs text-muted-foreground">
+                  细节点通常 1-4 章；若选的是粗节点，建议先"细化节点"拆成细节点再写章纲（AI 只会写该阶段开头过渡章）。
+                </p>
+              )}
             </div>
             <div className="space-y-1.5">
               <Label className="text-sm">围绕节点（可选）</Label>
@@ -662,7 +704,6 @@ function renderChapter(
   setEditingChapter: (v: string | null) => void,
   startEdit: (ch: OutlineChapterData) => void,
   saveEdit: () => void,
-  deleteMutation: { mutate: (id: string) => void },
   toggleStatusMutation: { mutate: (p: { chapterId: string; status: string }) => void },
   selectedIds?: Set<string>,
   toggleSelect?: (id: string) => void,

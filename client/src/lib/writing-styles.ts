@@ -9,4 +9,6 @@ export const WRITING_STYLES = [
   { value: "serious", label: "文艺细腻" },
   { value: "ancient", label: "古风" },
   { value: "colloquial", label: "平实口语" },
+  { value: "zhihu", label: "知乎盐选体" },
+  { value: "life-flow", label: "年代生活流" },
 ];

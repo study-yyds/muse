@@ -35,12 +35,27 @@ export class ChatOps {
     const db = getDb();
     const ct = params.context_type;
 
-    // 引导模式：使用引导 prompt，无需加载作品上下文
-    if (params.guide_mode) {
+    // 引导模式（列表页创作引导 guide_mode，或书内"引导"tab context_type=guide）
+    if (params.guide_mode || ct === 'guide') {
       try {
+        let guideContext = params.guide_context;
+        let contextLabel = '用户的初始想法';
+        if (params.book_id) {
+          // 书内引导：以创作导师模式讨论全书方向，注入作品现状
+          // （已确认设定+关键节点+卷纲+角色+世界观+章节进度）
+          await this.host.checkBookOwnership(
+            params.book_id,
+            params.user_id ?? '',
+          );
+          const ctx = await this.buildBookGuideContext(params.book_id);
+          guideContext = ctx?.text || params.guide_context;
+          contextLabel = '作品现状';
+          if (!params.guide_type && ctx?.type) params.guide_type = ctx.type;
+        }
         const basePrompt = aiUtils.buildGuideSystemPrompt(
-          params.guide_context,
+          guideContext,
           params.guide_type,
+          contextLabel,
         );
         // 长对话记忆：先压缩再截断——早期作者发言压进【已确认设定】注入 system，
         // 否则 40 条窗口外的设定会被 sanitizeMessages 直接丢弃
@@ -455,7 +470,7 @@ ${chars.map((c) => c.name).join('、')}
       }
     }
     const styleBlock = styleNote
-      ? `\n【文风要求——严格遵守】\n${styleNote}`
+      ? `\n【文风要求——严格遵守，优先级高于题材惯性（如年代文的慢热细腻写法）与光标前文文风】\n${styleNote}`
       : '';
     // 大纲/角色/世界观上下文注入书级风格（正文走 styleBlock，面板切换只影响正文）
     const bookStyleBlock = bookStyleNote
@@ -487,16 +502,27 @@ ${worldForWrite || '（暂无世界观设定）'}
 ${styleBlock}`;
 
     // 改写与续写任务不同：改写保事实换形式，续写推进剧情
+    // 改写体量硬约束：从用户消息中提取选中原文，算具体字数额度
+    // （"0.5-1.5 倍"式比例指令模型执行很弱——"去ai味"实测把 2 句扩成 1300 字）
+    const rewriteMatch = params.rewrite
+      ? params.message?.match(/【改写以下选中文本】\n([\s\S]*?)\n\n【用户指令】/)
+      : null;
+    const origLen = rewriteMatch?.[1]?.length ?? 0;
+    const lengthLine =
+      origLen > 0
+        ? `\n- 原文约 ${origLen} 字：输出字数必须落在 ${Math.max(5, Math.round(origLen * 0.5))}-${Math.round(origLen * 1.5)} 字之间（硬性要求，禁止改写变扩写）`
+        : '';
+
     const writeInstruction = params.rewrite
       ? `【改写指引】
-- 严格按用户指令改写选中文本（压缩/扩写/换文风/调情绪等），原文事实（人名/道具/时间/已发生事件）不得改动
-- 输出只包含改写后的文本本身，长度与指令匹配（未指定时与原文相近）
-- 文风与光标前文保持一致，衔接前后文自然`
+- 严格按用户指令改写选中文本（压缩/扩写/换文风/调情绪等），原文事实一律不得改动：人名/称谓、道具及其归属、时间与时态（"明天"不得写成"今天"）、事件是否已发生、人物状态与设定
+- 输出只包含改写后的文本本身${lengthLine}
+- 文风以【文风要求】为准（若已注入）；未指定时与光标前文保持一致，衔接前后文自然`
       : `【写作指引】
 - 续写时自然衔接光标前文的语气和节奏，不要重复光标后文的内容
 - 每 300-500 字推进一次剧情（新信息/冲突/反转），禁止原地描写
 - 对话每句一行，用对话推进剧情；段末可留钩子
-- 文风与光标前文保持一致：前文短句你就短句，前文白描你就白描
+- 文风以【文风要求】为准（若已注入）；未指定时与光标前文保持一致：前文短句你就短句，前文白描你就白描
 - 若角色在故事进程中经历了重大事件，其言行要有对应变化
 - 本章目标约 2000-5000 字：一次写不完就写到自然停点，作者会继续
 - 当前大纲节点是剧情大方向（通常需要多章完成），本章只推进其中一段，禁止把整个节点情节压缩进一章
@@ -507,13 +533,14 @@ ${styleBlock}`;
     const writeReplyFormat = `【回复格式——严格遵守】
 你的回复分为两部分：
 1. 正文内容（纯自然语言：不含任何 JSON 标记，禁止 Markdown 格式——不用 # 标题、不用 **加粗**、不用列表符号，章节标题直接写成"第N章 标题"一行）
-2. 最后一行为操作指令 JSON（单独一行）
+2. 最后一行为操作指令 JSON（单独一行），只允许以下格式：
+{"action":"insert_content","content":"正文"}
 
 示例：
 久仰尊颜，今日得见，果然名不虚传。
 {"action":"insert_content","content":"久仰尊颜，今日得见，果然名不虚传。"}
 
-如果只是闲聊讨论，则只输出自然语言，不需要 JSON。`;
+如果只是闲聊讨论，则只输出自然语言，不需要 JSON 行，更不要自创其他字段名（如"钩子"、"悬念"之类）。`;
 
     const prompts: Record<string, string> = {
       write: `你是专业小说写作助手，正在帮助作者完成当前的写作章节。
@@ -540,7 +567,11 @@ ${chapterContext}
 
 【技术规则】纯文本，不用Markdown。环境≤3行。不写大段独白。文风与上文保持一致。
 
-正文直接输出，最后一行操作指令 JSON。闲聊只输出自然语言。`,
+【回复格式——严格遵守】
+正文直接输出（纯自然语言，正文中禁止出现任何 JSON 标记）。
+最后一行输出操作指令 JSON，且只允许这一种格式：
+{"action":"insert_content","content":"正文"}
+如果没有需要执行的操作（闲聊/讨论/提问），只输出自然语言，不要输出 JSON 行，更不要自创其他字段名。`,
 
       outline: `你是小说大纲规划助手，帮作者把零散的想法变成清晰的故事结构。
 
@@ -661,7 +692,7 @@ ${worldText.slice(0, 1000)}
 
     // 加载引导讨论上下文（创作概要），追加到所有 AI 对话的 system prompt
     let guideBlock = '';
-    if (params.book_id && !isShort) {
+    if (params.book_id) {
       try {
         const [bs] = await db
           .select({ extra: schema.book_settings.extra })
@@ -690,6 +721,25 @@ ${extra.guide_full_log ? `\n【引导讨论原始记录——参考细节】\n${
       const { messages: memWindow, memoryBlock: fallbackMemoryBlock } =
         aiUtils.buildChatMemory(rawMsgs);
       let chatMemoryBlock = fallbackMemoryBlock;
+      // 会话内引导对话（客户端 guide 标记消息）：作者在引导中确定的设定
+      // 必须被生成遵守——单独注入 system prompt，不受 40 条记忆窗口截断影响
+      let guideChatBlock = '';
+      if (rawMsgs.some((m: any) => m?.guide)) {
+        const guideMsgs = rawMsgs
+          .filter((m: any) => m?.guide && m?.content)
+          .map(
+            (m: any) =>
+              `${m.role === 'user' ? '作者' : 'AI'}：${sanitizePrompt(m.content)
+                .replace(/\s+/g, ' ')
+                .trim()
+                .slice(0, 300)}`,
+          );
+        if (guideMsgs.length) {
+          guideChatBlock = `\n\n【引导讨论——作者在引导对话中确定的设定，生成内容必须严格遵守（按时间顺序）】\n${guideMsgs
+            .slice(-16)
+            .join('\n')}\n`;
+        }
+      }
       const cleanMessages = memWindow.length
         ? sanitizeMessages(memWindow)
         : [{ role: 'user', content: sanitizePrompt(params.message) }];
@@ -944,7 +994,7 @@ ${own?.facts ? `【本章已确立】\n${own.facts}\n` : ''}${recent?.facts ? `�
       }
       void this.streamChatToClient(
         res,
-        systemPrompt + guideBlock + chatMemoryBlock + factsBlock + handoffBlock,
+        systemPrompt + guideBlock + guideChatBlock + chatMemoryBlock + factsBlock + handoffBlock,
         cleanMessages,
         resolved.model,
         isShort ? 24576 : 8192,
@@ -969,6 +1019,111 @@ ${own?.facts ? `【本章已确立】\n${own.facts}\n` : ''}${recent?.facts ? `�
       );
       res.end();
     }
+  }
+
+  /**
+   * 书内引导对话的作品现状块（≤2000 字）：
+   * 已确认设定+关键节点（按段提取）+卷纲节点+角色+世界观分区+章节进度。
+   * 各子查询失败不阻断引导对话。type 供引导 prompt 选择短篇/长篇篇幅注意。
+   */
+  private async buildBookGuideContext(
+    bookId: string,
+  ): Promise<{ text: string; type?: string }> {
+    const db = getDb();
+    const [book] = await db
+      .select({ title: schema.books.title, type: schema.books.type })
+      .from(schema.books)
+      .where(eq(schema.books.book_id, bookId))
+      .limit(1);
+    if (!book) return { text: '' };
+    const parts: string[] = [
+      `书名《${book.title}》（${book.type === 'short' ? '短篇' : '长篇'}）`,
+    ];
+    try {
+      const [settings] = await db
+        .select({ extra: schema.book_settings.extra })
+        .from(schema.book_settings)
+        .where(eq(schema.book_settings.book_id, bookId))
+        .limit(1);
+      const summary =
+        (((settings?.extra ?? {}) as Record<string, any>)?.guide_summary as
+          | string
+          | undefined) ?? '';
+      if (summary) {
+        const s = aiUtils.extractGuideSections(summary);
+        if (s.confirmed) parts.push(`【已确认设定】\n${s.confirmed.slice(0, 1000)}`);
+        if (s.keyNodes) parts.push(`【关键节点】\n${s.keyNodes.slice(0, 500)}`);
+      }
+      const [outline] = await db
+        .select({ outline_id: schema.outlines.outline_id })
+        .from(schema.outlines)
+        .where(eq(schema.outlines.book_id, bookId))
+        .limit(1);
+      if (outline) {
+        const nodes = await db
+          .select({
+            title: schema.outline_chapters.title,
+            summary: schema.outline_chapters.summary,
+          })
+          .from(schema.outline_chapters)
+          .where(eq(schema.outline_chapters.outline_id, outline.outline_id))
+          .orderBy(schema.outline_chapters.sort_order)
+          .limit(15);
+        if (nodes.length) {
+          parts.push(
+            `【卷纲节点】\n${nodes.map((n) => `- ${n.title}：${n.summary}`).join('\n')}`,
+          );
+        }
+      }
+      const chars = await db
+        .select({ name: schema.characters.name, identity: schema.characters.identity })
+        .from(schema.characters)
+        .where(eq(schema.characters.book_id, bookId))
+        .limit(10);
+      if (chars.length) {
+        parts.push(
+          `【角色】\n${chars
+            .map((c) => `- ${c.name}${c.identity ? `（${c.identity}）` : ''}`)
+            .join('\n')}`,
+        );
+      }
+      const [world] = await db
+        .select({ sections: schema.world_settings.sections })
+        .from(schema.world_settings)
+        .where(eq(schema.world_settings.book_id, bookId))
+        .limit(1);
+      const wsections = (world?.sections ?? []) as Array<{ name: string }>;
+      if (wsections.length) {
+        parts.push(`【世界观分区】${wsections.map((s) => s.name).join('、')}`);
+      }
+      const [cnt] = await db
+        .select({ n: sql<number>`count(*)::int` })
+        .from(schema.chapters)
+        .where(eq(schema.chapters.book_id, bookId));
+      const recent = await db
+        .select({ title: schema.chapters.title, summary: schema.chapters.summary })
+        .from(schema.chapters)
+        .where(
+          and(
+            eq(schema.chapters.book_id, bookId),
+            isNotNull(schema.chapters.summary),
+          ),
+        )
+        .orderBy(desc(schema.chapters.sort_order))
+        .limit(3);
+      parts.push(
+        `【进度】共 ${cnt?.n ?? 0} 章${
+          recent.length
+            ? `；最近章节：${recent
+                .map((c) => `《${c.title}》${(c.summary || '').slice(0, 60)}`)
+                .join('；')}`
+            : ''
+        }`,
+      );
+    } catch {
+      /* 作品上下文读取失败不阻断引导对话 */
+    }
+    return { text: parts.join('\n\n').slice(0, 2000), type: book.type };
   }
 
   async streamChatToClient(
@@ -1152,6 +1307,7 @@ ${own?.facts ? `【本章已确立】\n${own.facts}\n` : ''}${recent?.facts ? `�
         }
 
         // 4. 逐级尝试 parse（加容错修复）
+        let extracted: any = null;
         for (const tryStr of attempts) {
           let parsed: any = null;
           try {
@@ -1177,6 +1333,7 @@ ${own?.facts ? `【本章已确立】\n${own.facts}\n` : ''}${recent?.facts ? `�
             }
           }
           if (parsed) {
+            extracted = parsed;
             if (Array.isArray(parsed) && parsed.length > 0) {
               res.write(`event: action\ndata: ${JSON.stringify(parsed)}\n\n`);
             } else if (parsed.action) {
@@ -1184,6 +1341,13 @@ ${own?.facts ? `【本章已确立】\n${own.facts}\n` : ''}${recent?.facts ? `�
             }
             break;
           }
+        }
+        // 诊断：action 提取失败时打日志（世界观"没有采纳按钮"定位用）
+        if (!extracted) {
+          console.log(
+            '[chat] no action extracted, content tail:',
+            fullContent.slice(-200).replace(/\n/g, ' | '),
+          );
         }
       } catch {
         /* empty */

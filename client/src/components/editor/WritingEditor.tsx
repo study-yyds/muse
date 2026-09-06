@@ -203,7 +203,7 @@ export function WritingEditor({ bookId, bookType }: Props) {
 
   const createChapterMutation = useMutation({
     mutationFn: (title: string) =>
-      api.post(`/books/${bookId}/chapters`, { title }),
+      api.post<{ data: { chapter_id: string } }>(`/books/${bookId}/chapters`, { title }),
     onSuccess: (res: { data: { chapter_id: string } }) => {
       queryClient.invalidateQueries({ queryKey: ["chapters", bookId] });
       setActiveChapterId(res.data.chapter_id);
@@ -639,12 +639,16 @@ export function WritingEditor({ bookId, bookType }: Props) {
                 知乎包装
               </Button>
             )}
-            {selectedText && (
+            {(selectedText || bookType === 'short') && (
               <Button
                 size="sm"
                 variant="outline"
                 onClick={() => setPromoOpen(true)}
-                title="用选中文字生成推文视频"
+                title={
+                  selectedText
+                    ? "用选中文字生成推文视频"
+                    : "用全文生成推文视频（短篇）"
+                }
               >
                 <Video className="size-4 mr-1" />
                 推文视频
@@ -742,7 +746,12 @@ export function WritingEditor({ bookId, bookType }: Props) {
         }}
       />
 
-      <PromoVideoDialog bookId={bookId} open={promoOpen} onOpenChange={setPromoOpen} />
+      <PromoVideoDialog
+        bookId={bookId}
+        open={promoOpen}
+        onOpenChange={setPromoOpen}
+        defaultScript={!selectedText && isShort ? editorContent : undefined}
+      />
       <ZhihuPackDialog
         bookId={bookId}
         content={editorContent}

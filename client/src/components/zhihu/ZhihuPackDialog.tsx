@@ -1,5 +1,5 @@
 import { authFetch } from "@/services/api";
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -31,8 +31,13 @@ export function ZhihuPackDialog({
   const [titles, setTitles] = useState<string[]>([]);
   const [openings, setOpenings] = useState<string[]>([]);
   const [error, setError] = useState('');
+  // content 用 ref 捕获：只在打开那一刻生成一次。
+  // 此前依赖数组含 content——替换开篇后正文变化会重新触发 effect，
+  // 清空候选重新生成（"点替换出现重新生成/标题又冒出来"的根因）
+  const contentRef = useRef(content);
+  contentRef.current = content;
 
-  // 打开时生成
+  // 打开时生成（仅 open/bookId 驱动，正文变化不重跑）
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
@@ -49,7 +54,7 @@ export function ZhihuPackDialog({
             'Content-Type': 'application/json',
             Authorization: `Bearer ${token}`,
           },
-          body: JSON.stringify({ book_id: bookId, content: content.slice(0, 500) }),
+          body: JSON.stringify({ book_id: bookId, content: contentRef.current.slice(0, 500) }),
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json = await res.json();
@@ -68,7 +73,8 @@ export function ZhihuPackDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, bookId, content]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, bookId]);
 
   const copyTitle = async (title: string) => {
     try {
@@ -82,6 +88,8 @@ export function ZhihuPackDialog({
   const applyOpening = (opening: string) => {
     onApplyOpening(opening);
     toast({ title: '开头已替换，记得保存' });
+    // 替换完成即关闭：避免弹窗停留时正文变化引发任何状态纠缠
+    onOpenChange(false);
   };
 
   return (

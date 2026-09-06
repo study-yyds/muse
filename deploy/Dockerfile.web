@@ -1,0 +1,19 @@
+# Muse web 镜像（Vite 构建产物 + Nginx 静态托管 + /api /uploads 反代）
+
+# ---------- 构建阶段 ----------
+FROM node:20-slim AS build
+WORKDIR /app
+RUN npm install -g pnpm@11
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY shared/package.json shared/
+COPY client/package.json client/
+COPY server/package.json server/
+RUN pnpm install --frozen-lockfile
+COPY . .
+RUN pnpm --filter @muse/client build
+
+# ---------- 运行阶段 ----------
+FROM nginx:alpine
+COPY --from=build /app/client/dist /usr/share/nginx/html
+COPY deploy/nginx.conf /etc/nginx/conf.d/default.conf
+EXPOSE 80
