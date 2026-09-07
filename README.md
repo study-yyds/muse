@@ -31,7 +31,8 @@ muse/
 ├── client/          # React 前端（Vite + Tailwind）
 ├── server/          # NestJS 后端（Drizzle + Neon）
 ├── shared/          # 前后端共享 TS 类型（@muse/shared）
-└── deploy/          # 生产部署（Dockerfile / docker-compose / nginx.conf / .env.example）
+├── deploy/          # 生产部署（Dockerfile / docker-compose / nginx.conf / .env.example）
+└── docs/            # 产品设计文档（PRD / 技术设计 / 设计系统）
 ```
 
 ## 工程亮点
