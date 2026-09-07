@@ -68,11 +68,11 @@ Docker Compose 一键部署（Nginx 静态托管 + /api /uploads 反代 + SSE �
 
 ```bash
 cp deploy/.env.example deploy/.env   # 填写密钥
-docker compose up -d --build
-# 访问 http://localhost
+docker compose -p deploy -f deploy/docker-compose.yml up -d --build
+# 访问 http://localhost:8081
 ```
 
-> 注意：`deploy/.env` 与 `server/.env` 不入库（.gitignore 已排除）。Docker Hub 被墙环境可参考 deploy/DEPLOY.md 的镜像源与离线导入方案。
+> 注意：`deploy/.env` 与 `server/.env` 不入库（.gitignore 已排除）。Docker Hub/ github.com 直连受限的网络可参考 [deploy/DEPLOY.md](deploy/DEPLOY.md) 的镜像加速与 SSH over 443 通道方案。
 
 ## 环境变量（关键项）
 

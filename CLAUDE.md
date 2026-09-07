@@ -82,6 +82,13 @@ pnpm db:migrate     # Apply migrations
 
 Single file with all DTOs: `BookListItem`, `CharacterData`, `ChapterDetail`, etc. Import as `@muse/shared`.
 
+## 部署（deploy/）
+
+- 生产环境在 Windows 本机 Docker Desktop（WSL2），访问 http://localhost:8081。启动命令 **必须** `docker compose -p deploy -f deploy/docker-compose.yml up -d`（-p deploy 不能省）
+- `deploy/.env` 含全部密钥（Neon 库与开发共用），不入库；`deploy/DEPLOY.md` 是完整指南（更新流程、备份、网络受限方案）
+- 本机网络 **Docker Hub 直连不通**（DNS 污染）：镜像走 `~/.docker/daemon.json` 的 registry-mirrors（docker.1ms.run，间歇可用）或从 Linux 虚拟机 docker save/load 导入
+- Git remote 用 `ssh://git@ssh.github.com:443/study-yyds/muse.git`（github.com 直连被墙，SSH over 443 可达）
+
 ## Key Patterns
 
 - **Server restarts**: `nest start --watch` uses incremental compilation. If changes aren't picked up, delete `server/tsconfig.build.tsbuildinfo` and rebuild.
